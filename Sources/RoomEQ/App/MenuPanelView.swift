@@ -1,5 +1,4 @@
-// The menu-bar panel (test UI from stage 2; the EQ controls exist in
-// AudioEngineController since stage 3 and get their section in the UI step).
+// The menu-bar panel (stage-2 test UI plus the EQ section).
 //
 // Pure view over `AudioEngineController`: it only reads the observable
 // properties and calls the controller's methods. Each block is its own
@@ -12,9 +11,31 @@ import SwiftUI
 struct MenuPanelView: View {
     let controller: AudioEngineController
 
+    /// The scrollable middle of the panel never grows beyond this height
+    /// (header and footer stay outside it, always visible): total ~700 pt.
+    private static let scrollMaxHeight: CGFloat = 580
+
+    @State private var scrollContentHeight: CGFloat = 400
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            Divider()
+            ScrollView {
+                scrollContent
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { scrollContentHeight = $0 }
+            }
+            .frame(height: min(max(scrollContentHeight, 1), Self.scrollMaxHeight))
+            Divider()
+            footer
+        }
+        .padding(14)
+        .frame(width: 360)
+    }
+
+    private var scrollContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            EQSectionView(controller: controller)
             Divider()
             outputSection
             bufferSection
@@ -26,11 +47,8 @@ struct MenuPanelView: View {
             exclusionsSection
             Divider()
             diagnosticsSection
-            Divider()
-            footer
         }
-        .padding(14)
-        .frame(width: 320)
+        .padding(.trailing, 6)  // room for the scroll bar
     }
 
     // MARK: Header: title, on/off, status

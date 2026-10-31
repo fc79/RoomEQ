@@ -100,6 +100,45 @@ enum Format {
         return "\(text) dB"
     }
 
+    /// "-3,5 dB" with a real minus sign (U+2212); "0,0 dB" for zero (never
+    /// "-0,0"). `plusSign` adds "+" to positive values (gains of a filter).
+    static func signedDecibels(_ value: Double, plusSign: Bool = false) -> String {
+        "\(signedNumber(value, decimals: 1, plusSign: plusSign)) dB"
+    }
+
+    /// Number with a fixed count of decimals and a real minus sign; a value
+    /// that rounds to zero is shown without sign.
+    static func signedNumber(_ value: Double, decimals: Int, plusSign: Bool = false) -> String {
+        guard value.isFinite else { return "—" }
+        let scale = pow(10, Double(decimals))
+        let rounded = (value * scale).rounded() / scale + 0  // "+ 0" turns -0 into 0
+        let text = abs(rounded).formatted(.number.precision(.fractionLength(decimals)).grouping(.never).locale(locale))
+        if rounded < 0 { return "\u{2212}\(text)" }
+        return plusSign && rounded > 0 ? "+\(text)" : text
+    }
+
+    /// "58,8 Hz", "140 Hz", "1,20 kHz".
+    static func frequency(_ hertz: Double) -> String {
+        guard hertz.isFinite else { return "—" }
+        if hertz >= 1000 {
+            let text = (hertz / 1000).formatted(.number.precision(.fractionLength(2)).grouping(.never).locale(locale))
+            return "\(text) kHz"
+        }
+        let text = hertz.formatted(.number.precision(.fractionLength(0...1)).grouping(.never).locale(locale))
+        return "\(text) Hz"
+    }
+
+    /// "Q 10,66".
+    static func qFactor(_ q: Double) -> String {
+        guard q.isFinite else { return "Q —" }
+        return "Q \(q.formatted(.number.precision(.fractionLength(2)).grouping(.never).locale(locale)))"
+    }
+
+    /// Number format of the editable fields (Italian decimal comma).
+    static func fieldStyle(maxDecimals: Int) -> FloatingPointFormatStyle<Double> {
+        .number.precision(.fractionLength(0...maxDecimals)).grouping(.never).locale(locale)
+    }
+
     /// Friendly name for a bundle ID: the installed app's name when found,
     /// otherwise the bundle ID itself.
     static func appName(forBundleID bundleID: String) -> String {

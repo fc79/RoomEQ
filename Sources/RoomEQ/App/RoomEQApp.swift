@@ -1,8 +1,8 @@
 // App entry point: a menu-bar-only app (LSUIElement in Info.plist).
 //
-// The panel is `MenuPanelView` (MenuPanelView.swift): still the stage-2 test
-// panel (the EQ section is added on top of the stage-3 controller API); the
-// final UI can reuse the building blocks in PanelComponents.swift.
+// The panel is `MenuPanelView` (MenuPanelView.swift): the stage-2 test panel
+// plus the EQ section (EQSectionView.swift, EQBandsList.swift,
+// EQCurveGraph.swift); the final UI can reuse PanelComponents.swift.
 
 import SwiftUI
 
@@ -20,8 +20,8 @@ struct RoomEQApp: App {
     }
 }
 
-/// Menu bar icon that changes with the engine state, so on/off is visible
-/// without opening the panel. A separate view so that it observes the controller.
+/// Menu bar icon that changes with the engine state and the EQ on/off, so
+/// both are visible without opening the panel. A separate view so that it observes the controller.
 struct MenuBarIcon: View {
     let controller: AudioEngineController
 
@@ -31,7 +31,7 @@ struct MenuBarIcon: View {
 
     private var symbolName: String {
         switch controller.state {
-        case .running, .starting: "slider.vertical.3"
+        case .running, .starting: controller.isEQEnabled ? "slider.vertical.3" : "waveform"
         case .stopped, .stopping: "speaker.slash"
         case .failed: "exclamationmark.triangle"
         }
