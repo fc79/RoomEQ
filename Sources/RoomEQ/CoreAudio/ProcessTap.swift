@@ -66,7 +66,7 @@ final class ProcessTap {
     let stream: UInt
     let muteBehavior: CATapMuteBehavior
     /// Bundle IDs excluded from the tap (including RoomEQ's own).
-    let excludedBundleIDs: [String]
+    private(set) var excludedBundleIDs: [String]
     /// Process objects currently in the tap's exclusion list.
     private(set) var excludedProcesses: [AudioObjectID]
 
@@ -142,12 +142,17 @@ final class ProcessTap {
     ///   - excludedBundleIDs: bundle IDs to exclude (RoomEQ's own is added).
     ///   - deviceUID / stream: the output stream to tap.
     ///   - muteBehavior: `.mutedWhenTapped` (apps silenced only while we read).
+    /// The user's exclusions plus RoomEQ's own bundle ID, sorted, unique.
+    static func bundleIDList(_ userExcluded: [String]) -> [String] {
+        let ownBundleID = Bundle.main.bundleIdentifier ?? "com.federicociapi.RoomEQ"
+        return Array(Set(userExcluded + [ownBundleID])).sorted()
+    }
+
     static func create(
         excludedBundleIDs userExcluded: [String], deviceUID: String, stream: UInt,
         muteBehavior: CATapMuteBehavior = .mutedWhenTapped
     ) throws -> ProcessTap {
-        let ownBundleID = Bundle.main.bundleIdentifier ?? "com.federicociapi.RoomEQ"
-        let bundleIDs = Array(Set(userExcluded + [ownBundleID])).sorted()
+        let bundleIDs = bundleIDList(userExcluded)
 
         // Process objects: ourselves (essential, or we would tap our own
         // output and create a feedback loop) + running excluded apps.
@@ -205,9 +210,34 @@ final class ProcessTap {
             "Replacing tap description: excluded processes \(self.excludedProcesses, privacy: .public) -> \(list, privacy: .public)"
         )
 
+        try writeDescription(processes: list, bundleIDs: excludedBundleIDs)
+    }
+
+    /// Replaces the whole exclusion set (user's bundle IDs; RoomEQ's own is
+    /// added and its process object always kept): the matching running
+    /// processes are excluded and, on macOS 26, the bundle IDs too. Used to
+    /// apply a changed exclusion list without rebuilding the session.
+    /// Throws without touching the tap if RoomEQ's own process object can't
+    /// be resolved.
+    func updateExclusions(bundleIDs userExcluded: [String]) throws {
+        let bundleIDs = Self.bundleIDList(userExcluded)
+        var list = [try Self.ownProcessObject(attempts: 3)]
+        for match in AudioProcesses.processObjects(matching: bundleIDs) where !list.contains(match.object) {
+            list.append(match.object)
+        }
+        guard list != excludedProcesses || bundleIDs != excludedBundleIDs else { return }
+        Log.tap.info(
+            "Updating tap exclusions: bundle IDs \(self.excludedBundleIDs, privacy: .public) -> \(bundleIDs, privacy: .public), processes \(self.excludedProcesses, privacy: .public) -> \(list, privacy: .public)"
+        )
+        try writeDescription(processes: list, bundleIDs: bundleIDs)
+        excludedBundleIDs = bundleIDs
+    }
+
+    /// Sets `kAudioTapPropertyDescription` (same UUID, name and options).
+    private func writeDescription(processes list: [AudioObjectID], bundleIDs: [String]) throws {
         var description = Self.makeDescription(
             uuid: uuid, deviceUID: deviceUID, stream: stream, muteBehavior: muteBehavior,
-            excludedProcesses: list, excludedBundleIDs: excludedBundleIDs)
+            excludedProcesses: list, excludedBundleIDs: bundleIDs)
         var address = AudioObject.address(kAudioTapPropertyDescription)
         let status = withUnsafeMutablePointer(to: &description) {
             AudioObjectSetPropertyData(
@@ -215,7 +245,9 @@ final class ProcessTap {
         }
         try AudioObject.check(status, "Aggiornamento esclusioni del tap")
         excludedProcesses = list
-        Log.tap.info("Tap description updated, excluded processes now \(self.excludedProcesses, privacy: .public)")
+        Log.tap.info(
+            "Tap description updated, excluded processes now \(self.excludedProcesses, privacy: .public); stored: \(self.currentDescriptionSummary(), privacy: .public)"
+        )
     }
 
     /// Reads back the tap's current description, for diagnostics only.

@@ -104,6 +104,27 @@ final class AudioEngine: @unchecked Sendable {
         }
     }
 
+    /// Applies a changed exclusion list to session `sessionID` without
+    /// rebuilding it. `completion(nil)` on success; an error (also when that
+    /// session is no longer current) means the caller should restart.
+    func updateExclusions(
+        sessionID: Int, bundleIDs: [String], completion: @escaping @MainActor (Error?) -> Void
+    ) {
+        queue.async { [self] in
+            guard let session, session.id == sessionID else {
+                onMain { completion(EngineError("Sessione non più attiva")) }
+                return
+            }
+            do {
+                try session.updateExclusions(bundleIDs: bundleIDs)
+                onMain { completion(nil) }
+            } catch {
+                Log.tap.error("Live exclusion update failed: \(error.localizedDescription, privacy: .public)")
+                onMain { completion(error) }
+            }
+        }
+    }
+
     /// Recomputes latency (e.g. after the output pair moved to another stream).
     func refreshLatency() {
         queue.async { [self] in

@@ -9,10 +9,18 @@
 // Output device: ALWAYS the macOS default output (tapped device = output
 // device), followed automatically when it changes.
 //
-// EQ (stage 3): the band list, preamp and EQ on/off live here, are saved
-// to UserDefaults on every change and loaded at launch (the user's REW
-// filters when nothing is saved). Saves are debounced (0,5 s) and flushed on
-// quit. Unreadable saved data is backed up before anything overwrites it.
+// The output device can be chosen from the panel (`setSystemOutputDevice`):
+// that changes the macOS default output, which RoomEQ then follows.
+//
+// Settings (stage 4): one versioned document (`AppSettings`, RoomEQCore)
+// holds the working EQ state, presets, per-output assignments, exclusions
+// and auto-start; saved to UserDefaults (debounced 0,5 s, flushed on quit),
+// loaded leniently at launch (migrating the stage-3 "EQSettings"); anything
+// unreadable is backed up before it can be overwritten.
+// The controller is split over several files: this one (state, engine
+// lifecycle, EQ), +Presets (presets, outputs, sample rate), +Exclusions,
+// +System (login item, auto-start, menu-bar state).
+//
 // Every change of the band list is turned into coefficients for the running
 // session's sample rate (while stopped: the macOS default output's nominal
 // rate, or 48 kHz if unknown) and handed to the audio thread, where every
@@ -60,7 +68,8 @@ final class AudioEngineController {
 
     // MARK: Devices and routing
 
-    /// Output-capable devices (RoomEQ's own aggregates excluded), for stage 4.
+    /// Output-capable devices (aggregate devices excluded). For the output
+    /// menu use `outputDeviceOptions` (adds the "is default" flag).
     private(set) var outputDevices: [OutputDeviceInfo] = []
     /// The macOS default output device: RoomEQ taps it and plays on it.
     private(set) var systemOutputDevice: OutputDeviceInfo?
@@ -84,8 +93,6 @@ final class AudioEngineController {
     private(set) var bufferSize = BufferSize.defaultSize
     /// Buffer sizes the devices accept (64/128/256 within their ranges).
     private(set) var bufferSizeOptions = BufferSize.preferredSizes
-    /// Apps never captured (RoomEQ itself is always excluded in addition).
-    private(set) var excludedBundleIDs = ["com.ableton.live"]
 
     // MARK: Readouts
 
@@ -111,13 +118,14 @@ final class AudioEngineController {
     // MARK: EQ
 
     /// The EQ bands in processing order (at most `EQBand.maximumCount`).
-    private(set) var bands: [EQBand]
+    var bands: [EQBand] { settings.bands }
     /// EQ on (processed signal) or off (original signal, 10 ms crossfade).
     /// The filters keep running while off, so switching is click-free.
-    private(set) var isEQEnabled: Bool
+    /// Global: not part of presets.
+    var isEQEnabled: Bool { settings.isEQEnabled }
     /// Output preamp in dB, `preampRange` (-24…0): attenuation only.
     /// Applied (15 ms ramp) with the EQ on and off.
-    private(set) var preampDecibels: Double
+    var preampDecibels: Double { settings.preampDecibels }
     static let preampRange = Preamp.range
     /// Largest boost of the combined EQ curve between 20 Hz and 20 kHz
     /// (0 when the curve never goes above 0 dB).
@@ -147,16 +155,48 @@ final class AudioEngineController {
     /// True while a file is being read.
     private(set) var isImporting = false
 
+    // MARK: Stage 4 state (see the +Presets / +Exclusions / +System files)
+
+    /// Everything persisted. Controller-internal: views must use the
+    /// documented properties and methods, never mutate this directly.
+    var settings: AppSettings
+    /// Last error of a settings action (output, sample rate, login item,
+    /// exclusions), Italian; nil when fine. `clearSettingsError()` resets it.
+    var lastSettingsError: String?
+    /// Rates the output device offers (standard rates inside its ranges).
+    var availableSampleRates: [Double] = []
+    /// True while a sample-rate change requested by the user is in progress.
+    var isChangingSampleRate = false
+    /// True while the macOS default output is being changed from the panel.
+    var isChangingOutputDevice = false
+    /// "Open at login" status (refresh with `refreshLaunchAtLoginStatus()`).
+    var launchAtLoginStatus: LaunchAtLoginStatus = .disabled
+    /// Apps that could be excluded (refresh with `refreshCandidateApps()`).
+    var candidateApps: [AppInfo] = []
+    /// Excluded apps with display info (RoomEQ itself never listed).
+    var excludedApps: [ExcludedApp] = []
+    /// Italian note about the last automatic per-output preset switch
+    /// (e.g. "Uscita «Cuffie»: applicato il preset «Cuffie»"), nil if none.
+    var lastAutomaticPresetSwitch: String?
+
     // MARK: Private
 
-    @ObservationIgnored private let engine = AudioEngine()
-    /// HAL reads for the device list happen here, never on the main thread.
-    @ObservationIgnored private let deviceQueue = DispatchQueue(
+    // Controller-internal (also used by the extension files).
+    @ObservationIgnored let engine = AudioEngine()
+    /// HAL reads/writes for devices happen here, never on the main thread.
+    @ObservationIgnored let deviceQueue = DispatchQueue(
         label: "com.federicociapi.RoomEQ.devices", qos: .userInitiated)
-    @ObservationIgnored private var renderState: RenderStateHandle?
+    @ObservationIgnored var renderState: RenderStateHandle?
     @ObservationIgnored private var link: SplitLinkHandle?
     /// ID of the engine session this controller considers running.
-    @ObservationIgnored private var activeSessionID: Int?
+    @ObservationIgnored var activeSessionID: Int?
+    /// When the user last changed the device sample rate (the restart that
+    /// follows is not counted as an automatic one).
+    @ObservationIgnored var userSampleRateChangeDate: Date?
+    /// Nominal-rate listener on the current macOS default output.
+    @ObservationIgnored private var rateListener: PropertyListener?
+    /// RoomEQ's bundle ID (always excluded, never listed).
+    static let ownBundleID = Bundle.main.bundleIdentifier ?? "com.federicociapi.RoomEQ"
     /// Incremented whenever pending launches become unwanted (new launch,
     /// stop, failure). A start completing with an old generation is stopped.
     @ObservationIgnored private var launchGeneration = 0
@@ -172,33 +212,32 @@ final class AudioEngineController {
         label: "com.federicociapi.RoomEQ.import", qos: .userInitiated)
     @ObservationIgnored private var importGeneration = 0
     @ObservationIgnored private var pendingSave: DispatchWorkItem?
-    static let settingsKey = "EQSettings"
     static let saveDelay: TimeInterval = 0.5
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
-        var settings = EQSettings.defaults()
-        var notice: String?
-        if let data = userDefaults.data(forKey: Self.settingsKey) {
-            let loaded = EQSettings.load(data)
-            settings = loaded.settings
-            if loaded.needsBackup {
-                // Keep the raw data BEFORE anything can save over it.
-                let key = "\(Self.settingsKey).backup.\(Int(Date().timeIntervalSince1970))"
-                userDefaults.set(data, forKey: key)
-                Log.app.error(
-                    "Saved EQ settings not fully readable (\(loaded.warnings.joined(separator: "; "), privacy: .public)); raw data kept in \(key, privacy: .public)")
-                notice = loaded.status == .unreadable
-                    ? "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho caricato i filtri iniziali."
-                    : "Parte delle impostazioni salvate non era leggibile: ne ho conservato una copia e ho caricato il resto."
-            }
+        let loaded = AppSettings.load(
+            current: userDefaults.data(forKey: AppSettings.storageKey),
+            legacy: userDefaults.data(forKey: EQSettings.storageKey), ownBundleID: Self.ownBundleID)
+        // Keep unreadable raw data BEFORE anything can save over it.
+        let stamp = Int(Date().timeIntervalSince1970)
+        for backup in loaded.backups {
+            let key = "\(backup.sourceKey).backup.\(stamp)"
+            userDefaults.set(backup.data, forKey: key)
+            Log.app.error("Saved settings not fully readable; raw data kept in \(key, privacy: .public)")
         }
-        bands = settings.bands
-        isEQEnabled = settings.isEQEnabled
-        preampDecibels = settings.preampDecibels
-        eqDesign = EQDesign(bands: settings.bands, sampleRate: Self.idleSampleRate)
-        settingsNotice = notice
+        if !loaded.warnings.isEmpty {
+            Log.app.error("Settings load: \(loaded.warnings.joined(separator: "; "), privacy: .public)")
+        }
+        settings = loaded.settings
+        eqDesign = EQDesign(bands: loaded.settings.bands, sampleRate: Self.idleSampleRate)
+        settingsNotice = loaded.notice
+        refreshExcludedApps()
         updateEQ()
+        if loaded.migrated {
+            Log.app.notice("Settings migrated from stage 3 (preset «\(AppSettings.firstPresetName, privacy: .public)»)")
+            writeSettings()  // the new document exists from now on
+        }
     }
 
     /// Call once at launch: device list and device-change listeners
@@ -207,7 +246,12 @@ final class AudioEngineController {
         guard !prepared else { return }
         prepared = true
         engine.eventHandler = { [weak self] event in self?.handle(event) }
-        refreshDevices()
+        refreshLaunchAtLoginStatus()
+        refreshDevices { [weak self] in
+            guard let self, self.settings.autoStartEngineOnLaunch else { return }
+            Log.app.info("Auto-start at launch")
+            self.start()
+        }
         let system = AudioObjectID(kAudioObjectSystemObject)
         for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultOutputDevice] {
             do {
@@ -299,23 +343,12 @@ final class AudioEngineController {
         restartIfActive(reason: "buffer \(frames)")
     }
 
-    /// Restarts the engine if running (the tap must be rebuilt).
-    func setExcludedBundleIDs(_ ids: [String]) {
-        var cleaned: [String] = []
-        for id in ids.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !id.isEmpty {
-            if !cleaned.contains(id) { cleaned.append(id) }
-        }
-        guard cleaned != excludedBundleIDs else { return }
-        excludedBundleIDs = cleaned
-        restartIfActive(reason: "cambio app escluse")
-    }
-
     // MARK: EQ settings (all applied live and saved)
 
     /// Preamp in dB, clamped to -24…0 (NaN ignored). Applied smoothly (15 ms ramp).
     func setPreamp(_ decibels: Double) {
         guard let value = Preamp.clamp(decibels), value != preampDecibels else { return }
-        preampDecibels = value
+        settings.preampDecibels = value
         renderState?.setPreamp(decibels: value)
         saveSettings()
     }
@@ -323,7 +356,7 @@ final class AudioEngineController {
     /// EQ on/off (10 ms crossfade to/from the original signal).
     func setEQEnabled(_ enabled: Bool) {
         guard enabled != isEQEnabled else { return }
-        isEQEnabled = enabled
+        settings.isEQEnabled = enabled
         renderState?.setBypass(!enabled)
         saveSettings()
     }
@@ -338,19 +371,19 @@ final class AudioEngineController {
         guard let index = bands.firstIndex(where: { $0.id == band.id }) else { return }
         let updated = bands[index].applyingEdit(band)
         guard bands[index] != updated else { return }
-        bands[index] = updated
+        settings.bands[index] = updated
         bandsChanged()
     }
 
     func setBandEnabled(id: EQBand.ID, _ enabled: Bool) {
         guard let index = bands.firstIndex(where: { $0.id == id }), bands[index].isEnabled != enabled else { return }
-        bands[index].isEnabled = enabled
+        settings.bands[index].isEnabled = enabled
         bandsChanged()
     }
 
     func removeBand(id: EQBand.ID) {
         guard let index = bands.firstIndex(where: { $0.id == id }) else { return }
-        bands.remove(at: index)
+        settings.bands.remove(at: index)
         bandsChanged()
     }
 
@@ -360,19 +393,20 @@ final class AudioEngineController {
     func addBand() -> EQBand? {
         guard bands.count < EQBand.maximumCount else { return nil }
         let band = EQBand.neutral()
-        bands.append(band)
+        settings.bands.append(band)
         bandsChanged()
         return band
     }
 
-    /// Back to the user's REW measurement filters (preamp and EQ on/off unchanged).
+    /// Back to the user's REW measurement filters (preamp and EQ on/off
+    /// unchanged). Marks the active preset as modified (not saved into it).
     func resetToDefaultFilters() {
-        bands = EQBand.defaultBands()
+        settings.bands = EQBand.defaultBands()
         bandsChanged()
     }
 
     /// Combined EQ response in dB at each frequency (Hz), for drawing.
-    /// Uses the running session's sample rate, or 48 kHz when stopped.
+    /// Uses `eqSampleRate` (running session's rate, else the default output's).
     /// Bands that are disabled or not processable are not included.
     func curveResponse(frequencies: [Double]) -> [Double] {
         EQCurve.responseDecibels(
@@ -406,9 +440,11 @@ final class AudioEngineController {
         deviceQueue.async { [weak self] in
             let devices = AudioDevices.outputDevices()
             let systemOutput = AudioDevices.defaultOutputDeviceID().flatMap(AudioDevices.info(for:))
+            let rates = systemOutput.map { AudioDevices.availableSampleRates(of: $0.objectID) } ?? []
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    if rates != self.availableSampleRates { self.availableSampleRates = rates }
                     self.applyDeviceList(devices, systemOutput: systemOutput)
                     completion?()
                 }
@@ -420,11 +456,34 @@ final class AudioEngineController {
 
     private func applyDeviceList(_ devices: [OutputDeviceInfo], systemOutput: OutputDeviceInfo?) {
         if devices != outputDevices { outputDevices = devices }
+        rememberDeviceNames(devices)
+        if systemOutput?.objectID != systemOutputDevice?.objectID { watchSampleRate(of: systemOutput) }
         if systemOutput != systemOutputDevice {
             systemOutputDevice = systemOutput
             if renderState == nil { updateEQ() }  // idle rate may have changed
         }
+        // Per-output presets BEFORE following the output, so the new
+        // session starts with the new output's preset.
+        applyPresetForOutput(systemOutput)
         followSystemOutputIfNeeded()
+    }
+
+    /// Refreshes the device info (rate, available rates) when the default
+    /// output's nominal sample rate changes, also while stopped.
+    private func watchSampleRate(of device: OutputDeviceInfo?) {
+        rateListener?.remove()
+        rateListener = nil
+        guard let device else { return }
+        do {
+            rateListener = try PropertyListener(
+                object: device.objectID, address: AudioObject.address(kAudioDevicePropertyNominalSampleRate),
+                queue: .main
+            ) { [weak self] in
+                MainActor.assumeIsolated { self?.refreshDevices() }
+            }
+        } catch {
+            Log.devices.warning("Rate listener: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// When the macOS default output changes while running, move RoomEQ to it.
@@ -567,6 +626,11 @@ final class AudioEngineController {
     /// directly and are not counted.
     private func automaticRestart(reason: String) {
         let now = Date()
+        if let userChange = userSampleRateChangeDate, now.timeIntervalSince(userChange) < 5 {
+            // Caused by the user's own sample-rate change: not "automatic".
+            restartIfActive(reason: reason)
+            return
+        }
         automaticRestarts = automaticRestarts.filter { now.timeIntervalSince($0) < 10 } + [now]
         guard automaticRestarts.count <= 3 else {
             fail("Troppi riavvii automatici (\(reason))")
@@ -575,7 +639,7 @@ final class AudioEngineController {
         restartIfActive(reason: reason)
     }
 
-    private func restartIfActive(reason: String) {
+    func restartIfActive(reason: String) {
         guard state == .running || state == .starting else { return }
         guard let device = systemOutputDevice else {
             fail("Nessun dispositivo di uscita di macOS disponibile")
@@ -598,7 +662,7 @@ final class AudioEngineController {
 
     // MARK: EQ internals
 
-    private func bandsChanged() {
+    func bandsChanged() {
         updateEQ()
         saveSettings()
     }
@@ -609,7 +673,7 @@ final class AudioEngineController {
 
     /// Recomputes the design for the current rate, hands it to the audio
     /// thread (if running) and refreshes the derived values.
-    private func updateEQ() {
+    func updateEQ() {
         let rate = renderState?.configuration.sampleRate ?? idleRate
         let design = EQDesign(bands: bands, sampleRate: rate)
         renderState?.publishFilters(design.sections)
@@ -625,7 +689,7 @@ final class AudioEngineController {
 
     /// Debounced: writes 0,5 s after the last change (a slider drag makes
     /// one write, not hundreds). `flushPendingSave` writes immediately.
-    private func saveSettings() {
+    func saveSettings() {
         pendingSave?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.writeSettings() }
@@ -643,9 +707,8 @@ final class AudioEngineController {
 
     private func writeSettings() {
         pendingSave = nil
-        let settings = EQSettings(bands: bands, preampDecibels: preampDecibels, isEQEnabled: isEQEnabled)
         do {
-            userDefaults.set(try settings.encoded(), forKey: Self.settingsKey)
+            userDefaults.set(try settings.encoded(), forKey: AppSettings.storageKey)
         } catch {
             Log.app.error("Saving EQ settings failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -656,7 +719,7 @@ final class AudioEngineController {
         isImporting = false
         switch result {
         case .success(let imported):
-            bands = imported.bands
+            settings.bands = imported.bands
             bandsChanged()
             lastImportWarnings = imported.warnings
             lastImportError = nil

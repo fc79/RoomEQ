@@ -694,6 +694,12 @@ final class EngineSession {
         return AudioDevices.isAlive(id)
     }
 
+    /// Applies a changed exclusion list to the running tap (no rebuild).
+    func updateExclusions(bundleIDs: [String]) throws {
+        guard let tap else { throw EngineError("Nessun tap attivo") }
+        try tap.updateExclusions(bundleIDs: bundleIDs)
+    }
+
     /// Fallback for excluding apps launched after the tap was created.
     ///
     /// On macOS 26 the tap also carries `bundleIDs`, which should already

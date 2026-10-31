@@ -18,6 +18,8 @@ public struct EQSettings: Codable, Sendable, Equatable {
     public var isEQEnabled: Bool
 
     public static let currentVersion = 1
+    /// UserDefaults key of the stage-3 document (read for migration only).
+    public static let storageKey = "EQSettings"
 
     public init(bands: [EQBand], preampDecibels: Double, isEQEnabled: Bool) {
         version = Self.currentVersion
@@ -113,7 +115,7 @@ public struct EQSettingsLoad: Sendable, Equatable {
 /// field does not lose the others.
 private struct StoredSettings: Decodable {
     var version: Int?
-    var bands: [StoredBand]?
+    var bands: [LenientBand]?
     var preampDecibels: Double?
     var isEQEnabled: Bool?
 
@@ -124,7 +126,7 @@ private struct StoredSettings: Decodable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)  // must be an object
         version = try? container.decodeIfPresent(Int.self, forKey: .version)
-        bands = try? container.decodeIfPresent([StoredBand].self, forKey: .bands)
+        bands = try? container.decodeIfPresent([LenientBand].self, forKey: .bands)
         preampDecibels = try? container.decodeIfPresent(Double.self, forKey: .preampDecibels)
         isEQEnabled = try? container.decodeIfPresent(Bool.self, forKey: .isEQEnabled)
     }
@@ -132,7 +134,8 @@ private struct StoredSettings: Decodable {
 
 /// One band; decoding never throws (so the array keeps going), `band` is nil
 /// if the element is unusable. Missing ID -> new ID; missing isEnabled -> on.
-private struct StoredBand: Decodable {
+/// Shared by every lenient settings decoder.
+struct LenientBand: Decodable {
     let band: EQBand?
 
     enum CodingKeys: String, CodingKey {
