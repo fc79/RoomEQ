@@ -1,29 +1,47 @@
 // Tap format helpers: which tap channels to use, format text, and the
 // "no sample-rate conversion" guard.
 
-/// Which tap channels feed the left/right input of the render kernel.
-public enum TapChannelSelection {
-    /// 0-based (left, right) tap channels.
-    /// - 1 channel: mono, used for both sides;
-    /// - 2 channels: 0 and 1, unless `preferredStereo` says otherwise;
-    /// - more: the device's preferred stereo channels, if valid, else 0 and 1.
-    /// `preferredStereo` is 1-based and relative to the tapped stream.
-    public static func stereoPair(tapChannels: Int, preferredStereo: (Int, Int)?) -> (left: Int, right: Int) {
-        guard tapChannels > 1 else { return (0, 0) }
-        if let (left, right) = preferredStereo,
-            (1...tapChannels).contains(left), (1...tapChannels).contains(right), left != right
-        {
-            return (left - 1, right - 1)
+/// Where the source L/R channels are: the output stream that holds the
+/// device's preferred stereo channels, and their positions inside it.
+public struct TapSource: Sendable, Equatable {
+    /// Output stream index to tap.
+    public let stream: Int
+    /// 0-based channels within that stream.
+    public let left: Int
+    public let right: Int
+}
+
+public enum TapSourceSelection {
+    /// Locates `preferred` (1-based device channel numbers across all output
+    /// streams, from kAudioDevicePropertyPreferredChannelsForStereo; nil ->
+    /// 1/2) in streams with `streamChannelCounts` channels.
+    /// Refuses (Italian message) if L and R are in different streams, out of
+    /// range, or the stream has fewer than 2 channels: RoomEQ never silently
+    /// duplicates one channel onto both outputs.
+    public static func locate(preferred: (Int, Int)?, streamChannelCounts: [Int]) -> Result<TapSource, TapSourceError> {
+        let (left, right) = preferred ?? (1, 2)
+        var first = 1
+        var streamOf: [Int: (stream: Int, offset: Int)] = [:]
+        for (index, count) in streamChannelCounts.enumerated() {
+            for offset in 0..<max(0, count) { streamOf[first + offset] = (index, offset) }
+            first += max(0, count)
         }
-        return (0, 1)
+        guard left != right, let l = streamOf[left], let r = streamOf[right] else {
+            return .failure(TapSourceError(message: "I canali stereo del dispositivo (\(left)/\(right)) non sono validi: RoomEQ non si avvia."))
+        }
+        guard l.stream == r.stream else {
+            return .failure(TapSourceError(
+                message: "I canali stereo del dispositivo (\(left)/\(right)) sono in stream diversi: "
+                    + "RoomEQ non supporta ancora questo dispositivo."))
+        }
+        guard streamChannelCounts[l.stream] >= 2 else {
+            return .failure(TapSourceError(message: "Lo stream di uscita ha un solo canale: RoomEQ non si avvia."))
+        }
+        return .success(TapSource(stream: l.stream, left: l.offset, right: r.offset))
     }
 
-    /// Converts the device's preferred stereo channels (1-based, numbered
-    /// across all output streams) to channels within the stream that starts
-    /// at device channel `streamFirstChannel` (1-based).
-    public static func preferredWithinStream(_ preferred: (Int, Int)?, streamFirstChannel: Int) -> (Int, Int)? {
-        guard let (left, right) = preferred else { return nil }
-        return (left - streamFirstChannel + 1, right - streamFirstChannel + 1)
+    public struct TapSourceError: Error, Equatable, Sendable {
+        public let message: String
     }
 }
 

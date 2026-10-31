@@ -4,14 +4,15 @@ import Testing
 
 private let stereoLayout = BufferListLayout(streams: [StreamFormatInfo(channels: 2, isInterleaved: true)])
 
-private func makeLink(capacity: Int = 16, layout: BufferListLayout = stereoLayout, left: Int = 0, right: Int = 1)
-    -> SplitLinkHandle
-{
+private func makeLink(
+    capacity: Int = 16, layout: BufferListLayout = stereoLayout, left: Int = 0, right: Int = 1,
+    sourceCapacity: Int = 16
+) -> SplitLinkHandle {
     let channels = layout.locations(ofStream: 0)
     return SplitLinkHandle(
         configuration: SplitLinkConfiguration(
             captureLayout: layout, captureLeft: channels[left], captureRight: channels[right],
-            ringCapacity: capacity, maxOutputFrames: 512))
+            sizing: SplitLinkSizing(ringCapacity: capacity, sourceCapacity: sourceCapacity, maximumDelay: capacity)))
 }
 
 /// Writes `frames` frames whose value is `value(sampleTime)` (right = -left).
@@ -52,11 +53,11 @@ private func stamp(sample: Double, host: UInt64 = 0) -> AudioTimeStamp {
 struct SampleRingTests {
     @Test func wrapAroundAndOverwriteDetection() {
         let link = makeLink(capacity: 16)
-        write(link, start: 10, frames: 10) { Float($0) }  // slots 10..15, 0..3
-        write(link, start: 20, frames: 10) { Float($0) }  // wraps again; written up to 30
+        write(link, start: 10, frames: 10) { Float($0) }
+        write(link, start: 20, frames: 10) { Float($0) }  // written up to 30
         // Oldest still available is 30 - 16 = 14: frames 12 and 13 are gone.
         let (overwritten, left, _) = read(link, start: 12, frames: 18)
-        #expect(overwritten == RingReadResult(first: 2, end: 18))
+        #expect(overwritten == RingReadResult(first: 2, end: 18, gapFrames: 0, overwrittenFrames: 2))
         #expect(left[0] == 0 && left[1] == 0)
         #expect(left[2] == 14 && left[17] == 29)
 
@@ -66,6 +67,18 @@ struct SampleRingTests {
         #expect(negated[3] == -17)
     }
 
+    @Test func framesBeingOverwrittenDuringTheCopyAreInvalidated() {
+        let link = makeLink(capacity: 16)
+        write(link, start: 0, frames: 16) { Float($0) }
+        // The writer has announced [16, 20) (slots of frames 0..3) but not
+        // published it yet: those 4 frames may be torn -> invalid.
+        link.pointer.pointee.writeBegin.store(20, ordering: .relaxed)
+        let (result, left, _) = read(link, start: 0, frames: 16)
+        #expect(result == RingReadResult(first: 4, end: 16, gapFrames: 0, overwrittenFrames: 4))
+        #expect(left[0...3].allSatisfy { $0 == 0 })
+        #expect(left[4] == 4)
+    }
+
     @Test func partialAvailabilityIsAnUnderrunAtTheEnd() {
         let link = makeLink(capacity: 64)
         write(link, start: 0, frames: 30) { Float($0) }
@@ -73,9 +86,7 @@ struct SampleRingTests {
         #expect(result == RingReadResult(first: 0, end: 5))
         #expect(left[4] == 29)
         #expect(left[5...].allSatisfy { $0 == 0 })
-        // Entirely in the future: nothing valid.
-        #expect(read(link, start: 40, frames: 8).0.validFrames == 0)
-        #expect(read(link, start: 40, frames: 8).0.end == 0)
+        #expect(read(link, start: 40, frames: 8).0 == RingReadResult(first: 0, end: 0))
     }
 
     @Test func emptyRingIsAnUnderrun() {
@@ -85,22 +96,34 @@ struct SampleRingTests {
         #expect(left == [0, 0, 0, 0])
     }
 
-    @Test func sampleTimeJumpsZeroStaleAudio() {
-        let link = makeLink(capacity: 16)
+    @Test func forwardGapIsInvalidNotSilentValid() {
+        let link = makeLink(capacity: 64)
         write(link, start: 0, frames: 16) { _ in 1 }
         write(link, start: 16, frames: 4) { _ in 2 }
-        write(link, start: 24, frames: 4) { _ in 3 }  // gap [20, 24) -> slots that held 1
-        let (gap, left, _) = read(link, start: 20, frames: 4)
-        #expect(gap.validFrames == 4)
-        #expect(left == [0, 0, 0, 0])
+        write(link, start: 24, frames: 4) { _ in 3 }  // frames 20..23 never captured
+        let (result, left, _) = read(link, start: 20, frames: 8)
+        #expect(result == RingReadResult(first: 4, end: 8, gapFrames: 4, overwrittenFrames: 0))
+        #expect(left[0...3].allSatisfy { $0 == 0 })
+        #expect(left[4...].allSatisfy { $0 == 3 })
         #expect(link.status().discontinuities == 1)
+    }
 
-        // Backwards jump: the whole ring is cleared.
-        write(link, start: 0, frames: 4) { _ in 5 }
-        #expect(link.status().discontinuities == 2)
-        let (history, old, _) = read(link, start: -12, frames: 12)
-        #expect(history.validFrames == 12)
-        #expect(old.allSatisfy { $0 == 0 })
+    @Test func smallBackwardOverlapIsRewrittenInPlace() {
+        let link = makeLink(capacity: 64)
+        write(link, start: 0, frames: 8) { _ in 1 }
+        write(link, start: 6, frames: 8) { _ in 2 }  // steps back 2 frames (<= block)
+        let (result, left, _) = read(link, start: 0, frames: 14)
+        #expect(result.validFrames == 14)  // nothing invalidated
+        #expect(left[5] == 1 && left[6] == 2 && left[13] == 2)
+        #expect(link.status().discontinuities == 1)
+    }
+
+    @Test func largeBackwardJumpResetsTheValidRegion() {
+        let link = makeLink(capacity: 64)
+        write(link, start: 100, frames: 8) { _ in 1 }
+        write(link, start: 0, frames: 8) { _ in 2 }
+        #expect(read(link, start: 0, frames: 8).0.validFrames == 8)
+        #expect(read(link, start: 100, frames: 8).0.validFrames == 0)  // now in the "future"
     }
 
     @Test func writesLargerThanTheRingKeepTheNewestFrames() {
@@ -112,25 +135,43 @@ struct SampleRingTests {
     }
 }
 
-@Suite("Split timeline")
-struct SplitTimelineTests {
-    @Test func offsetFromTimestamps() {
-        let ticks = 24_000_000.0
-        // Output stamp 10 ms after the capture stamp, same timeline.
-        let same = SplitTimeline.offset(
-            capture: (1000, 24_000_000), output: (1441, 24_240_000), sampleRate: 44100, ticksPerSecond: ticks)
-        #expect(same == 0)
-        // Capture timeline 5 frames ahead.
-        let ahead = SplitTimeline.offset(
-            capture: (1005, 24_000_000), output: (1441, 24_240_000), sampleRate: 44100, ticksPerSecond: ticks)
-        #expect(ahead == 5)
+@Suite("Split sizing and timing")
+struct SplitSizingTests {
+    @Test func ringIsSizedFromTheConfiguredBuffer() {
+        let small = SplitLinkSizing.make(maxCallbackFrames: 64, safetyOffsets: 28, delayIncreases: 4)
+        #expect(small.sourceCapacity == 64)
+        #expect(small.maximumDelay == 28 + 8 * 64 + 512)
+        #expect(small.ringCapacity >= 4 * (small.maximumDelay + 64))
+        #expect(small.ringCapacity & (small.ringCapacity - 1) == 0)
+
+        // A device with 8192-frame buffers no longer yields a zero/negative maximum delay.
+        let large = SplitLinkSizing.make(maxCallbackFrames: 8192, safetyOffsets: 100, delayIncreases: 4)
+        #expect(large.maximumDelay > 8 * 8192)
+        #expect(large.ringCapacity >= 4 * (large.maximumDelay + 8192))
+        let link = SplitLinkHandle(
+            configuration: SplitLinkConfiguration(
+                captureLayout: stereoLayout, captureLeft: stereoLayout.channels[0],
+                captureRight: stereoLayout.channels[1], sizing: large))
+        #expect(link.maximumDelay == large.maximumDelay)
     }
 
-    @Test func delayFromNeedOffsetAndMargin() {
-        #expect(SplitTimeline.delay(maxNeed: 192, offset: 0, margin: 32, minimum: 1, maximum: 4000) == 224)
-        #expect(SplitTimeline.delay(maxNeed: 192, offset: 5, margin: 32, minimum: 1, maximum: 4000) == 229)
-        #expect(SplitTimeline.delay(maxNeed: -50, offset: 0, margin: 32, minimum: 64, maximum: 4000) == 64)
-        #expect(SplitTimeline.delay(maxNeed: 9000, offset: 0, margin: 32, minimum: 1, maximum: 4000) == 4000)
+    @Test func initialDelayFailsInsteadOfClamping() {
+        #expect(DelayPolicy.initialDelay(maxNeed: 156, block: 64, maximum: 1052) == .success(220))
+        #expect(DelayPolicy.initialDelay(maxNeed: -500, block: 64, maximum: 1052) == .success(1))
+        guard case .failure(let error) = DelayPolicy.initialDelay(maxNeed: 2000, block: 64, maximum: 1052) else {
+            Issue.record("expected a failure")
+            return
+        }
+        #expect(error.needed == 2064)
+        #expect(error.message.contains("supera il massimo"))
+    }
+
+    @Test func badSampleTimesAreRejected() {
+        #expect(SampleTime.index(12.4) == 12)
+        #expect(SampleTime.index(-3.6) == -4)
+        #expect(SampleTime.index(.nan) == nil)
+        #expect(SampleTime.index(.infinity) == nil)
+        #expect(SampleTime.index(1e19) == nil)
     }
 }
 
@@ -139,8 +180,8 @@ struct SplitTimelineTests {
 /// output IOProc routes the delayed audio to output pair 1-2.
 @Suite("Split engine kernels")
 struct SplitKernelTests {
-    let period = 64
-    let lead: Int64 = 192  // output sample time runs this far ahead of the capture
+    static let period = 64
+    static let lead: Int64 = 192  // output sample time runs this far ahead of the capture
 
     final class Rig {
         let link: SplitLinkHandle
@@ -148,17 +189,17 @@ struct SplitKernelTests {
         let input: TestBufferList
         let output: TestBufferList
         var cycle: Int64 = 0
-        let period: Int
-        let lead: Int64
+        var captureSampleOverride: Double?
+        var outputSampleOverride: Double?
 
-        init(period: Int, lead: Int64) {
-            self.period = period
-            self.lead = lead
+        init() {
             let captureLayout = BufferListLayout(streams: [StreamFormatInfo(channels: 10, isInterleaved: true)])
-            let tap = TapChannelSelection.stereoPair(tapChannels: 10, preferredStereo: (3, 4))
-            link = makeLink(capacity: 8192, layout: captureLayout, left: tap.left, right: tap.right)
-            let outputLayout = BufferListLayout(streams: [StreamFormatInfo(channels: 10, isInterleaved: true)])
             let taps = captureLayout.locations(ofStream: 0)
+            let sizing = SplitLinkSizing.make(maxCallbackFrames: period, safetyOffsets: 0, delayIncreases: 4)
+            link = SplitLinkHandle(
+                configuration: SplitLinkConfiguration(
+                    captureLayout: captureLayout, captureLeft: taps[2], captureRight: taps[3], sizing: sizing))
+            let outputLayout = BufferListLayout(streams: [StreamFormatInfo(channels: 10, isInterleaved: true)])
             state = RenderStateHandle(
                 configuration: RenderConfiguration(
                     inputLayout: captureLayout, tapLeft: taps[2], tapRight: taps[3], outputLayout: outputLayout,
@@ -172,44 +213,48 @@ struct SplitKernelTests {
 
         /// One IO cycle: capture first, then output.
         @discardableResult
-        func step() -> Int64 {
+        func step(capture: Bool = true) -> Int64 {
             let captureStart = cycle * Int64(period)
-            for frame in 0..<period {
-                for channel in 0..<10 { input.set(buffer: 0, channel: channel, frame: frame, 0.9) }
-                input.set(buffer: 0, channel: 2, frame: frame, Rig.value(captureStart + Int64(frame)))
-                input.set(buffer: 0, channel: 3, frame: frame, -Rig.value(captureStart + Int64(frame)))
+            if capture {
+                for frame in 0..<period {
+                    for channel in 0..<10 { input.set(buffer: 0, channel: channel, frame: frame, 0.9) }
+                    input.set(buffer: 0, channel: 2, frame: frame, Rig.value(captureStart + Int64(frame)))
+                    input.set(buffer: 0, channel: 3, frame: frame, -Rig.value(captureStart + Int64(frame)))
+                }
+                var captureTime = stamp(sample: captureSampleOverride ?? Double(captureStart))
+                CaptureKernel.capture(
+                    link.pointer, now: &captureTime, input: UnsafePointer(input.pointer), inputTime: &captureTime)
             }
-            var captureTime = stamp(sample: Double(captureStart), host: UInt64(1000 + cycle))
-            CaptureKernel.capture(link.pointer, now: &captureTime, input: UnsafePointer(input.pointer), inputTime: &captureTime)
             let outputStart = captureStart + lead
-            var outputTime = stamp(sample: Double(outputStart), host: UInt64(1000 + cycle))
+            var outputTime = stamp(sample: outputSampleOverride ?? Double(outputStart))
             SplitOutputKernel.render(state: state.pointer, link: link.pointer, outputTime: &outputTime, output: output.pointer)
             cycle += 1
             return outputStart
         }
     }
 
-    @Test func warmupMeasuresTheNeededDelayAndOutputsSilence() throws {
-        let rig = Rig(period: period, lead: lead)
+    @Test func warmupMeasuresTheNeedAndOutputsSilence() throws {
+        let rig = Rig()
+        let marker = rig.link.needHistoryPosition
         for _ in 0..<10 { rig.step() }
         #expect(rig.output.get(buffer: 0, channel: 0, frame: 10) == 0)  // silence while warming up
-        let measurement = rig.link.warmupMeasurement()
-        #expect(measurement.maxNeed == lead)  // (outS + n) - (captureS + n)
-        #expect(measurement.samples == 10)
-        let stamps = try #require(rig.link.firstTimestamps())
-        #expect(stamps.capture.0 == 0 && stamps.output.0 == lead)
+        let needs = try #require(rig.link.needValues(since: marker))
+        #expect(needs.count == 10)
+        #expect(needs.allSatisfy { $0 == Self.lead })  // (outS + n) - (captureS + n)
+        let stats = try #require(WarmupAnalysis.statistics(needs))
+        #expect(stats.min == Self.lead && stats.median == Self.lead && stats.max == Self.lead)
+        let status = rig.link.status()
+        #expect(status.needCount == 10 && status.needSum == 10 * Self.lead)
     }
 
-    @Test func playsTheCapturedAudioAtTheFixedDelay() {
-        let rig = Rig(period: period, lead: lead)
+    @Test func playsTheCapturedAudioAtTheFixedDelay() throws {
+        let rig = Rig()
         for _ in 0..<5 { rig.step() }
-        let delay = SplitTimeline.delay(
-            maxNeed: rig.link.warmupMeasurement().maxNeed!, offset: 0, margin: 32, minimum: 1, maximum: 4000)
-        rig.link.start(offset: 0, delay: delay)
+        let delay = try DelayPolicy.initialDelay(maxNeed: Self.lead, block: Self.period, maximum: rig.link.maximumDelay).get()
+        rig.link.setDelay(delay)
 
         rig.step()  // first block fades in
-        let fadedFirst = rig.output.get(buffer: 0, channel: 0, frame: 0)
-        #expect(fadedFirst == 0)
+        #expect(rig.output.get(buffer: 0, channel: 0, frame: 0) == 0)
 
         let outputStart = rig.step()
         for frame in [0, 31, 63] {
@@ -222,9 +267,9 @@ struct SplitKernelTests {
     }
 
     @Test func tooSmallDelayUnderrunsWithSilenceAndIsCounted() {
-        let rig = Rig(period: period, lead: lead)
+        let rig = Rig()
         for _ in 0..<3 { rig.step() }
-        rig.link.start(offset: 0, delay: lead + 32)
+        rig.link.setDelay(Self.lead + 64)
         for _ in 0..<3 { rig.step() }
         #expect(rig.link.status().underrunCycles == 0)
 
@@ -236,20 +281,42 @@ struct SplitKernelTests {
         rig.step()
         let status = rig.link.status()
         #expect(status.underrunCycles == 1)
-        #expect(status.missingFrames == UInt64(lead - 150))
-        // The missing tail is silent.
+        #expect(status.missingFrames == UInt64(Self.lead - 150))
         #expect(rig.output.get(buffer: 0, channel: 0, frame: 63) == 0)
     }
 
-    @Test func timelineOffsetIsApplied() {
-        let rig = Rig(period: period, lead: lead)
+    @Test func captureGapFadesBackIn() {
+        let rig = Rig()
         for _ in 0..<3 { rig.step() }
-        // Pretend the capture timeline is 10 frames ahead: delay grows by 10
-        // and the read position moves by +10, so the audio is the same.
-        rig.link.start(offset: 10, delay: lead + 32 + 10)
+        rig.link.setDelay(Self.lead + 64)
+        for _ in 0..<4 { rig.step() }
+        rig.step(capture: false)  // one capture cycle missing -> gap of 64 frames
+        for _ in 0..<4 { rig.step() }
+        let status = rig.link.status()
+        #expect(status.discontinuities == 1)
+        #expect(status.gapCycles >= 1)
+        #expect(status.gapFrames >= 1)
+    }
+
+    @Test func nanSampleTimesAreInvalidCycles() {
+        let rig = Rig()
+        rig.captureSampleOverride = .nan
+        rig.outputSampleOverride = .nan
         rig.step()
-        let outputStart = rig.step()
-        let source = outputStart + 10 - (lead + 32 + 10)
-        #expect(rig.output.get(buffer: 0, channel: 0, frame: 5) == Rig.value(source + 5))
+        let status = rig.link.status()
+        #expect(status.captureInvalidCycles == 1)
+        #expect(status.outputInvalidCycles == 1)
+        #expect(rig.output.get(buffer: 0, channel: 0, frame: 0) == 0)
+    }
+
+    @Test func muteSilencesImmediately() {
+        let rig = Rig()
+        for _ in 0..<3 { rig.step() }
+        rig.link.setDelay(Self.lead + 64)
+        for _ in 0..<3 { rig.step() }
+        #expect(rig.output.get(buffer: 0, channel: 0, frame: 10) != 0)
+        rig.link.setMuted(true)
+        rig.step()
+        #expect(rig.output.get(buffer: 0, channel: 0, frame: 10) == 0)
     }
 }

@@ -32,6 +32,10 @@ enum EngineEvent {
     /// New latency figures (delay increased after underruns, or values that
     /// settled after start).
     case latencyChanged(sessionID: Int, LatencyBreakdown)
+    /// RoomEQ could not deliver audio (stall, persistent underruns, clock
+    /// drift…); the session has already been stopped, so the tapped apps
+    /// are audible again.
+    case fatal(sessionID: Int, message: String)
 }
 
 /// `@unchecked Sendable`: mutable state is only touched on `queue`
@@ -85,10 +89,19 @@ final class AudioEngine: @unchecked Sendable {
         }
     }
 
-    /// Blocks until everything is torn down. For app termination and
-    /// SIGINT/SIGTERM only.
-    func stopSynchronously() {
-        queue.sync { stopSession() }
+    /// Blocks until everything is torn down, at most `timeout` seconds (if
+    /// the engine queue is stuck, quitting must not hang; the HAL then cleans
+    /// up the private tap and aggregate when the process exits). For app
+    /// termination and SIGINT/SIGTERM only.
+    func stopSynchronously(timeout: Double = 2) {
+        let done = DispatchSemaphore(value: 0)
+        queue.async { [self] in
+            stopSession()
+            done.signal()
+        }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            Log.engine.error("Engine did not stop within \(timeout) s; quitting anyway")
+        }
     }
 
     /// Recomputes latency (e.g. after the output pair moved to another stream).
@@ -126,31 +139,39 @@ final class AudioEngine: @unchecked Sendable {
     }
 
     /// Per-session background work on the engine queue (never on the RT
-    /// threads), while the session is current:
-    /// - every second: grow the delay if underruns happened;
-    /// - after 1 s: re-read latency values with everything running;
-    /// - first 10 s: log tap input peak vs output peak once per second (debug).
+    /// threads), every 100 ms while the session is current: health, delay
+    /// adaptation and drift (`EngineSession.maintenanceTick`). A fatal result
+    /// stops the session right here (tap released, apps audible again)
+    /// before the controller is told. During the first 10 s the levels are
+    /// also logged once per second (debug).
     private func scheduleMaintenance(for session: EngineSession) {
-        func tick(_ second: Int) {
-            queue.asyncAfter(deadline: .now() + 1) { [self] in
+        let interval = 0.1
+        var ticks = 0
+        func tick() {
+            queue.asyncAfter(deadline: .now() + interval) { [self] in
                 guard self.session === session else { return }
-                if let latency = session.adaptDelayIfNeeded() {
-                    emitLatencyIfChanged(session, latency: latency, force: true)
-                } else if second == 1 {
-                    emitLatencyIfChanged(session, latency: session.currentLatency(), force: false)
+                ticks += 1
+                switch session.maintenanceTick(elapsed: interval) {
+                case .ok: break
+                case .latencyChanged(let latency): emitLatencyIfChanged(session, latency: latency, force: false)
+                case .fatal(let message):
+                    Log.engine.error("Session \(session.id) stopped: \(message, privacy: .public)")
+                    stopSession()
+                    emit(.fatal(sessionID: session.id, message: message))
+                    return
                 }
-                if second <= 10, let state = session.renderState, let link = session.link {
+                if ticks % 10 == 0, ticks <= 100, let state = session.renderState, let link = session.link {
                     let peaks = state.readDiagnosticPeaks()
                     let status = link.status()
                     Log.engine.debug(
-                        "Level s=\(second): tap \(String(format: "%.1f", Decibels.decibels(fromLinear: Double(peaks.input))), privacy: .public) dBFS, output \(String(format: "%.1f", Decibels.decibels(fromLinear: Double(peaks.output))), privacy: .public) dBFS; delay \(status.delayFrames), underruns \(status.underrunCycles), discontinuities \(status.discontinuities)"
+                        "Level s=\(ticks / 10): tap \(String(format: "%.1f", Decibels.decibels(fromLinear: Double(peaks.input))), privacy: .public) dBFS, output \(String(format: "%.1f", Decibels.decibels(fromLinear: Double(peaks.output))), privacy: .public) dBFS; delay \(status.delayFrames), underruns \(status.underrunCycles), gaps \(status.gapCycles), discontinuities \(status.discontinuities)"
                     )
                 }
-                tick(second + 1)
+                tick()
             }
         }
         _ = session.renderState?.readDiagnosticPeaks()  // start a clean window
-        tick(1)
+        tick()
     }
 
     private func handle(_ signal: SessionSignal, sessionID: Int) {

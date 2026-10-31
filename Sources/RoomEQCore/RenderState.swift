@@ -19,13 +19,14 @@ import Synchronization
 
 /// Everything needed to build a `RenderState` (computed on a normal thread).
 public struct RenderConfiguration: Sendable {
-    /// Buffer layout of the aggregate device's INPUT buffer list.
+    /// Buffer layout of the INPUT buffer list holding the tap (the capture
+    /// aggregate's; used by `RenderKernel.render(input:)`).
     public var inputLayout: BufferListLayout
     /// Where the tap's left / right channels are in the input buffer list.
     /// For a mono tap both point at the same channel.
     public var tapLeft: ChannelLocation
     public var tapRight: ChannelLocation
-    /// Buffer layout of the aggregate device's OUTPUT buffer list.
+    /// Buffer layout of the output device's OUTPUT buffer list.
     public var outputLayout: BufferListLayout
     /// Current device sample rate (Hz).
     public var sampleRate: Double

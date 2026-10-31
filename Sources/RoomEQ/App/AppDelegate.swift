@@ -1,12 +1,13 @@
 // Application lifecycle: owns the controller and guarantees clean shutdown.
 //
-// Clean shutdown = AudioDeviceStop + destroy the IOProc, the aggregate
-// device and the tap, so tapped apps are immediately audible again.
+// Clean shutdown = AudioDeviceStop + destroy both IOProcs, the capture
+// aggregate and the tap, so tapped apps are immediately audible again.
 // It happens on:
 //   - Quit (applicationWillTerminate, i.e. NSApplication.willTerminateNotification);
 //   - SIGINT (Ctrl-C in Terminal) and SIGTERM (kill, logout).
 // On a crash or SIGKILL nothing can run: we rely on the HAL destroying the
-// private tap/aggregate when the process dies (see LeftoverCleanup.swift).
+// private tap/aggregate when the process dies (see AggregateDevice.swift);
+// our IOProc on the output device dies with the process.
 
 import AppKit
 

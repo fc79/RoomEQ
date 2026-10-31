@@ -109,6 +109,17 @@ enum DeviceIO {
             "Impostazione dimensione buffer")
     }
 
+    /// `kAudioDevicePropertyUsesVariableBufferFrameSizes`: the largest block
+    /// the device may pass when its block sizes vary (nil if not reported).
+    static func variableBufferFrameSize(_ device: AudioObjectID) -> Int? {
+        let address = AudioObject.address(kAudioDevicePropertyUsesVariableBufferFrameSizes)
+        guard AudioObject.has(device, address),
+            let frames: UInt32 = try? AudioObject.read(device, address, initial: UInt32(0), "Buffer variabile"),
+            frames > 0
+        else { return nil }
+        return Int(frames)
+    }
+
     /// `kAudioDevicePropertyLatency` in frames; 0 (with a warning) if unreadable.
     static func latency(_ device: AudioObjectID, scope: AudioObjectPropertyScope) -> Int {
         frames(device, kAudioDevicePropertyLatency, scope, "device latency")

@@ -125,8 +125,6 @@ final class AudioEngineController {
     /// stop, failure). A start completing with an old generation is stopped.
     @ObservationIgnored private var launchGeneration = 0
     @ObservationIgnored private var meterTimer: Timer?
-    @ObservationIgnored private var lastMeterPoll: ContinuousClock.Instant?
-    @ObservationIgnored private var watchdog = InvalidCycleWatchdog(tripSeconds: 0.5)
     @ObservationIgnored private var deviceListeners: [PropertyListener] = []
     @ObservationIgnored private var lastSampleRate: Double?
     @ObservationIgnored private var automaticRestarts: [Date] = []
@@ -282,7 +280,9 @@ final class AudioEngineController {
     private func followSystemOutputIfNeeded() {
         guard isRunning, let system = systemOutputDevice, let active = activeOutputDevice, system.uid != active.uid
         else { return }
-        automaticRestart(reason: "uscita di macOS ora \(system.name)")
+        // A deliberate change (the user picked another output in macOS):
+        // not counted toward the automatic-restart limit.
+        restartIfActive(reason: "uscita di macOS ora \(system.name)")
     }
 
     private func configuration(for device: OutputDeviceInfo) -> EngineConfiguration {
@@ -401,11 +401,18 @@ final class AudioEngineController {
         case .latencyChanged(let sessionID, let latency):
             guard sessionID == activeSessionID else { return }
             self.latency = latency
+
+        case .fatal(let sessionID, let message):
+            // The engine already stopped the session (apps unmuted).
+            guard sessionID == activeSessionID else { return }
+            fail(message)
         }
     }
 
-    /// Restart requested by the system (format/layout change, IO problem,
-    /// device change). At most 3 in 10 s, to avoid restart loops.
+    /// Restart requested by the system (format/layout change, IO problem).
+    /// At most 3 in 10 s, to avoid restart loops. User-initiated restarts
+    /// (buffer, exclusions, macOS output change) call `restartIfActive`
+    /// directly and are not counted.
     private func automaticRestart(reason: String) {
         let now = Date()
         automaticRestarts = automaticRestarts.filter { now.timeIntervalSince($0) < 10 } + [now]
@@ -439,8 +446,6 @@ final class AudioEngineController {
 
     private func startMeters() {
         stopMeters()
-        watchdog.reset()
-        lastMeterPoll = ContinuousClock.now
         let timer = Timer(timeInterval: 1.0 / 25.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.pollMeters() }
         }
@@ -451,31 +456,15 @@ final class AudioEngineController {
     private func stopMeters() {
         meterTimer?.invalidate()
         meterTimer = nil
-        lastMeterPoll = nil
         meters = .silent
     }
 
+    /// UI refresh only. Health, underruns and drift are watched by the
+    /// engine itself (EngineSession.maintenanceTick), which stops the session
+    /// and reports `.fatal` when RoomEQ cannot deliver audio.
     private func pollMeters() {
         guard let renderState, let link else { return }
-        let snapshot = renderState.readMeters()
-        let ring = link.status()
-        meters = snapshot
-        ringStatus = ring
-
-        // Watchdog: if most output cycles are silenced (buffer layout no
-        // longer matches, or the capture stopped feeding the ring) for
-        // 0.5 s, rebuild the engine.
-        let now = ContinuousClock.now
-        let elapsed = lastMeterPoll.map { (now - $0) / .seconds(1) } ?? 0
-        lastMeterPoll = now
-        if watchdog.update(
-            renderedCycles: snapshot.renderedCycles, invalidCycles: snapshot.invalidCycles &+ ring.underrunCycles,
-            elapsed: elapsed)
-        {
-            Log.app.error(
-                "Watchdog: \(snapshot.invalidOutputCycles) invalid output cycles, \(ring.underrunCycles) underruns; restarting"
-            )
-            automaticRestart(reason: "audio non elaborabile")
-        }
+        meters = renderState.readMeters()
+        ringStatus = link.status()
     }
 }

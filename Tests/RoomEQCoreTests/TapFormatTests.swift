@@ -3,23 +3,37 @@ import Testing
 
 @Suite("Tap format helpers")
 struct TapFormatTests {
-    @Test func stereoPairSelection() {
-        #expect(TapChannelSelection.stereoPair(tapChannels: 1, preferredStereo: nil) == (0, 0))
-        #expect(TapChannelSelection.stereoPair(tapChannels: 2, preferredStereo: nil) == (0, 1))
-        #expect(TapChannelSelection.stereoPair(tapChannels: 2, preferredStereo: (1, 2)) == (0, 1))
-        // Quantum: 10-channel tap, preferred stereo 1/2 or 3/4.
-        #expect(TapChannelSelection.stereoPair(tapChannels: 10, preferredStereo: (1, 2)) == (0, 1))
-        #expect(TapChannelSelection.stereoPair(tapChannels: 10, preferredStereo: (3, 4)) == (2, 3))
-        // Invalid preferences fall back to the first two channels.
-        #expect(TapChannelSelection.stereoPair(tapChannels: 10, preferredStereo: (11, 12)) == (0, 1))
-        #expect(TapChannelSelection.stereoPair(tapChannels: 10, preferredStereo: (2, 2)) == (0, 1))
+    @Test func sourceInSingleStream() throws {
+        // Quantum: one 10-channel output stream, preferred 1/2.
+        #expect(try TapSourceSelection.locate(preferred: (1, 2), streamChannelCounts: [10]).get()
+            == TapSource(stream: 0, left: 0, right: 1))
+        #expect(try TapSourceSelection.locate(preferred: (3, 4), streamChannelCounts: [10]).get()
+            == TapSource(stream: 0, left: 2, right: 3))
+        // No preference reported -> 1/2.
+        #expect(try TapSourceSelection.locate(preferred: nil, streamChannelCounts: [2]).get()
+            == TapSource(stream: 0, left: 0, right: 1))
     }
 
-    @Test func preferredChannelsRelativeToStream() {
-        // Device with two 2-channel streams; preferred 3/4 are channels 1/2 of stream 1.
-        let within = TapChannelSelection.preferredWithinStream((3, 4), streamFirstChannel: 3)
-        #expect(within.map { [$0.0, $0.1] } == [1, 2])
-        #expect(TapChannelSelection.preferredWithinStream(nil, streamFirstChannel: 1) == nil)
+    @Test func sourceInSecondStream() throws {
+        // Two 2-channel streams, preferred 3/4 -> stream 1, channels 0/1.
+        #expect(try TapSourceSelection.locate(preferred: (3, 4), streamChannelCounts: [2, 2]).get()
+            == TapSource(stream: 1, left: 0, right: 1))
+    }
+
+    @Test func refusesSplitOrInvalidPairs() {
+        // L and R in different (mono) streams: refused, never duplicated.
+        if case .success = TapSourceSelection.locate(preferred: (1, 2), streamChannelCounts: [1, 1]) {
+            Issue.record("must refuse L/R in different streams")
+        }
+        if case .success = TapSourceSelection.locate(preferred: (2, 3), streamChannelCounts: [2, 2]) {
+            Issue.record("must refuse L/R in different streams")
+        }
+        if case .success = TapSourceSelection.locate(preferred: (11, 12), streamChannelCounts: [10]) {
+            Issue.record("must refuse out-of-range channels")
+        }
+        if case .success = TapSourceSelection.locate(preferred: (1, 1), streamChannelCounts: [2]) {
+            Issue.record("must refuse L == R")
+        }
     }
 
     @Test func formatText() {
@@ -37,16 +51,5 @@ struct TapFormatTests {
                 + "RoomEQ non converte la frequenza, quindi non si avvia.")
         #expect(SampleRateGuard.violation(tapRate: 44100, deviceRate: 44100, captureRate: 48000) != nil)
         #expect(SampleRateGuard.violation(tapRate: 0, deviceRate: 44100, captureRate: 44100) != nil)
-    }
-
-    @Test func splitLatencyComponents() {
-        // Quantum at 64: delay 220 frames, safety 17 + 11, device latency 32.
-        let components = LatencyComponents.split(
-            delayFrames: 220, tapExtraFrames: 0, tapStreamFrames: 0, captureSafetyOffsetFrames: 17,
-            bufferFrames: 64, outputSafetyOffsetFrames: 11, outputDeviceFrames: 32, outputStreamFrames: 0)
-        let latency = LatencyBreakdown(components: components, sampleRate: 44100)
-        #expect(components.ringFrames == 220 - 17 - 128 - 11)
-        #expect(latency.totalFrames == 220 + 32)
-        #expect(latency.summary.hasPrefix("Stima 5.7 ms"))
     }
 }

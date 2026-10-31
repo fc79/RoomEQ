@@ -191,7 +191,8 @@ struct MenuPanelView: View {
                 if let frames = controller.ringDelayFrames, let ms = controller.ringDelayMilliseconds {
                     Text("Ritardo anello: \(frames) frame (\(Format.oneDecimal(ms)) ms)")
                 }
-                Text("Underrun: \(ring.underrunCycles) · sovraccarichi uscita \(meters.overloads) / cattura \(ring.captureOverloads)")
+                Text("Underrun \(ring.underrunCycles) · buchi \(ring.gapCycles) · sovrascritti \(ring.overwrittenCycles)")
+                Text("Sovraccarichi: uscita \(meters.overloads) · cattura \(ring.captureOverloads)")
                 Text(
                     "Ingresso L \(Self.peakText(meters.inputPeakLeft)) · R \(Self.peakText(meters.inputPeakRight))\n"
                         + "Uscita L \(Self.peakText(meters.outputPeakLeft)) · R \(Self.peakText(meters.outputPeakRight))"

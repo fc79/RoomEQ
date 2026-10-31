@@ -3,25 +3,31 @@ import Testing
 
 @Suite("Latency math")
 struct LatencyTests {
-    @Test func breakdownAt44100() {
+    @Test func splitBreakdownDoesNotDoubleCountTheDelay() {
+        // Quantum at 64: delay 220 frames (already contains safeties and
+        // buffers), device latency 32, no tap or stream latency.
         let components = LatencyComponents(
-            inputTapExtraFrames: 10, inputSafetyOffsetFrames: 20, inputStreamFrames: 14,
-            bufferFrames: 128,
-            outputDeviceFrames: 100, outputSafetyOffsetFrames: 32, outputStreamFrames: 9)
+            delayFrames: 220, outputDeviceFrames: 32, bufferFrames: 64, captureSafetyOffsetFrames: 17,
+            outputSafetyOffsetFrames: 11)
         let latency = LatencyBreakdown(components: components, sampleRate: 44100)
+        #expect(latency.roomEQFrames == 220)
+        #expect(latency.outputFrames == 32)
+        #expect(latency.totalFrames == 252)
+        #expect(abs(latency.totalMilliseconds - 252 / 44.1) < 1e-9)
+        #expect(latency.summary.hasPrefix("Stima 5.7 ms (RoomEQ 5.0 + uscita 0.7)"))
+    }
 
-        #expect(latency.inputFrames == 44)
-        #expect(latency.bufferingFrames == 256)
-        #expect(latency.outputFrames == 141)
-        #expect(latency.totalFrames == 441)
-        // 441 frames at 44.1 kHz is exactly 10 ms.
-        #expect(abs(latency.totalMilliseconds - 10.0) < 1e-9)
-        #expect(abs(latency.bufferingMilliseconds - 256.0 / 44.1) < 1e-9)
-        #expect(latency.summary.hasPrefix("Stima 10.0 ms"))
+    @Test func tapPathLatencyIsAddedAndNothingIsNegative() {
+        let latency = LatencyBreakdown(
+            components: LatencyComponents(delayFrames: 100, tapExtraFrames: 5, tapStreamFrames: 7,
+                                          outputDeviceFrames: -3, outputStreamFrames: 639),
+            sampleRate: 44100)
+        #expect(latency.roomEQFrames == 112)
+        #expect(latency.outputFrames == 639)
     }
 
     @Test func unknownSampleRateGivesZero() {
-        let latency = LatencyBreakdown(components: LatencyComponents(bufferFrames: 64), sampleRate: 0)
+        let latency = LatencyBreakdown(components: LatencyComponents(delayFrames: 64), sampleRate: 0)
         #expect(latency.totalMilliseconds == 0)
     }
 }
