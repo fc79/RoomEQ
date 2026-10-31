@@ -44,6 +44,35 @@ enum DeviceStreams {
         }
     }
 
+    /// Restricts which INPUT streams `ioProc` receives on `device`
+    /// (`kAudioDevicePropertyIOProcStreamUsage`).
+    static func setInputStreamUsage(device objectID: AudioObjectID, ioProc: AudioDeviceIOProcID, enabled: [Bool]) throws {
+        var address = AudioObject.address(kAudioDevicePropertyIOProcStreamUsage, kAudioObjectPropertyScopeInput)
+        var size: UInt32 = 0
+        try AudioObject.check(
+            AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &size), "Lettura uso stream (dimensione)")
+        let headerSize = MemoryLayout<AudioHardwareIOProcStreamUsage>.offset(of: \.mStreamIsOn) ?? 12
+        let byteCount = max(Int(size), headerSize + enabled.count * MemoryLayout<UInt32>.size)
+        let raw = UnsafeMutableRawPointer.allocate(
+            byteCount: byteCount, alignment: MemoryLayout<AudioHardwareIOProcStreamUsage>.alignment)
+        defer { raw.deallocate() }
+        raw.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+        let usage = raw.assumingMemoryBound(to: AudioHardwareIOProcStreamUsage.self)
+        usage.pointee.mIOProc = unsafeBitCast(ioProc, to: UnsafeMutableRawPointer.self)
+        var getSize = UInt32(byteCount)
+        try AudioObject.check(
+            AudioObjectGetPropertyData(objectID, &address, 0, nil, &getSize, raw), "Lettura uso stream")
+
+        let streamCount = Int(usage.pointee.mNumberStreams)
+        guard streamCount == enabled.count else {
+            throw EngineError("Uso stream: \(streamCount) stream riportati, \(enabled.count) attesi")
+        }
+        let flags = (raw + headerSize).assumingMemoryBound(to: UInt32.self)
+        for index in 0..<streamCount { flags[index] = enabled[index] ? 1 : 0 }
+        try AudioObject.check(
+            AudioObjectSetPropertyData(objectID, &address, 0, nil, getSize, raw), "Impostazione uso stream")
+    }
+
     /// `kAudioStreamPropertyLatency` in frames; 0 (with a warning) if unreadable.
     static func latency(ofStream stream: AudioStreamID) -> Int {
         do {
@@ -72,6 +101,53 @@ final class AggregateDevice {
 
     deinit {
         if !destroyed { Log.engine.fault("AggregateDevice released without destroy()") }
+    }
+
+    /// Variants of a capture-only aggregate (tap, no sub-devices), for the
+    /// split experiment.
+    enum TapOnlyVariant: String, CaseIterable {
+        /// Only the tap.
+        case tapsOnly = "a"
+        /// Only the tap + kAudioAggregateDeviceClockDeviceKey = device UID.
+        case clockDevice = "b"
+        /// Only the tap + main sub-device key = device UID (not listed as a
+        /// sub-device).
+        case mainKeyOnly = "c"
+    }
+
+    /// Private aggregate containing ONLY `tapUID` (drift compensation off).
+    /// The tapped device is never listed as a sub-device.
+    static func createTapOnly(tapUID: String, deviceUID: String, variant: TapOnlyVariant) throws -> AggregateDevice {
+        let uid = "\(AudioDevices.ownAggregateUIDPrefix).capture.\(UUID().uuidString)"
+        var description: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "\(deviceName) Capture",
+            kAudioAggregateDeviceUIDKey: uid,
+            kAudioAggregateDeviceIsPrivateKey: 1,
+            kAudioAggregateDeviceIsStackedKey: 0,
+            kAudioAggregateDeviceTapAutoStartKey: 0,
+            kAudioAggregateDeviceSubDeviceListKey: [[String: Any]](),
+            kAudioAggregateDeviceTapListKey: [
+                [kAudioSubTapUIDKey: tapUID, kAudioSubTapDriftCompensationKey: 0]
+            ],
+        ]
+        switch variant {
+        case .tapsOnly: break
+        case .clockDevice: description[kAudioAggregateDeviceClockDeviceKey] = deviceUID
+        case .mainKeyOnly: description[kAudioAggregateDeviceMainSubDeviceKey] = deviceUID
+        }
+        var id = AudioObjectID(kAudioObjectUnknown)
+        try AudioObject.check(
+            AudioHardwareCreateAggregateDevice(description as CFDictionary, &id),
+            "Creazione aggregato di sola cattura (variante \(variant.rawValue))")
+        Log.engine.info("Capture-only aggregate \(id) created (variant \(variant.rawValue, privacy: .public))")
+        return AggregateDevice(objectID: id, uid: uid)
+    }
+
+    /// Active sub-devices (AudioObjectIDs); empty for a tap-only aggregate.
+    func activeSubDeviceIDs() -> [AudioObjectID] {
+        (try? AudioObject.readArray(
+            objectID, AudioObject.address(kAudioAggregateDevicePropertyActiveSubDeviceList),
+            element: AudioObjectID(kAudioObjectUnknown), "Sub-device attivi")) ?? []
     }
 
     /// - Parameter driftCompensation: resample the tap to follow the main
@@ -186,30 +262,7 @@ final class AggregateDevice {
     /// inputs so they are not transferred (and, hopefully, so the system
     /// doesn't consider us a microphone user — unverified, see report).
     func setInputStreamUsage(ioProc: AudioDeviceIOProcID, enabled: [Bool]) throws {
-        var address = AudioObject.address(kAudioDevicePropertyIOProcStreamUsage, kAudioObjectPropertyScopeInput)
-        var size: UInt32 = 0
-        try AudioObject.check(
-            AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &size), "Lettura uso stream (dimensione)")
-        let headerSize = MemoryLayout<AudioHardwareIOProcStreamUsage>.offset(of: \.mStreamIsOn) ?? 12
-        let byteCount = max(Int(size), headerSize + enabled.count * MemoryLayout<UInt32>.size)
-        let raw = UnsafeMutableRawPointer.allocate(
-            byteCount: byteCount, alignment: MemoryLayout<AudioHardwareIOProcStreamUsage>.alignment)
-        defer { raw.deallocate() }
-        raw.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
-        let usage = raw.assumingMemoryBound(to: AudioHardwareIOProcStreamUsage.self)
-        usage.pointee.mIOProc = unsafeBitCast(ioProc, to: UnsafeMutableRawPointer.self)
-        var getSize = UInt32(byteCount)
-        try AudioObject.check(
-            AudioObjectGetPropertyData(objectID, &address, 0, nil, &getSize, raw), "Lettura uso stream")
-
-        let streamCount = Int(usage.pointee.mNumberStreams)
-        guard streamCount == enabled.count else {
-            throw EngineError("Uso stream: \(streamCount) stream riportati, \(enabled.count) attesi")
-        }
-        let flags = (raw + headerSize).assumingMemoryBound(to: UInt32.self)
-        for index in 0..<streamCount { flags[index] = enabled[index] ? 1 : 0 }
-        try AudioObject.check(
-            AudioObjectSetPropertyData(objectID, &address, 0, nil, getSize, raw), "Impostazione uso stream")
+        try DeviceStreams.setInputStreamUsage(device: objectID, ioProc: ioProc, enabled: enabled)
     }
 
     func destroy() {

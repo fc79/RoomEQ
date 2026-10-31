@@ -228,7 +228,25 @@ struct MenuPanelView: View {
                 .disabled(!controller.canRunTapDiagnostic)
             if controller.isRunningTapDiagnostic { ProgressView().controlSize(.small) }
         }
-        if !controller.canRunTapDiagnostic && !controller.isRunningTapDiagnostic {
+        HStack(spacing: 6) {
+            Button("Esegui esperimento (opzione 1)") { controller.runSplitExperiment() }
+                .controlSize(.small)
+                .disabled(!controller.canRunSplitExperiment)
+            if controller.isRunningSplitExperiment { ProgressView().controlSize(.small) }
+        }
+        if let summary = controller.splitExperimentSummary {
+            Text(summary)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if !controller.isRunningSplitExperiment {
+                Text("Rapporto completo: ~/Library/Logs/RoomEQ/split-experiment.txt")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        if !controller.canRunTapDiagnostic && !controller.isRunningTapDiagnostic && !controller.isRunningSplitExperiment {
             Text("Ferma RoomEQ per eseguire la diagnostica")
                 .font(.caption2)
                 .foregroundStyle(.secondary)

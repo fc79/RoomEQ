@@ -113,8 +113,18 @@ final class AudioEngineController {
     private(set) var isRunningTapDiagnostic = false
     /// Compact result of the last diagnostic (one line per configuration).
     private(set) var tapDiagnosticSummary: String?
-    /// The diagnostic only runs with the engine stopped.
-    var canRunTapDiagnostic: Bool { (state == .stopped || state == .failed) && !isRunningTapDiagnostic }
+    /// Diagnostics only run with the engine stopped, one at a time.
+    var canRunTapDiagnostic: Bool {
+        (state == .stopped || state == .failed) && !isRunningTapDiagnostic && !isRunningSplitExperiment
+    }
+    var canRunSplitExperiment: Bool { canRunTapDiagnostic }
+
+    /// True while the split experiment runs (~30 s per output device).
+    private(set) var isRunningSplitExperiment = false
+    /// Progress while running, then one summary line per device.
+    private(set) var splitExperimentSummary: String?
+    /// Where the full experiment report is written.
+    var splitExperimentReportPath: String { SplitExperiment.reportURL.path }
     /// Where the full diagnostic report is written.
     var tapDiagnosticReportPath: String { TapDiagnostics.reportURL.path }
 
@@ -173,7 +183,9 @@ final class AudioEngineController {
     // MARK: Start / stop
 
     func start() {
-        guard state == .stopped || state == .failed, !isRunningTapDiagnostic else { return }
+        guard state == .stopped || state == .failed, !isRunningTapDiagnostic, !isRunningSplitExperiment else {
+            return
+        }
         automaticRestarts.removeAll()
         audioCapturePermissionLikelyDenied = false
         lastError = nil
@@ -303,6 +315,26 @@ final class AudioEngineController {
                 }
             }
         }
+    }
+
+    /// Experiment "option 1": device tap in a tap-only aggregate + IOProc on
+    /// the physical device (silence), per output device. Nothing is muted or
+    /// routed. Only with the engine stopped.
+    func runSplitExperiment() {
+        guard canRunSplitExperiment else { return }
+        isRunningSplitExperiment = true
+        splitExperimentSummary = "Esperimento in corso… riproduci musica (es. Spotify)"
+        engine.runSplitExperiment(
+            excludedBundleIDs: excludedBundleIDs,
+            progress: { [weak self] text in self?.splitExperimentSummary = text },
+            completion: { [weak self] result in
+                guard let self else { return }
+                self.isRunningSplitExperiment = false
+                switch result {
+                case .success(let summary): self.splitExperimentSummary = summary
+                case .failure(let error): self.splitExperimentSummary = error.localizedDescription
+                }
+            })
     }
 
     /// Changes the capture mode (persisted). Restarts the engine if running.

@@ -81,6 +81,30 @@ enum AudioDevices {
         return id
     }
 
+    /// `kAudioDevicePropertyTransportType` (e.g. built-in, USB, aggregate, virtual).
+    static func transportType(of device: AudioObjectID) -> UInt32 {
+        (try? AudioObject.read(
+            device, AudioObject.address(kAudioDevicePropertyTransportType), initial: UInt32(0), "Tipo trasporto")) ?? 0
+    }
+
+    /// Output-capable physical devices: no aggregates (ours or others), no
+    /// virtual devices.
+    static func physicalOutputDevices() -> [OutputDeviceInfo] {
+        outputDevices().filter {
+            let transport = transportType(of: $0.objectID)
+            return transport != kAudioDeviceTransportTypeAggregate
+                && transport != kAudioDeviceTransportTypeAutoAggregate
+                && transport != kAudioDeviceTransportTypeVirtual
+        }
+    }
+
+    /// `kAudioDevicePropertyActualSampleRate` (measured), 0 if unavailable.
+    static func actualSampleRate(of device: AudioObjectID) -> Double {
+        (try? AudioObject.read(
+            device, AudioObject.address(kAudioDevicePropertyActualSampleRate), initial: Float64(0),
+            "Frequenza effettiva")) ?? 0
+    }
+
     /// UID of the system default output device (where apps play).
     static func defaultOutputDeviceUID() -> String? {
         defaultOutputDeviceID().flatMap(uid(of:))

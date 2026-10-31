@@ -123,6 +123,24 @@ final class AudioEngine: @unchecked Sendable {
         }
     }
 
+    /// Runs the split-architecture experiment (see SplitExperiment). Refused
+    /// while a session exists. `progress` and `completion` run on main.
+    func runSplitExperiment(
+        excludedBundleIDs: [String], progress: @escaping @MainActor (String) -> Void,
+        completion: @escaping @MainActor (Result<String, Error>) -> Void
+    ) {
+        queue.async { [self] in
+            guard session == nil else {
+                onMain { completion(.failure(EngineError("Ferma RoomEQ per eseguire l'esperimento"))) }
+                return
+            }
+            let summary = SplitExperiment.run(excludedBundleIDs: excludedBundleIDs) { text in
+                self.onMain { progress(text) }
+            }
+            onMain { completion(.success(summary)) }
+        }
+    }
+
     /// Recomputes latency (e.g. after the output pair moved to another stream).
     func refreshLatency() {
         queue.async { [self] in

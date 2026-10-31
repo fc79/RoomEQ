@@ -16,7 +16,7 @@ import RoomEQCore
 /// NULL in a non-optional Swift pointer would be undefined behaviour. This
 /// type has the identical C ABI, so we register it via `unsafeBitCast` and
 /// check the pointers like any optional.
-private typealias NullableIOProc = @convention(c) (
+typealias NullableIOProc = @convention(c) (
     AudioObjectID,
     UnsafePointer<AudioTimeStamp>?,
     UnsafePointer<AudioBufferList>?,
