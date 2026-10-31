@@ -13,16 +13,7 @@ import SwiftUI
 struct EQQuickRow: View {
     let controller: AudioEngineController
 
-    /// A preset switch waiting for the user's decision.
-    private struct PendingSwitch {
-        let target: EQPreset
-        /// Name of the preset with unsaved edits; nil = the sound is in no preset.
-        let activeName: String?
-        /// The target is the preset being edited: this only discards the edits.
-        let isRevert: Bool
-    }
-
-    @State private var pendingSwitch: PendingSwitch?
+    @Environment(ConfirmationPresenter.self) private var confirmations
     @State private var note: InlineNote?
 
     var body: some View {
@@ -39,27 +30,6 @@ struct EQQuickRow: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5)))
-        .alert(
-            "Modifiche non salvate",
-            isPresented: Binding(get: { pendingSwitch != nil }, set: { if !$0 { pendingSwitch = nil } }),
-            presenting: pendingSwitch
-        ) { pending in
-            if !pending.isRevert {
-                Button(pending.activeName == nil ? "Salva come nuovo preset e cambia" : "Salva e cambia") {
-                    saveThenApply(pending.target)
-                }
-            }
-            Button(pending.isRevert ? "Ripristina" : "Cambia senza salvare", role: .destructive) {
-                apply(pending.target)
-            }
-            Button("Annulla", role: .cancel) {}
-        } message: { pending in
-            if let name = pending.activeName {
-                Text("Le modifiche non salvate a «\(name)» andranno perse. Continuare?")
-            } else {
-                Text("Il suono attuale non è salvato in nessun preset e andrà perso. Puoi salvarlo come «\(controller.suggestedNewPresetName)». Continuare?")
-            }
-        }
     }
 
     // MARK: EQ on/off
@@ -128,13 +98,34 @@ struct EQQuickRow: View {
 
     private func requestSwitch(to preset: EQPreset) {
         note = nil
-        if controller.hasUnsavedChanges {
-            let active = controller.activePreset
-            pendingSwitch = PendingSwitch(
-                target: preset, activeName: active?.name, isRevert: active != nil && preset.id == active?.id)
-        } else if preset.id != controller.activePresetID {
-            apply(preset)
+        guard controller.hasUnsavedChanges else {
+            if preset.id != controller.activePresetID { apply(preset) }
+            return
         }
+        let active = controller.activePreset
+        var options: [InlineConfirmation.Option] = []
+        let message: String
+        if let active {
+            message = "Le modifiche non salvate a «\(active.name)» andranno perse. Continuare?"
+            if preset.id == active.id {
+                // Picking the preset being edited: only discards the edits.
+                options = [.destructive("Ripristina") { apply(preset) }]
+            } else {
+                options = [
+                    .standard("Salva e cambia") { saveThenApply(preset) },
+                    .destructive("Cambia senza salvare") { apply(preset) },
+                ]
+            }
+        } else {
+            message =
+                "Il suono attuale non è salvato in nessun preset e andrà perso. "
+                + "Puoi salvarlo come «\(controller.suggestedNewPresetName)». Continuare?"
+            options = [
+                .standard("Salva come nuovo preset e cambia") { saveThenApply(preset) },
+                .destructive("Cambia senza salvare") { apply(preset) },
+            ]
+        }
+        confirmations.present(InlineConfirmation(title: "Modifiche non salvate", message: message, options: options))
     }
 
     private func apply(_ preset: EQPreset) {

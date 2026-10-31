@@ -9,8 +9,7 @@ import UniformTypeIdentifiers
 struct ExclusionsView: View {
     let controller: AudioEngineController
 
-    /// An app waiting for the user's confirmation (its exclusion has a warning).
-    @State private var pendingExclusion: AppInfo?
+    @Environment(ConfirmationPresenter.self) private var confirmations
     @State private var note: InlineNote?
 
     var body: some View {
@@ -26,16 +25,6 @@ struct ExclusionsView: View {
             Text("RoomEQ è sempre escluso")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-        }
-        .alert(
-            pendingExclusion.map { "Escludere «\($0.name)»?" } ?? "",
-            isPresented: Binding(get: { pendingExclusion != nil }, set: { if !$0 { pendingExclusion = nil } }),
-            presenting: pendingExclusion
-        ) { app in
-            Button("Escludi") { add(app) }
-            Button("Annulla", role: .cancel) {}
-        } message: { app in
-            Text(controller.warningForExcluding(bundleID: app.bundleID) ?? "")
         }
     }
 
@@ -85,7 +74,7 @@ struct ExclusionsView: View {
             }
             ForEach(controller.candidateApps) { app in
                 Button {
-                    request(app)
+                    request(app, presenter: confirmations)
                 } label: {
                     Label {
                         Text(app.isPlayingAudio ? "\(app.name) · sta suonando" : app.name)
@@ -103,10 +92,13 @@ struct ExclusionsView: View {
     }
 
     /// Adds the app, after asking if the exclusion has a warning (e.g. REW).
-    private func request(_ app: AppInfo) {
+    private func request(_ app: AppInfo, presenter: ConfirmationPresenter) {
         note = nil
-        if controller.warningForExcluding(bundleID: app.bundleID) != nil {
-            pendingExclusion = app
+        if let warning = controller.warningForExcluding(bundleID: app.bundleID) {
+            presenter.present(
+                InlineConfirmation(
+                    title: "Escludere «\(app.name)»?", message: warning,
+                    options: [.standard("Escludi") { add(app) }]))
         } else {
             add(app)
         }
@@ -136,13 +128,16 @@ struct ExclusionsView: View {
         panel.allowedContentTypes = [.application]
         panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
         NSApp.activate()
+        // The environment must not be read inside the completion handler
+        // (the panel may have closed meanwhile): take what it needs now.
+        let presenter = confirmations
         panel.begin { [self] response in
             guard response == .OK, let url = panel.url else { return }
             guard let app = controller.appInfo(forBundleURL: url) else {
                 note = .error("Questa app non ha un identificativo valido: non posso escluderla.")
                 return
             }
-            request(app)
+            request(app, presenter: presenter)
         }
     }
 }

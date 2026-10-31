@@ -1,6 +1,7 @@
 // Preset management inside the EQ section: Salva, Salva come…, and the "…"
 // menu (Rinomina, Duplica, Elimina). Naming happens inline (no sheet: sheets
-// are unreliable inside a menu-bar window) with live validation.
+// and alerts open separate windows and close the menu-bar panel) with live
+// validation; the delete confirmation is the panel's inline card.
 //
 // Switching preset is in the quick row (EQQuickRow.swift).
 
@@ -18,7 +19,7 @@ struct PresetControls: View {
     @State private var editor: Editor?
     @State private var nameText = ""
     @State private var note: InlineNote?
-    @State private var pendingDelete: EQPreset?
+    @Environment(ConfirmationPresenter.self) private var confirmations
     @FocusState private var nameFieldFocused: Bool
 
     var body: some View {
@@ -32,16 +33,6 @@ struct PresetControls: View {
             guard let current = note, !current.isError else { return }
             try? await Task.sleep(for: .seconds(4))
             if note == current { note = nil }
-        }
-        .alert(
-            "Eliminare il preset?",
-            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-            presenting: pendingDelete
-        ) { preset in
-            Button("Elimina", role: .destructive) { delete(preset) }
-            Button("Annulla", role: .cancel) {}
-        } message: { preset in
-            Text(deleteMessage(for: preset))
         }
     }
 
@@ -68,7 +59,7 @@ struct PresetControls: View {
                 Button("Duplica") { duplicateActive() }
                     .disabled(controller.activePreset == nil)
                 Divider()
-                Button("Elimina…", role: .destructive) { pendingDelete = controller.activePreset }
+                Button("Elimina…", role: .destructive) { requestDelete() }
                     .disabled(controller.activePreset == nil || controller.presets.count < 2)
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -176,6 +167,15 @@ struct PresetControls: View {
         } catch {
             note = .error(error.localizedDescription)
         }
+    }
+
+    private func requestDelete() {
+        guard let preset = controller.activePreset else { return }
+        confirmations.present(
+            InlineConfirmation(
+                title: "Eliminare il preset «\(preset.name)»?",
+                message: deleteMessage(for: preset),
+                options: [.destructive("Elimina") { delete(preset) }]))
     }
 
     private func delete(_ preset: EQPreset) {

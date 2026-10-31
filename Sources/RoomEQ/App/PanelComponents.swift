@@ -1,6 +1,7 @@
 // Small reusable SwiftUI pieces and formatting helpers for the menu panel.
 
 import AppKit
+import Observation
 import SwiftUI
 
 // MARK: - Layout
@@ -104,6 +105,126 @@ extension NSImage {
         let copy = (self.copy() as? NSImage) ?? self
         copy.size = NSSize(width: side, height: side)
         return copy
+    }
+}
+
+// MARK: - Inline confirmations
+//
+// Confirmations are drawn INSIDE the panel (a card over the dimmed panel
+// content), never with `.alert` / `.confirmationDialog` / sheets: those open
+// separate windows, the menu-bar panel loses key status and closes, taking
+// them with it. Any view asks through the `ConfirmationPresenter` in the
+// environment (installed by MenuPanelView).
+
+/// A question with one or more actions; "Annulla" is always added.
+struct InlineConfirmation: Identifiable {
+    enum Role {
+        /// The expected answer: gets the Return key.
+        case standard
+        /// Throws something away: red, never the Return key.
+        case destructive
+    }
+
+    struct Option: Identifiable {
+        let id = UUID()
+        let title: String
+        let role: Role
+        let action: () -> Void
+    }
+
+    let id = UUID()
+    let title: String
+    let message: String
+    let options: [Option]
+
+    init(title: String, message: String = "", options: [Option]) {
+        self.title = title
+        self.message = message
+        self.options = options
+    }
+}
+
+extension InlineConfirmation.Option {
+    static func standard(_ title: String, action: @escaping () -> Void) -> Self {
+        Self(title: title, role: .standard, action: action)
+    }
+
+    static func destructive(_ title: String, action: @escaping () -> Void) -> Self {
+        Self(title: title, role: .destructive, action: action)
+    }
+}
+
+/// Holds the confirmation currently shown (at most one).
+@MainActor
+@Observable
+final class ConfirmationPresenter {
+    private(set) var current: InlineConfirmation?
+
+    /// Shows a confirmation (replacing a pending one).
+    func present(_ confirmation: InlineConfirmation) { current = confirmation }
+
+    func dismiss() { current = nil }
+
+    /// Closes the card, then runs the chosen action.
+    func choose(_ option: InlineConfirmation.Option) {
+        current = nil
+        option.action()
+    }
+}
+
+/// The card: title, message, one full-width button per answer.
+struct InlineConfirmationCard: View {
+    let confirmation: InlineConfirmation
+    let choose: (InlineConfirmation.Option) -> Void
+    let cancel: () -> Void
+
+    /// The first standard option answers to Return.
+    private var defaultOptionID: UUID? { confirmation.options.first { $0.role == .standard }?.id }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(confirmation.title)
+                .font(.headline)
+                .fixedSize(horizontal: false, vertical: true)
+            if !confirmation.message.isEmpty {
+                Text(confirmation.message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(spacing: 6) {
+                ForEach(confirmation.options) { option in
+                    if option.id == defaultOptionID {
+                        button(option).buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    } else {
+                        button(option).buttonStyle(.bordered)
+                    }
+                }
+                Button(action: cancel) {
+                    Text("Annulla").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut(.cancelAction)
+            }
+            .controlSize(.large)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(nsColor: .windowBackgroundColor))
+                .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.separator))
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isModal)
+    }
+
+    private func button(_ option: InlineConfirmation.Option) -> some View {
+        Button(role: option.role == .destructive ? .destructive : nil) {
+            choose(option)
+        } label: {
+            Text(option.title).frame(maxWidth: .infinity)
+        }
     }
 }
 

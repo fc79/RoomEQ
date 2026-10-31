@@ -3,7 +3,7 @@
 //
 // Changing the output device changes the macOS default output (RoomEQ
 // follows it). Changing the sample rate changes it for EVERY app using the
-// card, so it is confirmed first.
+// card, so it is confirmed first (inline card).
 
 import RoomEQCore
 import SwiftUI
@@ -11,8 +11,7 @@ import SwiftUI
 struct OutputSectionView: View {
     let controller: AudioEngineController
 
-    /// A sample rate waiting for the user's confirmation.
-    @State private var pendingRate: Double?
+    @Environment(ConfirmationPresenter.self) private var confirmations
 
     private var isBusy: Bool { controller.isChangingOutputDevice || controller.isChangingSampleRate }
 
@@ -22,18 +21,6 @@ struct OutputSectionView: View {
             channelsPicker
             sampleRatePicker
             bufferPicker
-        }
-        .alert(
-            pendingRate.map { "Cambiare la frequenza della scheda a \(Format.sampleRate($0))?" } ?? "",
-            isPresented: Binding(get: { pendingRate != nil }, set: { if !$0 { pendingRate = nil } }),
-            presenting: pendingRate
-        ) { rate in
-            Button("Cambia") { controller.setDeviceSampleRate(rate) }
-            Button("Annulla", role: .cancel) {}
-        } message: { _ in
-            Text(
-                "Vale per tutte le app, compreso Ableton."
-                    + (controller.isRunning ? " RoomEQ si riavvia per un istante." : ""))
         }
     }
 
@@ -106,7 +93,7 @@ struct OutputSectionView: View {
                     "Frequenza scheda",
                     selection: Binding<Double?>(
                         get: { currentRate },
-                        set: { if let rate = $0, rate != currentRate { pendingRate = rate } })
+                        set: { if let rate = $0, rate != currentRate { requestRate(rate) } })
                 ) {
                     if currentRate == nil { Text("—").tag(Double?.none) }
                     ForEach(controller.availableSampleRates, id: \.self) { rate in
@@ -121,6 +108,15 @@ struct OutputSectionView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func requestRate(_ rate: Double) {
+        confirmations.present(
+            InlineConfirmation(
+                title: "Cambiare la frequenza della scheda a \(Format.sampleRate(rate))?",
+                message: "Vale per tutte le app, compreso Ableton."
+                    + (controller.isRunning ? " RoomEQ si riavvia per un istante." : ""),
+                options: [.standard("Cambia") { [controller] in controller.setDeviceSampleRate(rate) }]))
     }
 
     /// The current rate as one of the offered values (nil when unknown).

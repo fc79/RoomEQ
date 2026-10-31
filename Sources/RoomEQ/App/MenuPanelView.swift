@@ -7,6 +7,7 @@
 //   scrollable: EQ, Uscita, Preset per uscita, App escluse, Impostazioni,
 //               Latenza e livelli, Diagnostica
 //   fixed:      footer (Esci)
+//   over all:   the inline confirmation card (see InlineConfirmation)
 // Each block is its own view file so blocks can be moved or reused.
 
 import AppKit
@@ -21,6 +22,8 @@ struct MenuPanelView: View {
     private static let scrollMaxHeight: CGFloat = 440
 
     @State private var scrollContentHeight: CGFloat = 400
+    /// Confirmations of every section are shown by the overlay below.
+    @State private var confirmations = ConfirmationPresenter()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -37,6 +40,9 @@ struct MenuPanelView: View {
         }
         .padding(14)
         .frame(width: 360)
+        .disabled(confirmations.current != nil)  // only the card answers
+        .overlay { confirmationOverlay }
+        .environment(confirmations)
         .onAppear(perform: refreshOnOpen)
         // The panel keeps its view between openings, so onAppear alone is
         // not enough: refresh whenever the panel window becomes key again
@@ -44,6 +50,24 @@ struct MenuPanelView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
             guard !(notification.object is NSOpenPanel) else { return }
             refreshOnOpen()
+        }
+    }
+
+    /// The confirmation card over the dimmed panel (no separate window).
+    @ViewBuilder
+    private var confirmationOverlay: some View {
+        if let confirmation = confirmations.current {
+            ZStack(alignment: .top) {
+                Color.black.opacity(0.25)
+                    .contentShape(Rectangle())
+                    .onTapGesture { confirmations.dismiss() }
+                InlineConfirmationCard(
+                    confirmation: confirmation,
+                    choose: { confirmations.choose($0) },
+                    cancel: { confirmations.dismiss() }
+                )
+                .padding(14)
+            }
         }
     }
 

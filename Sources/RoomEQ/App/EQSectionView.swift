@@ -14,8 +14,7 @@ struct EQSectionView: View {
     let controller: AudioEngineController
 
     @State private var importWarningsExpanded = false
-    /// Asking before an import replaces unsaved work.
-    @State private var confirmImport = false
+    @Environment(ConfirmationPresenter.self) private var confirmations
 
     var body: some View {
         PanelSection(title: "EQ") {
@@ -28,13 +27,6 @@ struct EQSectionView: View {
             EQBandsList(controller: controller)
             importBlock
             filterWarningsBlock
-        }
-        .alert("Importare da REW?", isPresented: $confirmImport) {
-            Button("Scegli il file…", role: .destructive) { chooseREWFile() }
-            Button("Annulla", role: .cancel) {}
-        } message: {
-            Text(controller.activePreset.map { "I filtri importati sostituiscono il suono attuale: le modifiche non salvate a «\($0.name)» andranno perse." }
-                ?? "I filtri importati sostituiscono il suono attuale, che non è salvato in nessun preset e andrà perso.")
         }
     }
 
@@ -94,7 +86,7 @@ struct EQSectionView: View {
             HStack(spacing: 8) {
                 Button("Importa da REW…") {
                     // Unsaved work is never replaced without asking.
-                    if controller.hasUnsavedChanges { confirmImport = true } else { chooseREWFile() }
+                    if controller.hasUnsavedChanges { requestImport() } else { chooseREWFile() }
                 }
                     .disabled(controller.isImporting)
                 if controller.isImporting {
@@ -119,6 +111,17 @@ struct EQSectionView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func requestImport() {
+        let message =
+            controller.activePreset.map {
+                "I filtri importati sostituiscono il suono attuale: le modifiche non salvate a «\($0.name)» andranno perse."
+            } ?? "I filtri importati sostituiscono il suono attuale, che non è salvato in nessun preset e andrà perso."
+        confirmations.present(
+            InlineConfirmation(
+                title: "Importare da REW?", message: message,
+                options: [.destructive("Scegli il file…") { chooseREWFile() }]))
     }
 
     @ViewBuilder

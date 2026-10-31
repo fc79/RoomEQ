@@ -9,7 +9,7 @@ struct EQBandsList: View {
 
     /// The band whose editor is open (one at a time).
     @State private var editingID: EQBand.ID?
-    @State private var confirmReset = false
+    @Environment(ConfirmationPresenter.self) private var confirmations
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -32,17 +32,6 @@ struct EQBandsList: View {
             }
             buttons
         }
-        .confirmationDialog(
-            "Sostituire i filtri attuali con i 4 filtri iniziali della misura REW?",
-            isPresented: $confirmReset,
-            titleVisibility: .visible
-        ) {
-            Button("Ripristina", role: .destructive) {
-                editingID = nil
-                controller.resetToDefaultFilters()
-            }
-            Button("Annulla", role: .cancel) {}
-        }
     }
 
     private var buttons: some View {
@@ -60,7 +49,18 @@ struct EQBandsList: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            Button("Ripristina filtri iniziali") { confirmReset = true }
+            Button("Ripristina filtri iniziali") {
+                confirmations.present(
+                    InlineConfirmation(
+                        title: "Ripristinare i filtri iniziali?",
+                        message: "I filtri attuali saranno sostituiti con i 4 filtri iniziali della misura REW.",
+                        options: [
+                            .destructive("Ripristina") {
+                                editingID = nil
+                                controller.resetToDefaultFilters()
+                            }
+                        ]))
+            }
         }
     }
 }
