@@ -39,17 +39,67 @@ struct LatencyLevelsSectionView: View {
                     LevelMeterRow(channel: "L", peak: meters.outputPeakLeft)
                     LevelMeterRow(channel: "R", peak: meters.outputPeakRight)
                 }
-                if controller.clipStatus.isClipping {
-                    // Tap to reset (the UI step will redo this badge).
-                    Button { controller.resetClipIndicators() } label: { ClipBadge() }
-                        .buttonStyle(.plain)
-                        .help("Azzera l'indicatore di saturazione")
-                }
+                clipBadge
             }
+            clipExplanation
             ForEach(counters, id: \.self) { line in
                 Text(line)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: CLIP
+
+    /// Red "CLIP" badge; a click resets the indicator. When nothing clips it
+    /// stays in the layout, invisible and inert, so the meters don't move.
+    private var clipBadge: some View {
+        let isClipping = controller.clipStatus.isClipping
+        return Button { controller.resetClipIndicators() } label: { ClipBadge() }
+            .buttonStyle(.plain)
+            .help("Clic per azzerare")
+            .accessibilityLabel("Saturazione: clic per azzerare")
+            .opacity(isClipping ? 1 : 0)
+            .allowsHitTesting(isClipping)
+            .accessibilityHidden(!isClipping)
+    }
+
+    /// Why it clips: the EQ (with a preamp suggestion) and/or the source.
+    @ViewBuilder
+    private var clipExplanation: some View {
+        let clip = controller.clipStatus
+        if clip.isClipping {
+            VStack(alignment: .leading, spacing: 4) {
+                if clip.eqCausedClipping {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(
+                            clip.maxProcessingOverDecibels.map {
+                                "L'EQ supera 0 dB di \(Format.signedDecibels($0, plusSign: true))"
+                            } ?? "L'EQ supera 0 dB"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        if let suggested = controller.suggestedPreampForClipping {
+                            Button("Preamp a \(Format.signedDecibels(suggested))") {
+                                controller.setPreamp(suggested)
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                }
+                if clip.sourceClipping {
+                    Text(
+                        "Il segnale arriva già oltre 0 dB"
+                            + (clip.maxInputOverDecibels.map { " (\(Format.signedDecibels($0, plusSign: true)))" } ?? "")
+                            + " dall'app: non dipende da RoomEQ"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
@@ -79,6 +129,10 @@ struct DiagnosticsSectionView: View {
                         Text("Ritardo anello: \(frames) frame (\(Format.oneDecimal(ms)) ms)")
                     }
                     Text("Underrun \(ring.underrunCycles) · buchi \(ring.gapCycles) · sovrascritti \(ring.overwrittenCycles)")
+                    let clip = controller.clipStatus
+                    Text(
+                        "Clip: ingresso \(clip.inputClippedSamples) · EQ \(clip.processingClippedSamples) · uscita \(clip.outputClippedSamples)"
+                    )
                     Text("Sovraccarichi: uscita \(meters.overloads) · cattura \(ring.captureOverloads)")
                     Text(
                         "Ingresso L \(Self.peakText(meters.inputPeakLeft)) · R \(Self.peakText(meters.inputPeakRight))\n"
