@@ -11,10 +11,13 @@
 //
 // EQ (stage 3): the band list, preamp and EQ on/off live here, are saved
 // to UserDefaults on every change and loaded at launch (the user's REW
-// filters when nothing is saved). Every change of the band list is turned
-// into coefficients for the running session's sample rate (48 kHz while
-// stopped, for the curve) and handed to the audio thread, which switches
-// click-free. Every session start recomputes them for the actual rate.
+// filters when nothing is saved). Saves are debounced (0,5 s) and flushed on
+// quit. Unreadable saved data is backed up before anything overwrites it.
+// Every change of the band list is turned into coefficients for the running
+// session's sample rate (while stopped: the macOS default output's nominal
+// rate, or 48 kHz if unknown) and handed to the audio thread, where every
+// band ramps to its new parameters in 30 ms. Every session start recomputes
+// them for the actual rate.
 //
 // Invariant: there is never a running engine session the controller does
 // not know about. A session becomes "active" only when its start completes
@@ -128,9 +131,13 @@ final class AudioEngineController {
     /// The same messages in band order.
     private(set) var filterWarnings: [String] = []
     /// Sample rate the curve, the issues and the coefficients refer to:
-    /// the running session's, or `idleSampleRate` when stopped.
+    /// the running session's; when stopped, the nominal rate of the macOS
+    /// default output (read with the device list), or `idleSampleRate`.
     private(set) var eqSampleRate: Double = AudioEngineController.idleSampleRate
     static let idleSampleRate: Double = 48_000
+    /// Set at launch when the saved settings could not be read completely
+    /// (a backup copy was kept). Italian, for the UI; nil otherwise.
+    private(set) var settingsNotice: String?
 
     /// Result of the last REW import: warnings (skipped filters, other
     /// equaliser…), a one-line summary on success, an error otherwise.
@@ -164,15 +171,33 @@ final class AudioEngineController {
     @ObservationIgnored private let importQueue = DispatchQueue(
         label: "com.federicociapi.RoomEQ.import", qos: .userInitiated)
     @ObservationIgnored private var importGeneration = 0
+    @ObservationIgnored private var pendingSave: DispatchWorkItem?
     static let settingsKey = "EQSettings"
+    static let saveDelay: TimeInterval = 0.5
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
-        let settings = userDefaults.data(forKey: Self.settingsKey).flatMap(EQSettings.decode) ?? .defaults()
+        var settings = EQSettings.defaults()
+        var notice: String?
+        if let data = userDefaults.data(forKey: Self.settingsKey) {
+            let loaded = EQSettings.load(data)
+            settings = loaded.settings
+            if loaded.needsBackup {
+                // Keep the raw data BEFORE anything can save over it.
+                let key = "\(Self.settingsKey).backup.\(Int(Date().timeIntervalSince1970))"
+                userDefaults.set(data, forKey: key)
+                Log.app.error(
+                    "Saved EQ settings not fully readable (\(loaded.warnings.joined(separator: "; "), privacy: .public)); raw data kept in \(key, privacy: .public)")
+                notice = loaded.status == .unreadable
+                    ? "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho caricato i filtri iniziali."
+                    : "Parte delle impostazioni salvate non era leggibile: ne ho conservato una copia e ho caricato il resto."
+            }
+        }
         bands = settings.bands
         isEQEnabled = settings.isEQEnabled
         preampDecibels = settings.preampDecibels
         eqDesign = EQDesign(bands: settings.bands, sampleRate: Self.idleSampleRate)
+        settingsNotice = notice
         updateEQ()
     }
 
@@ -239,6 +264,7 @@ final class AudioEngineController {
     /// Synchronous shutdown for app termination and SIGINT/SIGTERM: returns
     /// once the IOProcs, the aggregate and the tap are destroyed.
     func shutdown() {
+        flushPendingSave()
         invalidatePendingLaunches()
         clearActiveSession()
         engine.stopSynchronously()
@@ -286,10 +312,9 @@ final class AudioEngineController {
 
     // MARK: EQ settings (all applied live and saved)
 
-    /// Preamp in dB, clamped to -24…0. Applied smoothly (15 ms ramp).
+    /// Preamp in dB, clamped to -24…0 (NaN ignored). Applied smoothly (15 ms ramp).
     func setPreamp(_ decibels: Double) {
-        let value = Preamp.clamp(decibels)
-        guard value != preampDecibels else { return }
+        guard let value = Preamp.clamp(decibels), value != preampDecibels else { return }
         preampDecibels = value
         renderState?.setPreamp(decibels: value)
         saveSettings()
@@ -303,15 +328,17 @@ final class AudioEngineController {
         saveSettings()
     }
 
-    /// Replaces the band with the same ID (unknown IDs are ignored).
-    /// Values are clamped to `EQBand.frequencyRange` / `gainRange` /
-    /// `qRange`. Fine for continuous slider drags: changes are coalesced by
-    /// the audio thread and the last one is always applied.
+    /// Updates the band with the same ID (unknown IDs are ignored). Only
+    /// the fields that differ from the current band are taken, each clamped
+    /// to `EQBand.frequencyRange` / `gainRange` / `qRange` (non-finite
+    /// values ignored); untouched fields stay as they are, even if out of
+    /// range (`EQBand.applyingEdit`). Fine for continuous slider drags: the
+    /// band ramps towards the latest value (30 ms).
     func setBand(_ band: EQBand) {
         guard let index = bands.firstIndex(where: { $0.id == band.id }) else { return }
-        let clamped = band.clamped()
-        guard bands[index] != clamped else { return }
-        bands[index] = clamped
+        let updated = bands[index].applyingEdit(band)
+        guard bands[index] != updated else { return }
+        bands[index] = updated
         bandsChanged()
     }
 
@@ -393,7 +420,10 @@ final class AudioEngineController {
 
     private func applyDeviceList(_ devices: [OutputDeviceInfo], systemOutput: OutputDeviceInfo?) {
         if devices != outputDevices { outputDevices = devices }
-        if systemOutput != systemOutputDevice { systemOutputDevice = systemOutput }
+        if systemOutput != systemOutputDevice {
+            systemOutputDevice = systemOutput
+            if renderState == nil { updateEQ() }  // idle rate may have changed
+        }
         followSystemOutputIfNeeded()
     }
 
@@ -412,7 +442,7 @@ final class AudioEngineController {
             outputPair: outputChannelPair,
             bufferFrames: bufferSize,
             excludedBundleIDs: excludedBundleIDs,
-            gain: Preamp.linearGain(decibels: preampDecibels),
+            gain: Preamp.linearGain(decibels: preampDecibels) ?? 1,
             bypass: !isEQEnabled,
             bands: bands,
             processListFallbackEnabled: !UserDefaults.standard.bool(forKey: "DisableProcessExclusionFallback"))
@@ -573,23 +603,46 @@ final class AudioEngineController {
         saveSettings()
     }
 
+    /// Rate used while stopped: the default output's nominal rate (so the
+    /// warnings match what the next start will use), else 48 kHz.
+    private var idleRate: Double { systemOutputDevice?.nominalSampleRate ?? Self.idleSampleRate }
+
     /// Recomputes the design for the current rate, hands it to the audio
     /// thread (if running) and refreshes the derived values.
     private func updateEQ() {
-        let rate = renderState?.configuration.sampleRate ?? Self.idleSampleRate
+        let rate = renderState?.configuration.sampleRate ?? idleRate
         let design = EQDesign(bands: bands, sampleRate: rate)
         renderState?.publishFilters(design.sections)
         if design != eqDesign { eqDesign = design }
         if rate != eqSampleRate { eqSampleRate = rate }
         if design.issues != bandIssues { bandIssues = design.issues }
         if design.warnings != filterWarnings { filterWarnings = design.warnings }
-        let boost = EQCurve.maximumBoostDecibels(design: design, bands: bands)
+        let boost = EQCurve.maximumBoostDecibels(design: design)
         if boost != maxCurveBoostDecibels { maxCurveBoostDecibels = boost }
         let suggested = EQCurve.suggestedPreampDecibels(forMaximumBoost: boost)
         if suggested != suggestedPreampDecibels { suggestedPreampDecibels = suggested }
     }
 
+    /// Debounced: writes 0,5 s after the last change (a slider drag makes
+    /// one write, not hundreds). `flushPendingSave` writes immediately.
     private func saveSettings() {
+        pendingSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.writeSettings() }
+        }
+        pendingSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.saveDelay, execute: work)
+    }
+
+    /// Writes a pending save now (called on quit).
+    func flushPendingSave() {
+        guard let work = pendingSave, !work.isCancelled else { return }
+        work.cancel()
+        writeSettings()
+    }
+
+    private func writeSettings() {
+        pendingSave = nil
         let settings = EQSettings(bands: bands, preampDecibels: preampDecibels, isEQEnabled: isEQEnabled)
         do {
             userDefaults.set(try settings.encoded(), forKey: Self.settingsKey)

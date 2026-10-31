@@ -18,19 +18,17 @@ public struct EQDesign: Sendable, Equatable {
     public let issues: [UUID: String]
     /// The same messages in band order, for a simple list in the UI.
     public let warnings: [String]
-
-    /// When the filter set changes, the incoming filter bank first runs
-    /// silently until a wrong starting state has decayed by this much,
-    /// then it is crossfaded in (see DSPProcessor.swift).
-    public static let warmupDecayDecibels = 40.0
-    /// Upper limit of that silent warm-up.
-    public static let maximumWarmupSeconds = 0.25
+    /// Coefficients and Fc (Hz) of the processed sections (stored once, so
+    /// curve evaluations don't rebuild them).
+    public let coefficients: [BiquadCoefficients]
+    public let centerFrequencies: [Double]
 
     public init(bands: [EQBand], sampleRate: Double) {
         self.sampleRate = sampleRate
         var sections: [FilterSection] = []
         var issues: [UUID: String] = [:]
         var warnings: [String] = []
+        var centers: [Double] = []
         for (index, band) in bands.enumerated() where band.isEnabled {
             let name = "Filtro \(index + 1)"
             if sections.count >= EQBand.maximumCount {
@@ -45,27 +43,26 @@ public struct EQDesign: Sendable, Equatable {
                 issues[band.id] = message
                 warnings.append(message)
             case .success(let coefficients):
-                let id = FilterSection.idParts(band.id)
-                sections.append(
-                    FilterSection(
-                        coefficients: coefficients, bandIDHigh: id.high, bandIDLow: id.low,
-                        settleFrames: Self.settleFrames(coefficients, sampleRate: sampleRate)))
+                sections.append(FilterSection(band: band, coefficients: coefficients))
+                centers.append(band.frequency)
             }
         }
         self.sections = sections
         self.issues = issues
         self.warnings = warnings
+        self.coefficients = sections.map(\.coefficients)
+        self.centerFrequencies = centers
     }
-
-    /// Coefficients of the processed sections.
-    public var coefficients: [BiquadCoefficients] { sections.map(\.coefficients) }
 
     // MARK: Validation
 
     public enum InvalidReason: Error, Equatable, Sendable {
         case notANumber
         case frequencyTooLow(minimum: Double)
+        /// Above 0.45 x the sample rate.
         case frequencyTooHigh(maximum: Double, sampleRate: Double)
+        /// Above the absolute limit (20 kHz), whatever the sample rate.
+        case frequencyAboveLimit(maximum: Double)
         case gainOutOfRange
         case qOutOfRange
         case unstable
@@ -78,7 +75,9 @@ public struct EQDesign: Sendable, Equatable {
                 return "frequenza sotto \(ItalianNumber.compact(minimum)) Hz"
             case .frequencyTooHigh(let maximum, let sampleRate):
                 return "frequenza troppo alta per \(ItalianNumber.compact(sampleRate / 1000, maxDecimals: 1)) kHz"
-                    + " (massimo \(ItalianNumber.compact(maximum, maxDecimals: 0)) Hz)"
+                    + " (massimo \(ItalianNumber.compact(maximum.rounded(.down), maxDecimals: 0)) Hz)"
+            case .frequencyAboveLimit(let maximum):
+                return "frequenza sopra \(ItalianNumber.compact(maximum, maxDecimals: 0)) Hz"
             case .gainOutOfRange:
                 return "guadagno fuori dall'intervallo "
                     + "\(ItalianNumber.compact(EQBand.gainRange.lowerBound))…+\(ItalianNumber.compact(EQBand.gainRange.upperBound)) dB"
@@ -99,9 +98,13 @@ public struct EQDesign: Sendable, Equatable {
         if band.frequency < EQBand.frequencyRange.lowerBound {
             return fail(.frequencyTooLow(minimum: EQBand.frequencyRange.lowerBound))
         }
-        if band.frequency >= maximumFrequency || band.frequency > EQBand.frequencyRange.upperBound {
-            return fail(.frequencyTooHigh(
-                maximum: min(maximumFrequency, EQBand.frequencyRange.upperBound), sampleRate: sampleRate))
+        // Fc may go up to the lower of the two limits, inclusive (the
+        // "massimo" in the message is allowed). Name the limit that applies.
+        let absolute = EQBand.frequencyRange.upperBound
+        if band.frequency > min(absolute, maximumFrequency) {
+            return fail(absolute <= maximumFrequency
+                ? .frequencyAboveLimit(maximum: absolute)
+                : .frequencyTooHigh(maximum: maximumFrequency, sampleRate: sampleRate))
         }
         if !EQBand.gainRange.contains(band.gain) { return fail(.gainOutOfRange) }
         if !EQBand.qRange.contains(band.q) { return fail(.qOutOfRange) }
@@ -111,19 +114,6 @@ public struct EQDesign: Sendable, Equatable {
         return .success(coefficients)
     }
 
-    /// Samples until an error in the state of this section has decayed by
-    /// `warmupDecayDecibels`: the slowest pole has radius r, so an error
-    /// shrinks by r per sample. Capped at `maximumWarmupSeconds`.
-    static func settleFrames(_ coefficients: BiquadCoefficients, sampleRate: Double) -> Int {
-        let cap = max(0, Int((maximumWarmupSeconds * sampleRate).rounded()))
-        let radius = coefficients.poleRadius
-        guard radius.isFinite, radius > 0 else { return 0 }  // FIR-like: settles in 2 samples
-        guard radius < 1 else { return cap }
-        let decay = warmupDecayDecibels / 20 * log(10)  // ln of the amplitude ratio
-        let frames = decay / -log(radius)
-        guard frames.isFinite else { return cap }
-        return min(cap, Int(frames.rounded(.up)))
-    }
 }
 
 // MARK: - Combined curve
@@ -133,13 +123,22 @@ public enum EQCurve {
     public static func responseDecibels(
         coefficients: [BiquadCoefficients], sampleRate: Double, frequencies: [Double]
     ) -> [Double] {
-        frequencies.map { frequency in
-            let phi = BiquadCoefficients.phi(frequency: frequency, sampleRate: sampleRate)
-            var squared = 1.0
-            for section in coefficients { squared *= section.magnitudeSquared(phi: phi) }
-            return squared > 0 ? 10 * log10(squared) : Decibels.floor
-        }
+        frequencies.map { response(coefficients, sampleRate: sampleRate, at: $0) }
     }
+
+    /// Combined response in dB at one frequency (no allocation).
+    @inline(__always)
+    static func response(_ coefficients: [BiquadCoefficients], sampleRate: Double, at frequency: Double) -> Double {
+        let phi = BiquadCoefficients.phi(frequency: frequency, sampleRate: sampleRate)
+        var squared = 1.0
+        for section in coefficients { squared *= section.magnitudeSquared(phi: phi) }
+        return squared > 0 ? 10 * log10(squared) : Decibels.floor
+    }
+
+    /// Grid for the maximum-boost search: from the lowest allowed Fc
+    /// (10 Hz) to 20 kHz, 2000 log-spaced points. Computed once.
+    public static let boostSearchFrequencies = logFrequencies(
+        from: EQBand.frequencyRange.lowerBound, to: 20_000, count: 2000)
 
     /// `count` frequencies spaced logarithmically from `low` to `high` (inclusive).
     public static func logFrequencies(from low: Double = 20, to high: Double = 20_000, count: Int = 1000) -> [Double] {
@@ -148,17 +147,19 @@ public enum EQCurve {
         return (0..<count).map { index in low * exp(ratio * Double(index) / Double(count - 1)) }
     }
 
-    /// Largest boost of the combined curve between 20 Hz and 20 kHz
-    /// (log grid plus every section's own Fc, where narrow peaks sit).
-    /// 0 when the curve never goes above 0 dB.
-    public static func maximumBoostDecibels(design: EQDesign, bands: [EQBand]) -> Double {
-        var frequencies = logFrequencies(count: 2000)
-        for band in bands where band.isEnabled && band.frequency > 20 && band.frequency < 20_000 {
-            frequencies.append(band.frequency)
+    /// Largest boost of the combined curve from 10 Hz (the lowest allowed
+    /// Fc) to 20 kHz: the log grid plus every processed band's own Fc, where
+    /// narrow peaks sit. 0 when the curve never goes above 0 dB.
+    public static func maximumBoostDecibels(design: EQDesign) -> Double {
+        guard !design.coefficients.isEmpty else { return 0 }
+        var best = 0.0
+        for frequency in boostSearchFrequencies {
+            best = max(best, response(design.coefficients, sampleRate: design.sampleRate, at: frequency))
         }
-        let response = responseDecibels(
-            coefficients: design.coefficients, sampleRate: design.sampleRate, frequencies: frequencies)
-        return max(0, response.max() ?? 0)
+        for frequency in design.centerFrequencies {
+            best = max(best, response(design.coefficients, sampleRate: design.sampleRate, at: frequency))
+        }
+        return best
     }
 
     /// Preamp that keeps the combined curve at or below 0 dB:
@@ -168,6 +169,6 @@ public enum EQCurve {
         guard boost.isFinite, boost > 0 else { return 0 }
         // The small tolerance keeps e.g. 3.2000000001 at 3.2 (not 3.3).
         let tenths = (boost * 10 - 1e-6).rounded(.up)
-        return Preamp.clamp(-tenths / 10)
+        return Preamp.clamp(-tenths / 10) ?? 0
     }
 }

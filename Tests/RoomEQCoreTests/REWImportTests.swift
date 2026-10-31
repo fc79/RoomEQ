@@ -107,13 +107,27 @@ struct REWImportTests {
     @Test func moreThan16PKFiltersKeepsTheFirst16() {
         var text = "Equaliser: Generic\n"
         for number in 1...20 {
-            text += "Filter \(number): \(number == 3 ? "OFF" : "ON")  PK  Fc \(100 + number) Hz  Gain -1.00 dB  Q 2.0\n"
+            text += "Filter \(number): ON  PK  Fc \(100 + number) Hz  Gain -1.00 dB  Q 2.0\n"
         }
         let result = REWImport.parse(text)
         #expect(result.bands.count == 16)
         #expect(result.bands.map(\.frequency) == (1...16).map { Double(100 + $0) })
-        #expect(result.bands[2].isEnabled == false)  // OFF filters count as bands
-        #expect(result.warnings == ["Più di 16 filtri PK: importati i primi 16, ignorati gli altri 4"])
+        #expect(result.warnings == ["Più di 16 filtri PK: importati 16 (i primi 16 attivi), ignorati gli altri 4 (17, 18, 19, 20)"])
+    }
+
+    /// Over the limit, OFF filters are dropped before any ON one.
+    @Test func moreThan16PKFiltersDropsOffOnesFirst() {
+        var text = "Equaliser: Generic\n"
+        for number in 1...18 {
+            let state = [2, 5, 17].contains(number) ? "OFF" : "ON"
+            text += "Filter \(number): \(state)  PK  Fc \(100 + number) Hz  Gain -1.00 dB  Q 2.0\n"
+        }
+        let result = REWImport.parse(text)
+        #expect(result.bands.count == 16)
+        // All 15 ON filters plus the first OFF one (2), in file order.
+        #expect(result.bands.map(\.frequency) == ([1, 2, 3, 4] + Array(6...16) + [18]).map { Double(100 + $0) })
+        #expect(result.bands.filter { !$0.isEnabled }.map(\.frequency) == [102])
+        #expect(result.warnings == ["Più di 16 filtri PK: importati 16 (tutti quelli attivi), ignorati 2 filtri disattivati (5, 17)"])
     }
 
     @Test func equaliserOtherThanGenericGivesAWarning() {
@@ -196,6 +210,11 @@ struct REWImportTests {
         #expect(REWImport.parseNumber("+3") == 3)
         #expect(REWImport.parseNumber("1.000,5") == 1000.5)
         #expect(REWImport.parseNumber("1,000.5") == 1000.5)
+        // Documented rule: a lone separator is always decimal, so "1.000"
+        // (Italian thousands notation) reads as 1,0. REW never writes
+        // thousands separators ("Fc 1000 Hz").
+        #expect(REWImport.parseNumber("1.000") == 1)
+        #expect(REWImport.parseNumber("1,000") == 1)
         for bad in ["", "abc", "nan", "inf", "-", "1e5", "0x10", ".", "--1", "1-", "1 2"] {
             #expect(REWImport.parseNumber(bad) == nil, "\(bad)")
         }
@@ -256,5 +275,7 @@ struct REWImportTests {
 
         let huge = try temporaryFile(Data(repeating: 0x41, count: REWImport.maximumFileSize + 1))
         #expect(throws: REWImportError.tooLarge(fileName: "filters.txt")) { try REWImport.load(url: huge) }
+        // A file without a usable size (endless): only limit + 1 bytes are read.
+        #expect(throws: REWImportError.tooLarge(fileName: "zero")) { try REWImport.load(url: URL(fileURLWithPath: "/dev/zero")) }
     }
 }

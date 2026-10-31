@@ -105,7 +105,8 @@ struct SeededGenerator: RandomNumberGenerator {
 
 /// Copyable views of the (non-copyable) processor state, for #expect.
 extension RenderStateHandle {
-    var eqIsTransitioning: Bool { pointer.pointee.processor.isTransitioning }
-    var eqActiveSections: [FilterSection] { pointer.pointee.processor.activeSections }
-    var eqCompletedTransitions: Int { pointer.pointee.processor.completedTransitions }
+    var eqIsRamping: Bool { pointer.pointee.processor.isRamping }
+    var eqActiveTargets: [FilterSection] { pointer.pointee.processor.activeTargets }
+    var eqAppliedSets: Int { pointer.pointee.processor.appliedSets }
+    var eqActiveSlotCount: Int { pointer.pointee.processor.activeSlotCount }
 }

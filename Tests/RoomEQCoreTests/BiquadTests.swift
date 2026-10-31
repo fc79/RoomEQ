@@ -90,8 +90,10 @@ struct EQDesignTests {
         let ids = defaultBands.map { FilterSection.idParts($0.id) }
         #expect(design.sections.map(\.bandIDHigh) == ids.map(\.high))
         #expect(design.sections.map(\.bandIDLow) == ids.map(\.low))
-        // High-Q bass bands need a long warm-up (but at most 250 ms).
-        #expect(design.sections.allSatisfy { $0.settleFrames > 0 && $0.settleFrames <= 12_000 })
+        // Ramp targets in log units.
+        #expect(abs(design.sections[0].logFrequency - log(58.8)) < 1e-12)
+        #expect(design.sections[0].gainDecibels == -9.9)
+        #expect(abs(design.sections[0].logQ - log(10.664)) < 1e-12)
     }
 
     @Test func disabledBandsAreLeftOutWithoutWarning() {
@@ -102,7 +104,18 @@ struct EQDesignTests {
         #expect(design.warnings.isEmpty)
     }
 
-    /// Fc >= 0.45 Fs: disabled with a warning, never NaN.
+    /// Fc > 0.45 Fs (or > 20 kHz): disabled with a warning naming the limit
+    /// that applies, never NaN. The stated maximum itself is allowed.
+    @Test func frequencyLimitsAreInclusiveAndNamedCorrectly() {
+        #expect(EQDesign(bands: [EQBand(frequency: 19_845, gain: -3, q: 2)], sampleRate: 44_100).sections.count == 1)
+        #expect(EQDesign(bands: [EQBand(frequency: 19_846, gain: -3, q: 2)], sampleRate: 44_100).sections.isEmpty)
+        #expect(EQDesign(bands: [EQBand(frequency: 20_000, gain: -3, q: 2)], sampleRate: 96_000).sections.count == 1)
+        let above = EQBand(frequency: 20_500, gain: -3, q: 2)
+        #expect(EQDesign(bands: [above], sampleRate: 96_000).warnings == ["Filtro 1: frequenza sopra 20000 Hz, disattivato"])
+        let low = EQDesign(bands: [EQBand(frequency: 15_000, gain: -3, q: 2)], sampleRate: 32_000)
+        #expect(low.warnings == ["Filtro 1: frequenza troppo alta per 32 kHz (massimo 14400 Hz), disattivato"])
+    }
+
     @Test func frequencyTooHighForTheSampleRateIsDisabledWithWarning() {
         let band = EQBand(frequency: 19_900, gain: -3, q: 2)  // 0.45 * 44100 = 19845
         let at44 = EQDesign(bands: [band], sampleRate: 44_100)
@@ -156,10 +169,15 @@ struct EQDesignTests {
 @Suite("EQ real-time filter")
 struct EQFilterProcessingTests {
     /// Requirement: a sine at Fc through the actual RT filter code reaches
-    /// the set gain in steady state (within 0.1 dB), per band and rate.
-    @Test(arguments: testRates)
+    /// the set gain in steady state (within 0.1 dB), per band and rate,
+    /// for the default cuts and for narrow/low boosts and cuts.
+    @Test(arguments: testRates + [192_000])
     func sineAtCentreReachesTheSetGain(sampleRate: Double) {
-        for band in defaultBands {
+        let extra = [
+            EQBand(frequency: 58.8, gain: 10, q: 14), EQBand(frequency: 58.8, gain: -10, q: 14),
+            EQBand(frequency: 20, gain: -10, q: 10), EQBand(frequency: 1000, gain: 6, q: 4),
+        ]
+        for band in defaultBands + extra {
             let design = EQDesign(bands: [band], sampleRate: sampleRate)
             var processor = DSPProcessor(sampleRate: sampleRate, maximumFrames: 512, sections: design.sections)
             let input = DSPTest.sine(frequency: band.frequency, sampleRate: sampleRate, count: Int(sampleRate * 2))

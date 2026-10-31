@@ -10,7 +10,7 @@
 //      layout recorded at start (else stay silent and count an invalid cycle);
 //   3. for each chunk: copy the tap's L/R into the dry scratch buffers
 //      (input peak); take a new EQ filter set from the mailbox if one is
-//      waiting and no bank switch is running; run the EQ (DSPProcessor)
+//      waiting (the bands start ramping to it); run the EQ (DSPProcessor)
 //      from dry into wet; crossfade dry/wet (bypass = EQ off), apply the
 //      preamp (fixed-time ramp, never above unity), replace NaN/Inf with
 //      silence, count clipping, measure the output peak, clamp to [-1, 1]
@@ -172,9 +172,9 @@ public enum RenderKernel {
             }
 
             // The EQ always runs (keeps its state warm while bypassed).
-            // A new filter set is taken only between bank switches; until
-            // then it waits in the mailbox (newer sets replace it there).
-            if !state.pointee.processor.isTransitioning { acceptPublishedFilters(state) }
+            // A new filter set is taken as soon as it is published; the
+            // bands ramp to it from wherever they are.
+            acceptPublishedFilters(state)
             state.pointee.processor.process(
                 inputLeft: UnsafePointer(dryL), inputRight: UnsafePointer(dryR), outputLeft: wetL, outputRight: wetR,
                 frameCount: count)
@@ -211,8 +211,8 @@ public enum RenderKernel {
     }
 
     /// If the main thread published a filter set the RT thread hasn't taken
-    /// yet, swaps it in (triple buffer, see RenderState.swift) and starts
-    /// the click-free bank switch.
+    /// yet, swaps it in (triple buffer, see RenderState.swift) and makes it
+    /// the processor's new target.
     @inline(__always)
     static func acceptPublishedFilters(_ state: UnsafeMutablePointer<RenderState>) {
         guard state.pointee.filterMailbox.load(ordering: .relaxed) & FilterMailbox.dirtyFlag != 0 else { return }
@@ -221,8 +221,8 @@ public enum RenderKernel {
             state.pointee.filterReadSlot, ordering: .acquiringAndReleasing)
         let slot = previous & FilterMailbox.slotMask
         state.pointee.filterReadSlot = slot
-        state.pointee.processor.beginTransition(
-            to: UnsafePointer(state.pointee.filterSlots + slot * DSPProcessor.maximumSections),
+        state.pointee.processor.apply(
+            UnsafePointer(state.pointee.filterSlots + slot * DSPProcessor.maximumSections),
             count: state.pointee.filterSlotCounts[slot])
     }
 

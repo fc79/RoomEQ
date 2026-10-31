@@ -1,50 +1,58 @@
 // The EQ in the audio path: up to 16 cascaded peaking biquads, stereo,
-// with click-free switching between filter sets.
+// with click-free changes by PARAMETER SMOOTHING.
 //
-// REAL-TIME RULES: `process` and `beginTransition` run on the Core Audio IO
-// thread: no allocation, no locks, no logging, no Swift arrays, no class
-// references, no libm calls. All memory is allocated in `init`. Coefficients
-// (and every transcendental function) are computed off the RT thread
-// (EQDesign) and arrive through the lock-free mailbox in RenderState.
+// REAL-TIME RULES: `process` and `apply` run on the Core Audio IO thread:
+// no allocation, no locks, no logging, no Swift arrays, no class references,
+// no static stored properties (constants are literals). All memory is
+// allocated in `init`. The only library calls are libm exp/sin/cos (to
+// recompute coefficients while a band is ramping).
 //
 // Filter structure: Transposed Direct Form II, coefficients AND state in
 // Double. Per sample, per channel:
 //     y  = b0 x + s1
 //     s1 = b1 x - a1 y + s2
 //     s2 = b2 x - a2 y
-// Why: TDF-II needs 2 state values per channel and is the usual choice in
-// floating point (no large internal node like DF-II, half the state of
-// DF-I). The real difficulty here is low Fc / high Q at high sample rates:
-// at 192 kHz, Fc 58.8 Hz the poles sit about 2e-6 from z = 1 and a1 is
-// within 4e-6 of -2. In Float (24-bit mantissa) that would leave only 4-5
-// significant digits for the pole position and measurable noise/drift; in
-// Double (53 bits) the coefficients keep ~10 extra digits, which makes the
-// structure choice secondary. The tests check the response at Fc and
-// stability up to Q 14.3 at 192 kHz.
-// No algorithmic delay: pure IIR, no look-ahead, no block delay.
+// TDF-II needs 2 state values per channel and is the usual floating-point
+// choice. The difficult case is low Fc / high Q at high sample rates (at
+// 192 kHz, 58.8 Hz the poles sit ~2e-6 from z = 1): Double keeps ~10 more
+// significant digits than Float there. No algorithmic delay (pure IIR).
 //
-// Click-free changes (two complete filter banks, A/B):
-//   * the active bank produces the output;
-//   * a new set (from the mailbox) is loaded into the other bank. Each
-//     section takes over the state of the SAME band (matched by band ID)
-//     from the active bank, so an untouched band continues exactly;
-//   * from the first section that differs from the active bank (changed
-//     coefficients, band added/removed/reordered) the state no longer
-//     matches the signal the section will see (a cascade's later sections
-//     see a different input when an earlier one changes). Those sections
-//     would ring with a decaying transient at their Fc — for Q 14 at 76 Hz
-//     the time constant is ~40 ms, longer than any short crossfade. So the
-//     incoming bank first runs SILENTLY (both banks run, output still 100 %
-//     old) until that error has decayed by 40 dB (`settleFrames`, computed
-//     from the slowest pole, capped at 250 ms), then the output is
-//     crossfaded from the old bank to the new one over 20 ms (smoothstep:
-//     no slope jump at either end). An identical set needs no warm-up.
-//   * while a transition runs, newer sets wait in the mailbox (which always
-//     holds the most recent one): rapid changes (slider drag) are coalesced
-//     and the final value is always applied.
+// Click-free changes: every band has a slot whose parameters (ln Fc, gain
+// in dB, ln Q) move linearly from where they are to the published target in
+// `rampSeconds` (30 ms). Every `updateInterval` (16) samples the RBJ
+// coefficients of the next point are computed, and within those 16 samples
+// the coefficients are interpolated linearly per sample. The filter state
+// is never reset or copied: the band just "moves", like an analogue EQ
+// knob. Stability along the way: every point is an RBJ peaking filter with
+// Q > 0 and 0 < w0 < pi, which is always stable, and the stable (a1, a2)
+// region is convex, so the per-sample interpolation between two stable
+// points is stable too.
+//   * a new band starts at 0 dB (identity, zero state is exact) at its
+//     target Fc/Q and ramps its gain in;
+//   * a removed or disabled band ramps to 0 dB, keeps running until its
+//     state has drained (< 1e-7, -140 dB), then its slot is freed;
+//   * a replaced set (import/reset, new IDs) = all old bands ramp out and
+//     all new ones ramp in at the same time (48 slots: three full sets fit,
+//     so even quick repeated imports don't have to cut a band short);
+//   * a new target can arrive at any time (slider drag): the ramp restarts
+//     from the current position, so changes are coalesced and the last one
+//     is always reached.
+// Measured against the stage-3 A/B bank crossfade in
+// EQSmoothingMeasurementTests (see the report in that file).
+//
+// Denormals: a constant offset of 1e-20 (-400 dB) is added to the filter
+// input and removed at the output. Peaking filters have exactly unity DC
+// gain, so the states settle on a tiny non-zero equilibrium instead of
+// decaying into the denormal range. Bands at exactly 0 dB (identity) are
+// skipped once their state has drained, so they can't decay into denormals
+// either. (Apple Silicon handles denormals at full speed anyway; this keeps
+// the code safe on any CPU.)
+//
 // The kernel calls `process` on every cycle, also when the EQ is bypassed
 // (bypass is a dry/wet crossfade in RenderKernel), so the filter state
 // stays warm and switching the EQ back on is click-free.
+
+import Darwin
 
 /// Filter state of one section, both channels (TDF-II: two values each).
 struct SectionState {
@@ -52,144 +60,205 @@ struct SectionState {
     var left2: Double = 0
     var right1: Double = 0
     var right2: Double = 0
+
+    @inline(__always) var magnitude: Double {
+        max(max(left1.magnitude, left2.magnitude), max(right1.magnitude, right2.magnitude))
+    }
+}
+
+/// One band in the audio path (RT-private).
+struct BandSlot {
+    var isActive = false
+    /// Ramping to 0 dB / draining; freed afterwards.
+    var isRemoving = false
+    var bandIDHigh: UInt64 = 0
+    var bandIDLow: UInt64 = 0
+    /// Position in the latest published set (for `activeTargets`).
+    var order = 0
+    /// Generation of the last published set that contained this band.
+    var generation = 0
+    /// Parameters at the END of the current coefficient segment.
+    var logFrequency = 0.0
+    var gainDecibels = 0.0
+    var logQ = 0.0
+    /// Where the ramp goes, and how far each segment moves.
+    var targetLogFrequency = 0.0
+    var targetGainDecibels = 0.0
+    var targetLogQ = 0.0
+    var stepLogFrequency = 0.0
+    var stepGainDecibels = 0.0
+    var stepLogQ = 0.0
+    /// Segments left in the ramp.
+    var stepsRemaining = 0
+    /// Exact coefficients at the target (the ramp ends on them).
+    var targetCoefficients = BiquadCoefficients.identity
+    /// Coefficients in use, their per-sample change in this segment, and
+    /// their exact value at the segment's end.
+    var coefficients = BiquadCoefficients.identity
+    var increment = BiquadCoefficients(b0: 0, b1: 0, b2: 0, a1: 0, a2: 0)
+    var segmentEnd = BiquadCoefficients.identity
+    var segmentRemaining = 0
+    var state = SectionState()
+
+    @inline(__always) var isMoving: Bool { stepsRemaining > 0 || segmentRemaining > 0 }
 }
 
 /// The DSP chain. Lives inside `RenderState` (preallocated memory) and is
 /// only ever touched by the real-time thread (tests drive it directly).
 public struct DSPProcessor: ~Copyable {
-    public static let maximumSections = EQBand.maximumCount
+    /// Bands per published set (computed property: no lazy global on the RT thread).
+    @inline(__always) public static var maximumSections: Int { 16 }
+    /// Slots: three times the bands, so full sets can ramp out (and drain)
+    /// while a full new set ramps in, even for quick repeated imports.
+    @inline(__always) static var slotCount: Int { 48 }
+    /// State size below which a band at 0 dB counts as drained (-140 dB).
+    @inline(__always) static var drainedLevel: Double { 1e-7 }
 
-    /// Sample rate the processor was configured for.
     public let sampleRate: Double
     /// Largest block `process` handles in one pass (longer blocks are split).
     public let maximumFrames: Int
-    /// Length of the bank crossfade in samples.
-    public let crossfadeFrames: Int
-    private let inverseCrossfadeFrames: Double
+    /// Samples between two coefficient computations during a ramp.
+    public let updateInterval: Int
+    /// Segments (of `updateInterval` samples) in a full ramp.
+    public let rampSteps: Int
+    private let inverseUpdateInterval: Double
+    private let radiansPerHertz: Double
 
-    // Two banks (index 0/1), each `maximumSections` long.
-    private let bankSections: UnsafeMutablePointer<FilterSection>
-    private let bankCounts: UnsafeMutablePointer<Int>
-    private let bankStates: UnsafeMutablePointer<SectionState>
-    // Scratch, `maximumFrames` each: input, active bank, incoming bank.
-    private let inputLeft: UnsafeMutablePointer<Double>
-    private let inputRight: UnsafeMutablePointer<Double>
-    private let activeLeft: UnsafeMutablePointer<Double>
-    private let activeRight: UnsafeMutablePointer<Double>
-    private let incomingLeft: UnsafeMutablePointer<Double>
-    private let incomingRight: UnsafeMutablePointer<Double>
+    private let slots: UnsafeMutablePointer<BandSlot>
+    private let workLeft: UnsafeMutablePointer<Double>
+    private let workRight: UnsafeMutablePointer<Double>
+    private var setGeneration = 0
 
-    /// Bank producing the output (0 or 1).
-    public private(set) var activeBank = 0
-    /// True from `beginTransition` until the crossfade has completed.
-    public private(set) var isTransitioning = false
-    /// Silent warm-up samples left before the crossfade starts.
-    public private(set) var warmupRemaining = 0
-    /// Crossfade samples done so far.
-    public private(set) var crossfadePosition = 0
     /// Diagnostics (RT-written, read by tests).
-    public private(set) var completedTransitions = 0
-    /// Times a bank state was found non-finite and reset (should stay 0).
+    public private(set) var appliedSets = 0
+    /// Times a slot had to be taken while still draining (should stay 0).
+    public private(set) var forcedSlotReuses = 0
+    /// Times the state was found non-finite and reset (should stay 0).
     public private(set) var stateResets = 0
 
-    public init(sampleRate: Double, maximumFrames: Int, crossfadeSeconds: Double = 0.020, sections: [FilterSection] = []) {
+    /// `sections` is active immediately (no ramp; the stream starts from silence).
+    public init(
+        sampleRate: Double, maximumFrames: Int, rampSeconds: Double = 0.030, updateInterval: Int = 16,
+        sections: [FilterSection] = []
+    ) {
         self.sampleRate = sampleRate
         self.maximumFrames = max(16, maximumFrames)
-        crossfadeFrames = LinearRamp.frames(seconds: crossfadeSeconds, sampleRate: sampleRate)
-        inverseCrossfadeFrames = 1 / Double(crossfadeFrames)
+        self.updateInterval = max(1, updateInterval)
+        rampSteps = max(1, Int((rampSeconds * sampleRate / Double(max(1, updateInterval))).rounded()))
+        inverseUpdateInterval = 1 / Double(self.updateInterval)
+        radiansPerHertz = 2 * Double.pi / sampleRate
 
-        let capacity = 2 * Self.maximumSections
-        bankSections = .allocate(capacity: capacity)
-        bankSections.initialize(
-            repeating: FilterSection(coefficients: .identity, bandIDHigh: 0, bandIDLow: 0, settleFrames: 0),
-            count: capacity)
-        bankCounts = .allocate(capacity: 2)
-        bankCounts.initialize(repeating: 0, count: 2)
-        bankStates = .allocate(capacity: capacity)
-        bankStates.initialize(repeating: SectionState(), count: capacity)
+        slots = .allocate(capacity: Self.slotCount)
+        slots.initialize(repeating: BandSlot(), count: Self.slotCount)
+        workLeft = .allocate(capacity: self.maximumFrames)
+        workLeft.initialize(repeating: 0, count: self.maximumFrames)
+        workRight = .allocate(capacity: self.maximumFrames)
+        workRight.initialize(repeating: 0, count: self.maximumFrames)
 
-        let frames = self.maximumFrames
-        func scratch() -> UnsafeMutablePointer<Double> {
-            let buffer = UnsafeMutablePointer<Double>.allocate(capacity: frames)
-            buffer.initialize(repeating: 0, count: frames)
-            return buffer
+        for (index, section) in sections.prefix(Self.maximumSections).enumerated() {
+            var slot = BandSlot()
+            slot.isActive = true
+            slot.bandIDHigh = section.bandIDHigh
+            slot.bandIDLow = section.bandIDLow
+            slot.order = index
+            Self.place(&slot, at: section)
+            slots[index] = slot
         }
-        inputLeft = scratch()
-        inputRight = scratch()
-        activeLeft = scratch()
-        activeRight = scratch()
-        incomingLeft = scratch()
-        incomingRight = scratch()
-
-        // The initial set goes straight into bank 0 (starts from silence).
-        let count = min(sections.count, Self.maximumSections)
-        for index in 0..<count { bankSections[index] = sections[index] }
-        bankCounts[0] = count
     }
 
     deinit {
-        bankSections.deallocate()
-        bankCounts.deallocate()
-        bankStates.deallocate()
-        inputLeft.deallocate()
-        inputRight.deallocate()
-        activeLeft.deallocate()
-        activeRight.deallocate()
-        incomingLeft.deallocate()
-        incomingRight.deallocate()
+        slots.deallocate()
+        workLeft.deallocate()
+        workRight.deallocate()
     }
 
-    /// Number of sections in the active bank.
-    public var activeSectionCount: Int { bankCounts[activeBank] }
+    // MARK: Inspection (not for the RT thread)
 
-    /// The active bank's sections (copy; NOT for the RT thread).
-    public var activeSections: [FilterSection] {
-        (0..<bankCounts[activeBank]).map { bankSections[activeBank * Self.maximumSections + $0] }
+    /// True while any band is still moving or draining.
+    public var isRamping: Bool {
+        (0..<Self.slotCount).contains { slots[$0].isActive && (slots[$0].isMoving || slots[$0].isRemoving) }
+    }
+
+    /// Bands currently in the path (not being removed), with their target,
+    /// in the order of the latest published set.
+    public var activeTargets: [FilterSection] {
+        (0..<Self.slotCount).map { slots[$0] }.filter { $0.isActive && !$0.isRemoving }
+            .sorted { $0.order < $1.order }
+            .map {
+                FilterSection(
+                    coefficients: $0.targetCoefficients, bandIDHigh: $0.bandIDHigh, bandIDLow: $0.bandIDLow,
+                    logFrequency: $0.targetLogFrequency, gainDecibels: $0.targetGainDecibels, logQ: $0.targetLogQ)
+            }
+    }
+
+    /// Slots in use (including bands ramping out).
+    public var activeSlotCount: Int { (0..<Self.slotCount).filter { slots[$0].isActive }.count }
+
+    /// Every state value of every active slot (denormal checks in tests).
+    public var stateValues: [Double] {
+        (0..<Self.slotCount).filter { slots[$0].isActive }.flatMap {
+            let s = slots[$0].state
+            return [s.left1, s.left2, s.right1, s.right2]
+        }
+    }
+
+    /// Current (interpolated) coefficients of every active slot.
+    public var currentCoefficients: [BiquadCoefficients] {
+        (0..<Self.slotCount).filter { slots[$0].isActive }.map { slots[$0].coefficients }
     }
 
     /// Non-RT convenience for tests: same as the pointer version.
-    public mutating func beginTransition(to sections: [FilterSection]) {
+    public mutating func apply(_ sections: [FilterSection]) {
         sections.withUnsafeBufferPointer { buffer in
-            beginTransition(to: buffer.baseAddress ?? UnsafePointer(bankSections), count: buffer.count)
+            guard let base = buffer.baseAddress else {
+                var nothing = FilterSection(
+                    coefficients: .identity, bandIDHigh: 0, bandIDLow: 0, logFrequency: 0, gainDecibels: 0, logQ: 0)
+                withUnsafePointer(to: &nothing) { apply($0, count: 0) }
+                return
+            }
+            apply(base, count: buffer.count)
         }
     }
 
-    /// Loads `count` sections into the inactive bank and starts the switch
-    /// (warm-up, then crossfade). Real-time safe. Must not be called while
-    /// `isTransitioning` (the kernel waits; the set stays in the mailbox).
-    @inline(__always)
-    public mutating func beginTransition(to sections: UnsafePointer<FilterSection>, count: Int) {
-        let incoming = 1 - activeBank
-        let incomingBase = incoming * Self.maximumSections
-        let activeBase = activeBank * Self.maximumSections
-        let activeCount = bankCounts[activeBank]
-        let newCount = min(max(0, count), Self.maximumSections)
+    // MARK: Real-time
 
-        var warmup = 0
-        var differs = false
-        for index in 0..<newCount {
+    /// Makes `sections` the new targets. Real-time safe; may be called at
+    /// any time (also while ramping): every band ramps from where it is.
+    @inline(__always)
+    public mutating func apply(_ sections: UnsafePointer<FilterSection>, count: Int) {
+        setGeneration &+= 1
+        appliedSets &+= 1
+        let generation = setGeneration
+        let total = Self.slotCount
+        for index in 0..<min(max(0, count), Self.maximumSections) {
             let section = sections[index]
-            bankSections[incomingBase + index] = section
-            // Carry over the state of the same band, if it exists.
-            var state = SectionState()
-            for other in 0..<activeCount {
-                let candidate = bankSections[activeBase + other]
-                if candidate.bandIDHigh == section.bandIDHigh && candidate.bandIDLow == section.bandIDLow {
-                    state = bankStates[activeBase + other]
+            // Same band already present (also if ramping out)?
+            var found = -1
+            for candidate in 0..<total {
+                let slot = slots[candidate]
+                if slot.isActive && slot.bandIDHigh == section.bandIDHigh && slot.bandIDLow == section.bandIDLow {
+                    found = candidate
                     break
                 }
             }
-            bankStates[incomingBase + index] = state
-            // From the first difference on, the carried state doesn't fit.
-            if !differs && (index >= activeCount || bankSections[activeBase + index] != section) {
-                differs = true
-            }
-            if differs && section.settleFrames > warmup { warmup = section.settleFrames }
+            if found < 0 { found = startBand(section) }
+            slots[found].generation = generation
+            slots[found].order = index
+            slots[found].isRemoving = false
+            retarget(
+                &slots[found], logFrequency: section.logFrequency, gainDecibels: section.gainDecibels,
+                logQ: section.logQ, coefficients: section.coefficients)
         }
-        bankCounts[incoming] = newCount
-        warmupRemaining = warmup
-        crossfadePosition = 0
-        isTransitioning = true
+        // Bands no longer in the set ramp out to 0 dB, where they are.
+        for index in 0..<total where slots[index].isActive && slots[index].generation != generation {
+            if slots[index].isRemoving { continue }
+            slots[index].isRemoving = true
+            let logFrequency = slots[index].logFrequency, logQ = slots[index].logQ
+            retarget(
+                &slots[index], logFrequency: logFrequency, gainDecibels: 0, logQ: logQ,
+                coefficients: BiquadCoefficients.peakingRT(
+                    logFrequency: logFrequency, gainDecibels: 0, logQ: logQ, radiansPerHertz: radiansPerHertz))
+        }
     }
 
     /// Processes `frameCount` samples per channel from `input` into `output`
@@ -203,8 +272,7 @@ public struct DSPProcessor: ~Copyable {
         var done = 0
         while done < frameCount {
             let count = min(maximumFrames, frameCount - done)
-            processBlock(
-                sourceLeft + done, sourceRight + done, outputLeft + done, outputRight + done, count)
+            processBlock(sourceLeft + done, sourceRight + done, outputLeft + done, outputRight + done, count)
             done += count
         }
     }
@@ -215,97 +283,206 @@ public struct DSPProcessor: ~Copyable {
         _ outputLeft: UnsafeMutablePointer<Float>, _ outputRight: UnsafeMutablePointer<Float>,
         _ count: Int
     ) {
+        let offset = 1e-20  // anti-denormal DC offset (see header)
         // Float -> Double; a NaN/Inf input sample must never enter the IIR
         // state (it would stay there forever): it becomes 0 for the filters.
         // (The dry path keeps it and the kernel's NaN guard silences it.)
         for frame in 0..<count {
             let left = Double(sourceLeft[frame]), right = Double(sourceRight[frame])
-            inputLeft[frame] = left.isFinite ? left : 0
-            inputRight[frame] = right.isFinite ? right : 0
+            workLeft[frame] = (left.isFinite ? left : 0) + offset
+            workRight[frame] = (right.isFinite ? right : 0) + offset
         }
-
-        runBank(activeBank, count, activeLeft, activeRight)
-        guard isTransitioning else {
-            for frame in 0..<count {
-                outputLeft[frame] = Float(activeLeft[frame])
-                outputRight[frame] = Float(activeRight[frame])
-            }
-            return
-        }
-
-        let incoming = 1 - activeBank
-        runBank(incoming, count, incomingLeft, incomingRight)
-        for frame in 0..<count {
-            var left = activeLeft[frame], right = activeRight[frame]
-            if warmupRemaining > 0 {
-                warmupRemaining -= 1  // incoming bank still silent
-            } else if isTransitioning {
-                crossfadePosition += 1
-                let t = Double(crossfadePosition) * inverseCrossfadeFrames
-                let weight = crossfadePosition >= crossfadeFrames ? 1 : t * t * (3 - 2 * t)
-                left += weight * (incomingLeft[frame] - left)
-                right += weight * (incomingRight[frame] - right)
-                if crossfadePosition >= crossfadeFrames {
-                    isTransitioning = false
-                    activeBank = incoming
-                    completedTransitions &+= 1
-                }
-            } else {
-                left = incomingLeft[frame]  // switch completed inside this block
-                right = incomingRight[frame]
-            }
-            outputLeft[frame] = Float(left)
-            outputRight[frame] = Float(right)
-        }
-    }
-
-    /// Runs bank `bank` over the converted input into `left`/`right`.
-    @inline(__always)
-    private mutating func runBank(
-        _ bank: Int, _ count: Int, _ left: UnsafeMutablePointer<Double>, _ right: UnsafeMutablePointer<Double>
-    ) {
-        for frame in 0..<count {
-            left[frame] = inputLeft[frame]
-            right[frame] = inputRight[frame]
-        }
-        let base = bank * Self.maximumSections
         var healthy = true
-        for index in 0..<bankCounts[bank] {
-            let c = bankSections[base + index].coefficients
-            var s = bankStates[base + index]
-            for frame in 0..<count {
-                let xl = left[frame], xr = right[frame]
-                let yl = c.b0 * xl + s.left1
-                let yr = c.b0 * xr + s.right1
-                s.left1 = c.b1 * xl - c.a1 * yl + s.left2
-                s.right1 = c.b1 * xr - c.a1 * yr + s.right2
-                s.left2 = c.b2 * xl - c.a2 * yl
-                s.right2 = c.b2 * xr - c.a2 * yr
-                left[frame] = yl
-                right[frame] = yr
-            }
-            // Flush values that are decaying towards denormals (silence).
-            s.left1 = Self.flush(s.left1)
-            s.left2 = Self.flush(s.left2)
-            s.right1 = Self.flush(s.right1)
-            s.right2 = Self.flush(s.right2)
-            if !(s.left1.isFinite && s.left2.isFinite && s.right1.isFinite && s.right2.isFinite) { healthy = false }
-            bankStates[base + index] = s
+        for index in 0..<Self.slotCount where slots[index].isActive {
+            if !runSlot(index, count) { healthy = false }
         }
         if !healthy {
             // Cannot happen with valid coefficients and finite input; if it
             // ever does, recover instead of staying silent forever.
-            for index in 0..<Self.maximumSections { bankStates[base + index] = SectionState() }
+            for index in 0..<Self.slotCount { slots[index].state = SectionState() }
             for frame in 0..<count {
-                left[frame] = 0
-                right[frame] = 0
+                workLeft[frame] = offset
+                workRight[frame] = offset
             }
             stateResets &+= 1
         }
+        for frame in 0..<count {
+            outputLeft[frame] = Float(workLeft[frame] - offset)
+            outputRight[frame] = Float(workRight[frame] - offset)
+        }
     }
 
+    /// Runs slot `index` in place over the work buffers. False if its state
+    /// became non-finite.
     @inline(__always)
-    private static func flush(_ value: Double) -> Double {
-        value.magnitude < 1e-30 ? 0 : value
+    private mutating func runSlot(_ index: Int, _ count: Int) -> Bool {
+        var slot = slots[index]
+        // A band at exactly 0 dB whose state has drained is the identity:
+        // skip it (and free it if it was being removed).
+        if !slot.isMoving && slot.targetGainDecibels == 0 && slot.state.magnitude < Self.drainedLevel {
+            slot.state = SectionState()
+            if slot.isRemoving { slot.isActive = false }
+            slots[index] = slot
+            return true
+        }
+        let left = workLeft, right = workRight
+        var c = slot.coefficients
+        var s = slot.state
+        var frame = 0
+        while frame < count {
+            if slot.segmentRemaining == 0 && slot.stepsRemaining > 0 {
+                beginSegment(&slot, from: c)
+            }
+            if slot.segmentRemaining > 0 {
+                // Ramping: coefficients interpolated per sample.
+                let n = min(slot.segmentRemaining, count - frame)
+                let d = slot.increment
+                for k in frame..<(frame + n) {
+                    c.b0 += d.b0
+                    c.b1 += d.b1
+                    c.b2 += d.b2
+                    c.a1 += d.a1
+                    c.a2 += d.a2
+                    let xl = left[k], xr = right[k]
+                    let yl = c.b0 * xl + s.left1
+                    let yr = c.b0 * xr + s.right1
+                    s.left1 = c.b1 * xl - c.a1 * yl + s.left2
+                    s.right1 = c.b1 * xr - c.a1 * yr + s.right2
+                    s.left2 = c.b2 * xl - c.a2 * yl
+                    s.right2 = c.b2 * xr - c.a2 * yr
+                    left[k] = yl
+                    right[k] = yr
+                }
+                slot.segmentRemaining -= n
+                if slot.segmentRemaining == 0 { c = slot.segmentEnd }  // exact, no drift
+                frame += n
+            } else {
+                // Steady: constant coefficients for the rest of the block.
+                for k in frame..<count {
+                    let xl = left[k], xr = right[k]
+                    let yl = c.b0 * xl + s.left1
+                    let yr = c.b0 * xr + s.right1
+                    s.left1 = c.b1 * xl - c.a1 * yl + s.left2
+                    s.right1 = c.b1 * xr - c.a1 * yr + s.right2
+                    s.left2 = c.b2 * xl - c.a2 * yl
+                    s.right2 = c.b2 * xr - c.a2 * yr
+                    left[k] = yl
+                    right[k] = yr
+                }
+                frame = count
+            }
+        }
+        slot.coefficients = c
+        slot.state = s
+        slots[index] = slot
+        return s.left1.isFinite && s.left2.isFinite && s.right1.isFinite && s.right2.isFinite
+    }
+
+    /// Next segment of a ramp: advance the parameters one step (the last
+    /// step lands exactly on the target) and set up the interpolation.
+    @inline(__always)
+    private func beginSegment(_ slot: inout BandSlot, from current: BiquadCoefficients) {
+        slot.stepsRemaining -= 1
+        let next: BiquadCoefficients
+        if slot.stepsRemaining == 0 {
+            slot.logFrequency = slot.targetLogFrequency
+            slot.gainDecibels = slot.targetGainDecibels
+            slot.logQ = slot.targetLogQ
+            next = slot.targetCoefficients
+        } else {
+            slot.logFrequency += slot.stepLogFrequency
+            slot.gainDecibels += slot.stepGainDecibels
+            slot.logQ += slot.stepLogQ
+            next = BiquadCoefficients.peakingRT(
+                logFrequency: slot.logFrequency, gainDecibels: slot.gainDecibels, logQ: slot.logQ,
+                radiansPerHertz: radiansPerHertz)
+        }
+        let scale = inverseUpdateInterval
+        slot.increment = BiquadCoefficients(
+            b0: (next.b0 - current.b0) * scale, b1: (next.b1 - current.b1) * scale,
+            b2: (next.b2 - current.b2) * scale, a1: (next.a1 - current.a1) * scale,
+            a2: (next.a2 - current.a2) * scale)
+        slot.segmentEnd = next
+        slot.segmentRemaining = updateInterval
+    }
+
+    /// Sends a slot towards new parameters from where it is now (the end of
+    /// its current segment), over a full ramp. No-op if nothing changes.
+    @inline(__always)
+    private func retarget(
+        _ slot: inout BandSlot, logFrequency: Double, gainDecibels: Double, logQ: Double,
+        coefficients: BiquadCoefficients
+    ) {
+        if logFrequency == slot.targetLogFrequency && gainDecibels == slot.targetGainDecibels
+            && logQ == slot.targetLogQ
+        {
+            return  // already heading there (or there)
+        }
+        slot.targetLogFrequency = logFrequency
+        slot.targetGainDecibels = gainDecibels
+        slot.targetLogQ = logQ
+        slot.targetCoefficients = coefficients
+        let steps = Double(rampSteps)
+        slot.stepLogFrequency = (logFrequency - slot.logFrequency) / steps
+        slot.stepGainDecibels = (gainDecibels - slot.gainDecibels) / steps
+        slot.stepLogQ = (logQ - slot.logQ) / steps
+        slot.stepsRemaining = rampSteps
+    }
+
+    /// Takes a free slot for a new band: 0 dB (identity, zero state) at the
+    /// band's target Fc and Q; `apply` then ramps its gain in.
+    @inline(__always)
+    private mutating func startBand(_ section: FilterSection) -> Int {
+        var chosen = -1
+        for index in 0..<Self.slotCount where !slots[index].isActive {
+            chosen = index
+            break
+        }
+        if chosen < 0 {
+            // All slots busy (only with several full-set changes in quick
+            // succession): take a draining band, preferring one that has
+            // already reached 0 dB, with the smallest state.
+            var smallest = Double.infinity
+            for index in 0..<Self.slotCount where slots[index].isRemoving {
+                let size = slots[index].state.magnitude + (slots[index].isMoving ? 1e6 : 0)
+                if size < smallest {
+                    smallest = size
+                    chosen = index
+                }
+            }
+            if chosen < 0 { chosen = 0 }
+            forcedSlotReuses &+= 1
+        }
+        var slot = BandSlot()
+        slot.isActive = true
+        slot.bandIDHigh = section.bandIDHigh
+        slot.bandIDLow = section.bandIDLow
+        let identity = BiquadCoefficients.peakingRT(
+            logFrequency: section.logFrequency, gainDecibels: 0, logQ: section.logQ,
+            radiansPerHertz: radiansPerHertz)
+        slot.logFrequency = section.logFrequency
+        slot.logQ = section.logQ
+        slot.gainDecibels = 0
+        slot.targetLogFrequency = section.logFrequency
+        slot.targetLogQ = section.logQ
+        slot.targetGainDecibels = 0
+        slot.targetCoefficients = identity
+        slot.coefficients = identity
+        slot.segmentEnd = identity
+        slots[chosen] = slot
+        return chosen
+    }
+
+    /// A slot sitting exactly at `section` (no ramp).
+    private static func place(_ slot: inout BandSlot, at section: FilterSection) {
+        slot.logFrequency = section.logFrequency
+        slot.gainDecibels = section.gainDecibels
+        slot.logQ = section.logQ
+        slot.targetLogFrequency = section.logFrequency
+        slot.targetGainDecibels = section.gainDecibels
+        slot.targetLogQ = section.logQ
+        slot.targetCoefficients = section.coefficients
+        slot.coefficients = section.coefficients
+        slot.segmentEnd = section.coefficients
     }
 }

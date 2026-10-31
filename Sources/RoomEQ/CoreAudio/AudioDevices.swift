@@ -11,6 +11,8 @@ struct OutputDeviceInfo: Identifiable, Hashable, Sendable {
     let name: String
     let outputChannelCount: Int
     let inputChannelCount: Int
+    /// Nominal sample rate when the info was read (nil if unreadable).
+    let nominalSampleRate: Double?
 
     var id: String { uid }
 }
@@ -61,7 +63,8 @@ enum AudioDevices {
             uid: uid,
             name: name(of: device),
             outputChannelCount: AudioObject.channelCount(device, scope: kAudioObjectPropertyScopeOutput),
-            inputChannelCount: AudioObject.channelCount(device, scope: kAudioObjectPropertyScopeInput))
+            inputChannelCount: AudioObject.channelCount(device, scope: kAudioObjectPropertyScopeInput),
+            nominalSampleRate: (try? nominalSampleRate(of: device)).flatMap { $0 > 0 && $0.isFinite ? $0 : nil })
     }
 
     /// All devices with at least one output channel, excluding RoomEQ's own

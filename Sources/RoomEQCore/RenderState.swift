@@ -24,13 +24,15 @@ import CoreAudio
 import Synchronization
 
 /// Triple-buffer bookkeeping for EQ filter sets (see the threading contract).
+/// Computed properties returning literals: no lazily initialised globals
+/// (swift_once) on the real-time thread.
 enum FilterMailbox {
     /// Low bits: index (0...2) of the slot holding the latest set.
-    static let slotMask = 0b11
+    @inline(__always) static var slotMask: Int { 0b11 }
     /// Set by the writer when the latest slot holds a set the RT thread has
     /// not taken yet.
-    static let dirtyFlag = 0b100
-    static let slotCount = 3
+    @inline(__always) static var dirtyFlag: Int { 0b100 }
+    @inline(__always) static var slotCount: Int { 3 }
 }
 
 /// Everything needed to build a `RenderState` (computed on a normal thread).
@@ -53,8 +55,8 @@ public struct RenderConfiguration: Sendable {
     public var gainRampSeconds: Double
     /// Duration of the bypass (EQ on/off) crossfade (seconds).
     public var bypassCrossfadeSeconds: Double
-    /// Duration of the crossfade between EQ filter banks (seconds).
-    public var filterCrossfadeSeconds: Double
+    /// Duration of an EQ parameter ramp (seconds), see DSPProcessor.swift.
+    public var eqRampSeconds: Double
 
     public init(
         inputLayout: BufferListLayout,
@@ -65,7 +67,7 @@ public struct RenderConfiguration: Sendable {
         chunkFrames: Int = 1024,
         gainRampSeconds: Double = 0.015,
         bypassCrossfadeSeconds: Double = 0.010,
-        filterCrossfadeSeconds: Double = 0.020
+        eqRampSeconds: Double = 0.030
     ) {
         self.inputLayout = inputLayout
         self.tapLeft = tapLeft
@@ -75,7 +77,7 @@ public struct RenderConfiguration: Sendable {
         self.chunkFrames = chunkFrames
         self.gainRampSeconds = gainRampSeconds
         self.bypassCrossfadeSeconds = bypassCrossfadeSeconds
-        self.filterCrossfadeSeconds = filterCrossfadeSeconds
+        self.eqRampSeconds = eqRampSeconds
     }
 }
 
@@ -167,7 +169,7 @@ public struct RenderState: ~Copyable {
         configuration: RenderConfiguration, gain: Float, bypass: Bool, outputPair: OutputChannelPair,
         filters: [FilterSection] = []
     ) {
-        let gain = RenderStateHandle.clampGain(gain)
+        let gain = RenderStateHandle.clampGain(gain) ?? 1  // NaN: unity (the default preamp)
         targetGain = Atomic(gain)
         self.bypass = Atomic(bypass)
         self.outputPair = Atomic(outputPair.packed)
@@ -177,7 +179,8 @@ public struct RenderState: ~Copyable {
         let slotCapacity = FilterMailbox.slotCount * DSPProcessor.maximumSections
         filterSlots = .allocate(capacity: slotCapacity)
         filterSlots.initialize(
-            repeating: FilterSection(coefficients: .identity, bandIDHigh: 0, bandIDLow: 0, settleFrames: 0),
+            repeating: FilterSection(
+                coefficients: .identity, bandIDHigh: 0, bandIDLow: 0, logFrequency: 0, gainDecibels: 0, logQ: 0),
             count: slotCapacity)
         filterSlotCounts = .allocate(capacity: FilterMailbox.slotCount)
         filterSlotCounts.initialize(repeating: 0, count: FilterMailbox.slotCount)
@@ -232,8 +235,7 @@ public struct RenderState: ~Copyable {
         wetLeft = scratch()
         wetRight = scratch()
         processor = DSPProcessor(
-            sampleRate: rate, maximumFrames: chunk, crossfadeSeconds: configuration.filterCrossfadeSeconds,
-            sections: filters)
+            sampleRate: rate, maximumFrames: chunk, rampSeconds: configuration.eqRampSeconds, sections: filters)
     }
 
     deinit {
@@ -326,14 +328,18 @@ public final class RenderStateHandle: @unchecked Sendable {
     /// Number of output channels known to the render state.
     public var outputChannelCount: Int { configuration.outputLayout.channelCount }
 
-    /// Linear preamp / fade gain, clamped to 0...1 (never a boost; NaN -> 0).
+    /// Linear preamp / fade gain, clamped to 0...1 (never a boost). Same
+    /// rules as `Preamp.clamp`: NaN is ignored (the previous gain stays),
+    /// +inf -> 1, -inf or negative -> 0.
     public func setGain(linear: Float) {
-        pointer.pointee.targetGain.store(Self.clampGain(linear), ordering: .relaxed)
+        guard let gain = Self.clampGain(linear) else { return }
+        pointer.pointee.targetGain.store(gain, ordering: .relaxed)
     }
 
-    /// Preamp in dB, clamped to `Preamp.range` (-24...0 dB).
+    /// Preamp in dB, clamped to `Preamp.range` (-24...0 dB); NaN is ignored.
     public func setPreamp(decibels: Double) {
-        setGain(linear: Preamp.linearGain(decibels: decibels))
+        guard let gain = Preamp.linearGain(decibels: decibels) else { return }
+        setGain(linear: gain)
     }
 
     /// The target gain currently set (linear).
@@ -345,7 +351,7 @@ public final class RenderStateHandle: @unchecked Sendable {
     }
 
     /// Hands a new EQ filter set (computed for `configuration.sampleRate`)
-    /// to the real-time thread, which switches to it click-free. Lock-free
+    /// to the real-time thread, which ramps every band to it. Lock-free
     /// for the RT thread; returns false if `sections` equals the set
     /// published last (nothing to do). At most `maximumSections` are used.
     @discardableResult
@@ -366,8 +372,9 @@ public final class RenderStateHandle: @unchecked Sendable {
         }
     }
 
-    static func clampGain(_ linear: Float) -> Float {
-        guard linear.isFinite else { return 0 }
+    /// nil for NaN; otherwise limited to 0...1 (infinities included).
+    static func clampGain(_ linear: Float) -> Float? {
+        guard !linear.isNaN else { return nil }
         return min(max(linear, 0), 1)
     }
 

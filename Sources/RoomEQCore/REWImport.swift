@@ -14,7 +14,8 @@
 // Rules: "Filter N:" with any spacing; "None" filters ignored; OFF filters
 // kept as disabled bands; decimal comma accepted (REW may follow the
 // Italian locale); "kHz" accepted; other filter types (LS, HS, LP, …)
-// skipped with a warning; at most 16 PK filters; warning if the equaliser
+// skipped with a warning; at most 16 PK filters (ON ones first: OFF ones
+// are dropped before any ON one); warning if the equaliser
 // is not "Generic". Never crashes: anything unreadable becomes a warning.
 //
 // Note on Q: the bands are later built as RBJ-cookbook peaking filters.
@@ -67,11 +68,11 @@ public enum REWImport {
         let name = url.lastPathComponent
         let data: Data
         do {
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            if size > maximumFileSize { throw REWImportError.tooLarge(fileName: name) }
-            data = try Data(contentsOf: url)
-        } catch let error as REWImportError {
-            throw error
+            // Read at most limit + 1 bytes, whatever size the file claims
+            // (pipes, special files and growing files report none or a wrong one).
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            data = try handle.read(upToCount: maximumFileSize + 1) ?? Data()
         } catch {
             throw REWImportError.unreadable(fileName: name, reason: error.localizedDescription)
         }
@@ -102,11 +103,10 @@ public enum REWImport {
     /// Parses the text of a REW filter settings file. Never fails: problems
     /// become warnings (an empty `bands` means nothing usable was found).
     public static func parse(_ text: String) -> REWImportResult {
-        var bands: [EQBand] = []
+        var candidates: [(number: Int, band: EQBand)] = []
         var warnings: [String] = []
         var equaliser: String?
         var filterLines = 0
-        var droppedOverLimit = 0
 
         // `isNewline` also covers "\r\n", which Swift treats as ONE character.
         let lines = text.split(omittingEmptySubsequences: false, whereSeparator: { $0.isNewline })
@@ -137,20 +137,12 @@ public enum REWImport {
                 case .invalid:
                     warnings.append("Filtro \(number): frequenza o Q non validi, ignorato")
                 case .peaking(let isOn, let frequency, let gain, let q):
-                    if bands.count >= EQBand.maximumCount {
-                        droppedOverLimit += 1
-                    } else {
-                        bands.append(EQBand(frequency: frequency, gain: gain, q: q, isEnabled: isOn))
-                    }
+                    candidates.append((number, EQBand(frequency: frequency, gain: gain, q: q, isEnabled: isOn)))
                 }
             }
         }
 
-        if droppedOverLimit > 0 {
-            warnings.append(
-                "Più di \(EQBand.maximumCount) filtri PK: importati i primi \(EQBand.maximumCount), "
-                    + "ignorati gli altri \(droppedOverLimit)")
-        }
+        let bands = keepAtMost(EQBand.maximumCount, of: candidates, warnings: &warnings)
         if let equaliser {
             if equaliser.lowercased() != "generic" {
                 warnings.insert(
@@ -166,6 +158,26 @@ public enum REWImport {
             warnings.append("Nessuna riga «Filter N: …» trovata: non sembra un file di filtri di REW")
         }
         return REWImportResult(bands: bands, warnings: warnings, equaliser: equaliser, filterLineCount: filterLines)
+    }
+
+    /// At most `limit` filters, in file order: all ON ones first (the first
+    /// `limit` of them), the remaining places filled with OFF ones.
+    static func keepAtMost(
+        _ limit: Int, of candidates: [(number: Int, band: EQBand)], warnings: inout [String]
+    ) -> [EQBand] {
+        guard candidates.count > limit else { return candidates.map(\.band) }
+        let on = candidates.indices.filter { candidates[$0].band.isEnabled }
+        let off = candidates.indices.filter { !candidates[$0].band.isEnabled }
+        let kept = Set((on + off).prefix(limit))
+        let dropped = candidates.indices.filter { !kept.contains($0) }.map { candidates[$0] }
+        let droppedOn = dropped.filter { $0.band.isEnabled }.count
+        let names = dropped.map { String($0.number) }.joined(separator: ", ")
+        var message = "Più di \(limit) filtri PK: importati \(limit) "
+        message += droppedOn == 0
+            ? "(tutti quelli attivi), ignorati \(dropped.count) filtri disattivati (\(names))"
+            : "(i primi \(limit) attivi), ignorati gli altri \(dropped.count) (\(names))"
+        warnings.append(message)
+        return candidates.indices.filter { kept.contains($0) }.map { candidates[$0].band }
     }
 
     /// "Equaliser: Generic" -> "Generic" (case-insensitive key).
@@ -267,6 +279,9 @@ public enum REWImport {
 
     /// "58.80", "58,80", "-9,90", "+3", "1.000,5" -> Double. The LAST '.' or
     /// ',' is the decimal separator; any other one is a thousands separator.
+    /// Consequence (deliberate, documented by a test): "1.000" alone reads
+    /// as 1,0, not one thousand. REW writes plain digits without thousands
+    /// separators ("Fc 1000 Hz"), so a lone separator is always decimal.
     static func parseNumber(_ token: String) -> Double? {
         let text = token.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty, text.count <= 32 else { return nil }

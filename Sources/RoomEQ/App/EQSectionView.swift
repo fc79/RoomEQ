@@ -16,6 +16,9 @@ struct EQSectionView: View {
 
     var body: some View {
         PanelSection(title: "EQ") {
+            if let notice = controller.settingsNotice {
+                warningLines([notice])
+            }
             enableRow
             preampBlock
             EQCurveGraph(controller: controller)

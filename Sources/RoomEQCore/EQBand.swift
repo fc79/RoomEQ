@@ -38,9 +38,29 @@ public struct EQBand: Codable, Sendable, Equatable, Hashable, Identifiable {
     public static let gainRange: ClosedRange<Double> = -30...30
     public static let qRange: ClosedRange<Double> = 0.1...100
 
-    /// Additionally, Fc must stay below this fraction of the sample rate
-    /// (the cookbook filter gets badly cramped near Nyquist).
+    /// Additionally, Fc must not exceed this fraction of the sample rate
+    /// (the cookbook filter gets badly cramped near Nyquist). Inclusive.
     public static let maximumFrequencyRatio = 0.45
+
+    /// The result of editing this band into `edited` (e.g. from the UI):
+    /// only the fields that CHANGED are taken from `edited`, clamped to the
+    /// accepted ranges; a non-finite new value is ignored (the field keeps
+    /// its old value). Unchanged fields stay exactly as they are, even if out
+    /// of range (an imported band stays excluded with its warning instead
+    /// of being silently re-enabled with clamped, extreme values).
+    public func applyingEdit(_ edited: EQBand) -> EQBand {
+        func update(_ old: Double, _ new: Double, _ range: ClosedRange<Double>) -> Double {
+            guard new != old else { return old }
+            guard new.isFinite else { return old }
+            return min(max(new, range.lowerBound), range.upperBound)
+        }
+        var band = self
+        band.frequency = update(frequency, edited.frequency, Self.frequencyRange)
+        band.gain = update(gain, edited.gain, Self.gainRange)
+        band.q = update(q, edited.q, Self.qRange)
+        band.isEnabled = edited.isEnabled
+        return band
+    }
 
     /// True when all parameters are finite numbers.
     public var isFinite: Bool { frequency.isFinite && gain.isFinite && q.isFinite }
@@ -82,16 +102,17 @@ public enum Preamp {
     /// dB range of the preamp. 0 dB = unity, never above.
     public static let range: ClosedRange<Double> = -24...0
 
-    /// `decibels` limited to `range` (non-finite -> 0 dB).
-    public static func clamp(_ decibels: Double) -> Double {
-        guard decibels.isFinite else { return 0 }
+    /// `decibels` limited to `range`: -inf -> -24 dB, +inf -> 0 dB.
+    /// NaN -> nil: the value is rejected (callers keep the previous one).
+    public static func clamp(_ decibels: Double) -> Double? {
+        guard !decibels.isNaN else { return nil }
         let value = min(max(decibels, range.lowerBound), range.upperBound)
         return value == 0 ? 0 : value  // no "-0"
     }
 
-    /// Linear gain (<= 1) for `decibels`, after clamping.
-    public static func linearGain(decibels: Double) -> Float {
-        Float(Decibels.linear(fromDecibels: clamp(decibels)))
+    /// Linear gain (<= 1) for `decibels`, after clamping; nil for NaN.
+    public static func linearGain(decibels: Double) -> Float? {
+        clamp(decibels).map { Float(Decibels.linear(fromDecibels: $0)) }
     }
 }
 

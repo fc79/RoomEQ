@@ -337,7 +337,7 @@ final class EngineSession {
         )
         let pair = configuration.outputPair.right < outputLayout.channelCount ? configuration.outputPair : .firstPair
         // EQ coefficients for THIS session's sample rate (active from the
-        // first rendered sample, no crossfade needed).
+        // first rendered sample, no ramp needed).
         let design = EQDesign(bands: configuration.bands, sampleRate: sampleRate)
         for warning in design.warnings {
             Log.engine.notice("EQ at \(self.sampleRate) Hz: \(warning, privacy: .public)")

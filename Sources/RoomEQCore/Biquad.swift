@@ -27,8 +27,11 @@ public struct BiquadCoefficients: Sendable, Equatable {
         self.a2 = a2
     }
 
-    /// H(z) = 1.
-    public static let identity = BiquadCoefficients(b0: 1, b1: 0, b2: 0, a1: 0, a2: 0)
+    /// H(z) = 1. Computed (not a stored static), so using it on the
+    /// real-time thread involves no lazy global initialisation.
+    @inline(__always) public static var identity: BiquadCoefficients {
+        BiquadCoefficients(b0: 1, b1: 0, b2: 0, a1: 0, a2: 0)
+    }
 
     /// Peaking EQ ("peakingEQ") from the RBJ Audio EQ Cookbook:
     ///
@@ -103,25 +106,43 @@ public struct BiquadCoefficients: Sendable, Equatable {
     }
 }
 
-/// One filter section as handed to the real-time code: coefficients plus
-/// what the click-free bank switch needs. Plain old data (no references),
-/// so it can live in preallocated memory and be copied on the RT thread.
+/// One EQ band as handed to the real-time code: where its parameters should
+/// go (log domain, for the smoothing ramps) and the exact coefficients at
+/// that point. Plain old data (no references), so it can live in
+/// preallocated memory and be copied on the RT thread.
 public struct FilterSection: Sendable, Equatable {
+    /// Exact coefficients at the target (computed off the RT thread); the
+    /// ramp ends exactly on them.
     public var coefficients: BiquadCoefficients
     /// The band's UUID as two integers (comparable on the RT thread without
-    /// calling into Foundation). Used to carry a band's filter state over
-    /// when the filter set changes.
+    /// calling into Foundation). A band keeps its filter state, and ramps
+    /// from where it is, as long as its ID stays the same.
     public var bandIDHigh: UInt64
     public var bandIDLow: UInt64
-    /// Samples the section needs before an error in its state has decayed
-    /// by `EQDesign.warmupDecayDecibels` (from its slowest pole), capped.
-    public var settleFrames: Int
+    /// ln(Fc in Hz), gain in dB, ln(Q): the smoothing ramps run linearly in
+    /// these units (constant speed in octaves, dB and Q ratio).
+    public var logFrequency: Double
+    public var gainDecibels: Double
+    public var logQ: Double
 
-    public init(coefficients: BiquadCoefficients, bandIDHigh: UInt64, bandIDLow: UInt64, settleFrames: Int) {
+    public init(
+        coefficients: BiquadCoefficients, bandIDHigh: UInt64, bandIDLow: UInt64,
+        logFrequency: Double, gainDecibels: Double, logQ: Double
+    ) {
         self.coefficients = coefficients
         self.bandIDHigh = bandIDHigh
         self.bandIDLow = bandIDLow
-        self.settleFrames = settleFrames
+        self.logFrequency = logFrequency
+        self.gainDecibels = gainDecibels
+        self.logQ = logQ
+    }
+
+    /// Section for a band that is already validated (`EQDesign`).
+    public init(band: EQBand, coefficients: BiquadCoefficients) {
+        let id = Self.idParts(band.id)
+        self.init(
+            coefficients: coefficients, bandIDHigh: id.high, bandIDLow: id.low,
+            logFrequency: log(band.frequency), gainDecibels: band.gain, logQ: log(band.q))
     }
 
     /// Splits a UUID into the two integers used by `FilterSection`.
@@ -130,5 +151,31 @@ public struct FilterSection: Sendable, Equatable {
             (bytes.loadUnaligned(fromByteOffset: 0, as: UInt64.self),
              bytes.loadUnaligned(fromByteOffset: 8, as: UInt64.self))
         }
+    }
+}
+
+extension BiquadCoefficients {
+    /// RBJ peaking coefficients from log-domain parameters, WITHOUT
+    /// validation, for the real-time smoothing ramps (libm exp/sin/cos only:
+    /// no allocation, no locks, no static data). The caller guarantees the
+    /// parameters lie between two validated ends of a ramp: Q > 0,
+    /// 0 < w0 < pi. For any such values the filter is stable (a2 =
+    /// (1 - alpha/A)/(1 + alpha/A) is in (-1, 1) and |a1| = 2|cos w0|/a0 <
+    /// 1 + a2 = 2/a0), so every point of the ramp is a stable filter.
+    @inline(__always)
+    static func peakingRT(
+        logFrequency: Double, gainDecibels: Double, logQ: Double, radiansPerHertz: Double
+    ) -> BiquadCoefficients {
+        let w0 = exp(logFrequency) * radiansPerHertz
+        let a = exp(gainDecibels * 0.057_564_627_324_851_14)  // 10^(gain/40) = e^(gain ln10 / 40)
+        let alpha = sin(w0) / (2 * exp(logQ))
+        let minusTwoCos = -2 * cos(w0)
+        let inverseA0 = 1 / (1 + alpha / a)
+        return BiquadCoefficients(
+            b0: (1 + alpha * a) * inverseA0,
+            b1: minusTwoCos * inverseA0,
+            b2: (1 - alpha * a) * inverseA0,
+            a1: minusTwoCos * inverseA0,
+            a2: (1 - alpha / a) * inverseA0)
     }
 }
