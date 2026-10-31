@@ -1,5 +1,6 @@
-// The "EQ" section of the menu panel: EQ on/off, preamp, curve graph, band
-// list, REW import and filter warnings.
+// The "EQ" section of the menu panel: preset management, preamp, curve graph,
+// band list, REW import and filter warnings. (EQ on/off and preset switching
+// are in the always-visible quick row, EQQuickRow.swift.)
 //
 // Pure view over `AudioEngineController` (reads the observable properties,
 // calls its methods).
@@ -19,35 +20,12 @@ struct EQSectionView: View {
             if let notice = controller.settingsNotice {
                 warningLines([notice])
             }
-            enableRow
+            PresetControls(controller: controller)
             preampBlock
             EQCurveGraph(controller: controller)
             EQBandsList(controller: controller)
             importBlock
             filterWarningsBlock
-        }
-    }
-
-    // MARK: EQ on/off
-
-    private var enableRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Correzione EQ").font(.headline)
-                Spacer()
-                Toggle(
-                    "Correzione EQ",
-                    isOn: Binding(get: { controller.isEQEnabled }, set: { controller.setEQEnabled($0) })
-                )
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.large)
-            }
-            if !controller.isEQEnabled {
-                Text("EQ spenta (bypass)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-            }
         }
     }
 

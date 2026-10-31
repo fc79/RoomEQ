@@ -1,0 +1,148 @@
+// "App escluse": apps whose audio does NOT go through RoomEQ (e.g. Ableton
+// Live, which has its own output). Expanded by default.
+
+import AppKit
+import RoomEQCore
+import SwiftUI
+import UniformTypeIdentifiers
+
+struct ExclusionsView: View {
+    let controller: AudioEngineController
+
+    /// An app waiting for the user's confirmation (its exclusion has a warning).
+    @State private var pendingExclusion: AppInfo?
+    @State private var note: InlineNote?
+
+    var body: some View {
+        PanelDisclosure(title: "App escluse", expandedByDefault: true) {
+            if controller.excludedApps.isEmpty {
+                Text("Nessuna app esclusa").font(.callout).foregroundStyle(.secondary)
+            }
+            ForEach(controller.excludedApps) { app in
+                row(for: app)
+            }
+            addMenu
+            InlineNoteView(note: note)
+            Text("RoomEQ è sempre escluso")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .alert(
+            pendingExclusion.map { "Escludere «\($0.name)»?" } ?? "",
+            isPresented: Binding(get: { pendingExclusion != nil }, set: { if !$0 { pendingExclusion = nil } }),
+            presenting: pendingExclusion
+        ) { app in
+            Button("Escludi") { add(app) }
+            Button("Annulla", role: .cancel) {}
+        } message: { app in
+            Text(controller.warningForExcluding(bundleID: app.bundleID) ?? "")
+        }
+    }
+
+    // MARK: Excluded apps
+
+    private func row(for app: ExcludedApp) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(nsImage: controller.icon(forBundleID: app.bundleID))
+                .resizable()
+                .frame(width: 22, height: 22)
+                .opacity(app.isInstalled ? 1 : 0.5)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(app.name).font(.callout)
+                    if !app.isInstalled {
+                        Text("non installata").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                if let warning = app.warning {
+                    Text(warning)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 4)
+            Button {
+                note = nil
+                controller.removeExcludedApp(bundleID: app.bundleID)
+                controller.refreshCandidateApps()
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("Smetti di escludere «\(app.name)»")
+            .accessibilityLabel("Rimuovi «\(app.name)» dalle app escluse")
+        }
+    }
+
+    // MARK: Adding
+
+    private var addMenu: some View {
+        Menu {
+            if controller.candidateApps.isEmpty {
+                Text("Nessun'altra app aperta")
+            }
+            ForEach(controller.candidateApps) { app in
+                Button {
+                    request(app)
+                } label: {
+                    Label {
+                        Text(app.isPlayingAudio ? "\(app.name) · sta suonando" : app.name)
+                    } icon: {
+                        Image(nsImage: controller.icon(forBundleID: app.bundleID).resized(toSide: 16))
+                    }
+                }
+            }
+            Divider()
+            Button("Scegli dalle Applicazioni…") { chooseApp() }
+        } label: {
+            Label("Aggiungi app…", systemImage: "plus")
+        }
+        .fixedSize()
+    }
+
+    /// Adds the app, after asking if the exclusion has a warning (e.g. REW).
+    private func request(_ app: AppInfo) {
+        note = nil
+        if controller.warningForExcluding(bundleID: app.bundleID) != nil {
+            pendingExclusion = app
+        } else {
+            add(app)
+        }
+    }
+
+    private func add(_ app: AppInfo) {
+        do {
+            try controller.addExcludedApp(app)
+            note = nil
+        } catch {
+            note = .error(error.localizedDescription)
+        }
+        controller.refreshCandidateApps()
+    }
+
+    /// Opens the app chooser without blocking (`begin`, not `runModal`); the
+    /// app is activated first, otherwise the panel could open behind other
+    /// windows (RoomEQ is a menu-bar-only app).
+    private func chooseApp() {
+        let panel = NSOpenPanel()
+        panel.title = "Scegli un'app da escludere"
+        panel.message = "Scegli l'app il cui audio non deve passare da RoomEQ."
+        panel.prompt = "Escludi"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        NSApp.activate()
+        panel.begin { [self] response in
+            guard response == .OK, let url = panel.url else { return }
+            guard let app = controller.appInfo(forBundleURL: url) else {
+                note = .error("Questa app non ha un identificativo valido: non posso escluderla.")
+                return
+            }
+            request(app)
+        }
+    }
+}

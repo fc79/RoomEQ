@@ -1,8 +1,9 @@
 // App entry point: a menu-bar-only app (LSUIElement in Info.plist).
 //
-// The panel is `MenuPanelView` (MenuPanelView.swift): the stage-2 test panel
-// plus the EQ section (EQSectionView.swift, EQBandsList.swift,
-// EQCurveGraph.swift); the final UI can reuse PanelComponents.swift.
+// The panel is `MenuPanelView` (MenuPanelView.swift), made of one view per
+// block (EQQuickRow, EQSectionView, OutputSectionView, OutputPresetsView,
+// ExclusionsView, SettingsSectionView, MetersSectionViews); shared pieces are
+// in PanelComponents.swift.
 
 import SwiftUI
 
@@ -27,13 +28,26 @@ struct MenuBarIcon: View {
 
     var body: some View {
         Image(systemName: symbolName)
+            .accessibilityLabel(description)
     }
 
     private var symbolName: String {
-        switch controller.state {
-        case .running, .starting: controller.isEQEnabled ? "slider.vertical.3" : "waveform"
-        case .stopped, .stopping: "speaker.slash"
+        switch controller.menuBarState {
+        case .stopped: "speaker.slash"
+        case .starting: "hourglass"
+        case .active: "slider.vertical.3"
+        case .bypassed: "waveform"
         case .failed: "exclamationmark.triangle"
+        }
+    }
+
+    private var description: String {
+        switch controller.menuBarState {
+        case .stopped: "RoomEQ spento"
+        case .starting: "RoomEQ in avvio"
+        case .active: "RoomEQ attivo, EQ accesa"
+        case .bypassed: "RoomEQ attivo, EQ spenta"
+        case .failed: "RoomEQ: errore"
         }
     }
 }
