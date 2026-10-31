@@ -72,15 +72,26 @@ enum AudioDevices {
             transportType: transportType(of: device))
     }
 
-    /// All devices with at least one output channel, excluding aggregate
-    /// devices (RoomEQ's own and any other: an aggregate is a combination of
-    /// devices, not an output to choose).
+    /// Devices that can be the macOS default output and that RoomEQ can
+    /// use: at least 2 output channels, `kAudioDevicePropertyDeviceCanBeDefaultDevice`
+    /// (output scope) = 1, not an aggregate (RoomEQ's own or any other).
     static func outputDevices() -> [OutputDeviceInfo] {
         let ids = (try? allDeviceIDs()) ?? []
-        return ids.compactMap(info(for:)).filter {
-            $0.outputChannelCount > 0 && !$0.uid.hasPrefix(ownAggregateUIDPrefix)
+        return ids.compactMap { id -> OutputDeviceInfo? in
+            guard canBeDefaultOutput(id), let info = info(for: id) else { return nil }
+            return info
+        }
+        .filter {
+            $0.outputChannelCount >= 2 && !$0.uid.hasPrefix(ownAggregateUIDPrefix)
                 && !TransportType.isAggregate($0.transportType)
         }
+    }
+
+    static func canBeDefaultOutput(_ device: AudioObjectID) -> Bool {
+        let value: UInt32? = try? AudioObject.read(
+            device, AudioObject.address(kAudioDevicePropertyDeviceCanBeDefaultDevice, kAudioObjectPropertyScopeOutput),
+            initial: UInt32(0), "Lettura idoneità come uscita")
+        return value == 1
     }
 
     static func transportType(of device: AudioObjectID) -> UInt32 {
@@ -104,36 +115,23 @@ enum AudioDevices {
             "Impostazione della frequenza di campionamento")
     }
 
-    /// The device used for alerts and sound effects.
-    static func defaultSystemOutputDeviceID() -> AudioObjectID? {
-        let id: AudioObjectID? = try? AudioObject.read(
-            AudioObjectID(kAudioObjectSystemObject),
-            AudioObject.address(kAudioHardwarePropertyDefaultSystemOutputDevice),
-            initial: AudioObjectID(kAudioObjectUnknown), "Lettura uscita effetti sonori")
-        guard let id, id != kAudioObjectUnknown else { return nil }
-        return id
-    }
-
-    /// Makes `device` the macOS default output. The alert/sound-effects
-    /// output is moved too ONLY if it was the same device as the default
-    /// output before (i.e. the user never separated them in System
-    /// Settings); otherwise it stays where the user put it.
+    /// Makes `device` the macOS default output and checks that macOS
+    /// actually switched (waits up to 1 s).
+    ///
+    /// The alert/sound-effects output (kAudioHardwarePropertyDefaultSystemOutputDevice)
+    /// is deliberately NOT written: System Settings has a "play sound effects
+    /// through: selected output device" option that makes it follow the
+    /// default output by itself, and writing it explicitly could pin it to
+    /// one device and break that option.
     static func setDefaultOutputDevice(_ device: AudioObjectID) throws {
-        let system = AudioObjectID(kAudioObjectSystemObject)
-        let previousDefault = defaultOutputDeviceID()
-        let previousSystem = defaultSystemOutputDeviceID()
         try AudioObject.write(
-            system, AudioObject.address(kAudioHardwarePropertyDefaultOutputDevice), value: device,
-            "Impostazione dell'uscita di macOS")
-        if let previousDefault, previousSystem == previousDefault, previousDefault != device {
-            do {
-                try AudioObject.write(
-                    system, AudioObject.address(kAudioHardwarePropertyDefaultSystemOutputDevice), value: device,
-                    "Impostazione dell'uscita effetti sonori")
-            } catch {
-                Log.devices.warning("Sound-effects output not moved: \(error.localizedDescription, privacy: .public)")
-            }
+            AudioObjectID(kAudioObjectSystemObject), AudioObject.address(kAudioHardwarePropertyDefaultOutputDevice),
+            value: device, "Impostazione dell'uscita di macOS")
+        for _ in 0..<20 {
+            if defaultOutputDeviceID() == device { return }
+            Thread.sleep(forTimeInterval: 0.05)
         }
+        throw EngineError("macOS non ha cambiato l'uscita")
     }
 
     static func defaultOutputDeviceID() -> AudioObjectID? {

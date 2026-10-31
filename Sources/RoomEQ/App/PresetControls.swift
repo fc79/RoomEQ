@@ -51,9 +51,13 @@ struct PresetControls: View {
         HStack(spacing: 6) {
             Text("Preset").font(.callout)
             Spacer()
-            Button("Salva") { saveToActive() }
-                .disabled(!controller.isActivePresetModified)
-                .help("Salva le modifiche nel preset attuale")
+            Button("Salva") {
+                // No active preset (e.g. deleted): saving means "Salva come…".
+                if controller.activePreset == nil { startEditing(.saveAs) } else { saveToActive() }
+            }
+                .disabled(!controller.hasUnsavedChanges)
+                .help(controller.activePreset == nil
+                    ? "Salva il suono attuale come nuovo preset" : "Salva le modifiche nel preset attuale")
             Button("Salva come…") { startEditing(.saveAs) }
                 .help("Salva il suono attuale come nuovo preset")
             Menu {

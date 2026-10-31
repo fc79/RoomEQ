@@ -23,9 +23,14 @@ struct CoreAudioError: LocalizedError {
     let status: OSStatus
     let operation: String
 
+    /// "<operation>: operazione non riuscita (errore Core Audio 'xxxx')":
+    /// neutral wording, since operation names have either gender.
     var errorDescription: String? {
-        "\(operation) non riuscito: errore Core Audio \(describeOSStatus(status))"
+        "\(operation): operazione non riuscita (errore Core Audio \(describeOSStatus(status)))"
     }
+
+    /// Just "errore Core Audio 'xxxx'", for messages that already say what failed.
+    var shortDescription: String { "errore Core Audio \(describeOSStatus(status))" }
 }
 
 /// A logical engine error (not a Core Audio status).

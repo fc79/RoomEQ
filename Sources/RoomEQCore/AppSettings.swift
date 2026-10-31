@@ -2,8 +2,15 @@
 //
 // Contents: the working EQ state (bands, preamp, EQ on/off), the presets,
 // per-output preset assignments (+ remembered device names and unsaved
-// edits per device), excluded apps, auto-start. The login item is NOT here:
-// macOS (SMAppService) is its source of truth.
+// edits per device), excluded apps, auto-start, buffer size, output channel
+// pair per device. The login item's state is NOT here (macOS, SMAppService,
+// is its source of truth); only whether the user ever asked for it.
+//
+// Limitation: outputs are identified by their Core Audio UID. A device
+// whose UID changes (some USB devices when moved to another port) is seen
+// as a new output: its assignment and remembered edits stay under the old
+// UID until the user assigns again. Remembered names are kept only for
+// outputs with an assignment or remembered edits (no unbounded growth).
 //
 // Same philosophy as stage 3 (EQSettings.swift): loading is LOSSY and
 // forward-compatible. Every field is read on its own; a field that is
@@ -97,13 +104,25 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
     // Launch.
     public var autoStartEngineOnLaunch: Bool
+    /// The user has asked for "open at login" at least once (to tell
+    /// "never registered" from "registered but not found").
+    public var loginItemRequested: Bool
+
+    // Engine.
+    /// IO buffer size in frames (default 64).
+    public var bufferFrames: Int
+    /// Output device UID -> left channel index of the output pair (0 = 1–2).
+    public var outputPairs: [String: Int]
+
+    public static let defaultBufferFrames = 64
 
     public init(
         bands: [EQBand], preampDecibels: Double, isEQEnabled: Bool, presets: [EQPreset], activePresetID: UUID?,
         isPresetPerOutputEnabled: Bool = false, presetAssignments: [String: UUID] = [:],
         deviceNames: [String: String] = [:], editsByDevice: [String: DeviceEdits] = [:],
         lastOutputDeviceUID: String? = nil, excludedApps: [ExcludedAppRecord] = ExclusionRules.defaultApps,
-        autoStartEngineOnLaunch: Bool = false
+        autoStartEngineOnLaunch: Bool = false, loginItemRequested: Bool = false,
+        bufferFrames: Int = AppSettings.defaultBufferFrames, outputPairs: [String: Int] = [:]
     ) {
         version = Self.currentVersion
         self.bands = bands
@@ -118,6 +137,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.lastOutputDeviceUID = lastOutputDeviceUID
         self.excludedApps = excludedApps
         self.autoStartEngineOnLaunch = autoStartEngineOnLaunch
+        self.loginItemRequested = loginItemRequested
+        self.bufferFrames = bufferFrames
+        self.outputPairs = outputPairs
     }
 
     /// First launch: the user's REW filters, also saved as preset "Studio".
@@ -180,11 +202,15 @@ public struct AppSettings: Codable, Sendable, Equatable {
         result.presetAssignments = presetAssignments.filter { !$0.key.isEmpty && existing.contains($0.value) }
         result.editsByDevice = [:]
         for (uid, var edits) in editsByDevice where !uid.isEmpty {
-            if let preset = edits.presetID, !existing.contains(preset) { continue }
+            // Never drop remembered work: only forget a base that is gone.
+            if let preset = edits.presetID, !existing.contains(preset) { edits.presetID = nil }
             (edits.bands, edits.preampDecibels) = clean(edits.bands, edits.preampDecibels)
             result.editsByDevice[uid] = edits
         }
         result.deviceNames = deviceNames.filter { !$0.key.isEmpty && !$0.value.isEmpty }
+        result.pruneDeviceNames()
+        if !(16...4096).contains(result.bufferFrames) { result.bufferFrames = Self.defaultBufferFrames }
+        result.outputPairs = outputPairs.filter { !$0.key.isEmpty && (0...1022).contains($0.value) && $0.value % 2 == 0 }
         if result.lastOutputDeviceUID?.isEmpty == true { result.lastOutputDeviceUID = nil }
         result.excludedApps = ExclusionRules.cleaned(excludedApps, ownBundleID: ownBundleID)
         return result
@@ -266,7 +292,17 @@ public struct AppSettings: Codable, Sendable, Equatable {
         settings.lastOutputDeviceUID = stored.lastOutputDeviceUID
         if let value = stored.excludedApps { settings.excludedApps = value }
         if let value = stored.autoStartEngineOnLaunch { settings.autoStartEngineOnLaunch = value }
+        if let value = stored.loginItemRequested { settings.loginItemRequested = value }
+        if let value = stored.bufferFrames { settings.bufferFrames = value }
+        if let value = stored.outputPairs { settings.outputPairs = value }
         return (settings, problems)
+    }
+
+    /// Keeps remembered device names only for outputs that still need one
+    /// (an assignment or remembered edits).
+    public mutating func pruneDeviceNames() {
+        let needed = Set(presetAssignments.keys).union(editsByDevice.keys)
+        deviceNames = deviceNames.filter { needed.contains($0.key) }
     }
 }
 
@@ -308,12 +344,15 @@ private struct StoredAppSettings: Decodable {
     var lastOutputDeviceUID: String?
     var excludedApps: [ExcludedAppRecord]?
     var autoStartEngineOnLaunch: Bool?
+    var loginItemRequested: Bool?
+    var bufferFrames: Int?
+    var outputPairs: [String: Int]?
     var problems: [String] = []
 
     enum CodingKeys: String, CodingKey {
         case version, bands, preampDecibels, isEQEnabled, presets, activePresetID, isPresetPerOutputEnabled
         case presetAssignments, deviceNames, editsByDevice, lastOutputDeviceUID, excludedApps
-        case autoStartEngineOnLaunch
+        case autoStartEngineOnLaunch, loginItemRequested, bufferFrames, outputPairs
     }
 
     init(from decoder: Decoder) throws {
@@ -332,6 +371,7 @@ private struct StoredAppSettings: Decodable {
         if let list = field([LenientBand].self, .bands, "Elenco dei filtri") {
             bands = list.compactMap(\.band)
             if bands!.count < list.count { problems.append("\(list.count - bands!.count) filtri illeggibili ignorati") }
+            problems += list.compactMap(\.problem).map { "Filtro: \($0)" }
         }
         preampDecibels = field(Double.self, .preampDecibels, "Preamp")
         isEQEnabled = field(Bool.self, .isEQEnabled, "Stato EQ")
@@ -341,7 +381,10 @@ private struct StoredAppSettings: Decodable {
             problems += list.flatMap(\.problems)
             if presets!.isEmpty { presets = nil }
         }
-        if let text = field(String.self, .activePresetID, "Preset attivo") { activePresetID = UUID(uuidString: text) }
+        if let text = field(String.self, .activePresetID, "Preset attivo") {
+            activePresetID = UUID(uuidString: text)
+            if activePresetID == nil { problems.append("Preset attivo illeggibile") }
+        }
         isPresetPerOutputEnabled = field(Bool.self, .isPresetPerOutputEnabled, "Opzione preset per uscita")
         if let raw = field([String: String].self, .presetAssignments, "Associazioni preset-uscita") {
             presetAssignments = raw.compactMapValues(UUID.init(uuidString:))
@@ -351,13 +394,18 @@ private struct StoredAppSettings: Decodable {
         if let raw = field([String: LenientEdits].self, .editsByDevice, "Modifiche per uscita") {
             editsByDevice = raw.compactMapValues(\.edits)
             if editsByDevice!.count < raw.count { problems.append("Modifiche per uscita illeggibili ignorate") }
+            problems += raw.values.flatMap(\.problems)
         }
         lastOutputDeviceUID = field(String.self, .lastOutputDeviceUID, "Ultima uscita")
         if let list = field([LenientExcludedApp].self, .excludedApps, "App escluse") {
             excludedApps = list.compactMap(\.app)
             if excludedApps!.count < list.count { problems.append("App escluse illeggibili ignorate") }
+            problems += list.compactMap(\.problem)
         }
         autoStartEngineOnLaunch = field(Bool.self, .autoStartEngineOnLaunch, "Avvio automatico")
+        loginItemRequested = field(Bool.self, .loginItemRequested, "Apertura al login")
+        bufferFrames = field(Int.self, .bufferFrames, "Dimensione del buffer")
+        outputPairs = field([String: Int].self, .outputPairs, "Canali di uscita")
         self.problems = problems
     }
 }
@@ -376,19 +424,27 @@ private struct LenientPreset: Decodable {
             preset = nil
             return
         }
-        let id = ((try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? nil) ?? UUID()
-        let name = ((try? c.decodeIfPresent(String.self, forKey: .name)) ?? nil) ?? "Preset"
-        let preamp = ((try? c.decodeIfPresent(Double.self, forKey: .preampDecibels)) ?? nil) ?? 0
+        let storedID = (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? nil
+        let storedName = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? nil
+        let storedPreamp = (try? c.decodeIfPresent(Double.self, forKey: .preampDecibels)) ?? nil
+        let id = storedID ?? UUID()
+        let name = storedName ?? "Preset"
+        let preamp = storedPreamp ?? 0
+        if storedID == nil { problems.append("Preset «\(name)»: identificativo illeggibile, rigenerato") }
+        if storedName == nil { problems.append("Preset senza nome leggibile, chiamato «Preset»") }
+        if storedPreamp == nil { problems.append("Preset «\(name)»: preamp illeggibile, 0 dB") }
         let readable = bands.compactMap(\.band)
         if readable.count < bands.count {
             problems.append("Preset «\(name)»: \(bands.count - readable.count) filtri illeggibili ignorati")
         }
+        problems += bands.compactMap(\.problem).map { "Preset «\(name)»: \($0)" }
         preset = EQPreset(id: id, name: name, bands: readable, preampDecibels: preamp)
     }
 }
 
 private struct LenientEdits: Decodable {
     let edits: DeviceEdits?
+    var problems: [String] = []
 
     enum CodingKeys: String, CodingKey { case presetID, bands, preampDecibels }
 
@@ -399,14 +455,24 @@ private struct LenientEdits: Decodable {
             edits = nil
             return
         }
-        let preset = (try? c.decodeIfPresent(UUID.self, forKey: .presetID)) ?? nil
-        let preamp = ((try? c.decodeIfPresent(Double.self, forKey: .preampDecibels)) ?? nil) ?? 0
-        edits = DeviceEdits(presetID: preset, bands: bands.compactMap(\.band), preampDecibels: preamp)
+        // presetID is legitimately absent (nil); present but unreadable is a problem.
+        var preset: UUID?
+        if c.contains(.presetID), (try? c.decodeNil(forKey: .presetID)) != true {
+            preset = try? c.decode(UUID.self, forKey: .presetID)
+            if preset == nil { problems.append("Modifiche per uscita: preset di base illeggibile") }
+        }
+        let storedPreamp = (try? c.decodeIfPresent(Double.self, forKey: .preampDecibels)) ?? nil
+        if storedPreamp == nil { problems.append("Modifiche per uscita: preamp illeggibile, 0 dB") }
+        let readable = bands.compactMap(\.band)
+        if readable.count < bands.count { problems.append("Modifiche per uscita: filtri illeggibili ignorati") }
+        problems += bands.compactMap(\.problem).map { "Modifiche per uscita: \($0)" }
+        edits = DeviceEdits(presetID: preset, bands: readable, preampDecibels: storedPreamp ?? 0)
     }
 }
 
 private struct LenientExcludedApp: Decodable {
     let app: ExcludedAppRecord?
+    var problem: String?
 
     enum CodingKeys: String, CodingKey { case bundleID, name }
 
@@ -417,7 +483,8 @@ private struct LenientExcludedApp: Decodable {
             app = nil
             return
         }
-        let name = ((try? c.decodeIfPresent(String.self, forKey: .name)) ?? nil) ?? bundleID
-        app = ExcludedAppRecord(bundleID: bundleID, name: name)
+        let name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? nil
+        if name == nil { problem = "App esclusa \(bundleID): nome illeggibile" }
+        app = ExcludedAppRecord(bundleID: bundleID, name: name ?? bundleID)
     }
 }

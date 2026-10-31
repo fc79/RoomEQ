@@ -417,7 +417,7 @@ final class EngineSession {
         if initial {
             deviceSampleRate = deviceRate
             captureSampleRate = captureRate
-        } else if deviceRate != deviceSampleRate || captureRate != captureSampleRate {
+        } else if !SampleRates.same(deviceRate, deviceSampleRate) || !SampleRates.same(captureRate, captureSampleRate) {
             throw EngineError("La frequenza di campionamento è cambiata durante l'avvio: riprova.")
         }
     }
@@ -516,7 +516,9 @@ final class EngineSession {
                 "Formato tap").mSampleRate) ?? 0
             let deviceRate = (try? AudioDevices.nominalSampleRate(of: deviceID)) ?? 0
             let captureRate = (try? AudioDevices.nominalSampleRate(of: aggregateID)) ?? 0
-            if tapRate != expectedRate || deviceRate != expectedRate || captureRate != expectedRate {
+            if !SampleRates.same(tapRate, expectedRate) || !SampleRates.same(deviceRate, expectedRate)
+                || !SampleRates.same(captureRate, expectedRate)
+            {
                 link.setMuted(true)
                 Log.engine.notice("Rate change detected (tap \(tapRate), device \(deviceRate), capture \(captureRate)): output muted")
             }
@@ -668,10 +670,10 @@ final class EngineSession {
         {
             return "formato del tap cambiato (\(format.logDescription))"
         }
-        if let rate = try? AudioDevices.nominalSampleRate(of: outputDevice.objectID), rate != deviceSampleRate {
+        if let rate = try? AudioDevices.nominalSampleRate(of: outputDevice.objectID), !SampleRates.same(rate, deviceSampleRate) {
             return "frequenza di \(outputDevice.name) cambiata (\(deviceSampleRate) -> \(rate) Hz)"
         }
-        if let rate = try? aggregate.nominalSampleRate(), rate != captureSampleRate {
+        if let rate = try? aggregate.nominalSampleRate(), !SampleRates.same(rate, captureSampleRate) {
             return "frequenza di cattura cambiata (\(captureSampleRate) -> \(rate) Hz)"
         }
         let captureCounts = try? AudioObject.bufferChannelCounts(aggregate.objectID, scope: kAudioObjectPropertyScopeInput)

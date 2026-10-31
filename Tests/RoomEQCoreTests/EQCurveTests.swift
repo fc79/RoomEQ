@@ -122,7 +122,14 @@ struct EQSettingsTests {
         #expect(loaded.settings.bands[0].id == UUID(uuidString: "8B1F7C2A-0000-4000-8000-000000000001"))
         #expect(loaded.settings.preampDecibels == -2.5)
         #expect(loaded.settings.isEQEnabled == false)
-        #expect(loaded.warnings == ["Filtro salvato 2 illeggibile, ignorato", "Filtro salvato 4 illeggibile, ignorato"])
+        // Every fallback is reported (so a backup is taken): band 3 had no
+        // ID and no on/off, band 5 an unreadable ID.
+        #expect(loaded.warnings == [
+            "Filtro salvato 2 illeggibile, ignorato",
+            "Filtro salvato 3: identificativo illeggibile, rigenerato; stato attivo/disattivo illeggibile, attivato",
+            "Filtro salvato 4 illeggibile, ignorato",
+            "Filtro salvato 5: identificativo illeggibile, rigenerato",
+        ])
     }
 
     /// A newer format version: the known fields are read (and a backup is asked for).

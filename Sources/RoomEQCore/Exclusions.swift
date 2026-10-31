@@ -52,9 +52,31 @@ public enum ExclusionRules {
         bundleID.lowercased().hasPrefix("roomeqwizard")
     }
 
-    /// Warning to show for an excluded app, if any.
-    public static func warning(forBundleID bundleID: String) -> String? {
-        isREW(bundleID) ? rewWarning : nil
+    /// A process belongs to an excluded app when its bundle ID is the
+    /// excluded one or one of its helpers ("<excluded>.something"),
+    /// ignoring case. Used by the engine to find the processes to exclude.
+    public static func matches(processBundleID: String, excluded: String) -> Bool {
+        let process = processBundleID.lowercased(), excluded = excluded.lowercased()
+        return process == excluded || process.hasPrefix(excluded + ".")
+    }
+
+    /// True for IDs so short that, through the helper rule above, they
+    /// would exclude many apps (e.g. "com.apple" matches every Apple app).
+    /// Fewer than 3 dot-separated components, unless it is exactly the ID
+    /// of an installed app.
+    public static func isBroad(_ bundleID: String, isInstalledApp: Bool) -> Bool {
+        guard !isInstalledApp else { return false }
+        return bundleID.split(separator: ".", omittingEmptySubsequences: true).count < 3
+    }
+
+    /// Warning(s) to show for an excluded app (one per line), nil if none.
+    public static func warning(forBundleID bundleID: String, isInstalledApp: Bool = false) -> String? {
+        var lines: [String] = []
+        if isREW(bundleID) { lines.append(rewWarning) }
+        if isBroad(bundleID, isInstalledApp: isInstalledApp) && !isREW(bundleID) {
+            lines.append("«\(bundleID)» escluderebbe molte app (tutte quelle il cui identificativo inizia così)")
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
     /// The bundle ID to add, or why it can't be added.

@@ -40,13 +40,23 @@ public enum PresetNames {
         a.compare(b, options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "it_IT")) == .orderedSame
     }
 
-    /// `name`, or "name 2", "name 3"… if already taken.
+    /// `name`, or "name 2", "name 3"… if already taken; the result never
+    /// exceeds `maximumLength` (the base is shortened to make room).
     public static func unique(_ name: String, among names: [String]) -> String {
+        let name = String(name.prefix(maximumLength))
         guard names.contains(where: { same($0, name) }) else { return name }
         var number = 2
-        while names.contains(where: { same($0, "\(name) \(number)") }) { number += 1 }
-        return "\(name) \(number)"
+        func candidate(_ number: Int) -> String {
+            let suffix = " \(number)"
+            let base = String(name.prefix(maximumLength - suffix.count)).trimmingCharacters(in: .whitespaces)
+            return base + suffix
+        }
+        while names.contains(where: { same($0, candidate(number)) }) { number += 1 }
+        return candidate(number)
     }
+
+    /// Default name for saving without asking ("Senza nome", "Senza nome 2"…).
+    public static let untitled = "Senza nome"
 }
 
 extension AppSettings {
@@ -67,6 +77,20 @@ extension AppSettings {
         return zip(a, b).allSatisfy {
             $0.frequency == $1.frequency && $0.gain == $1.gain && $0.q == $1.q && $0.isEnabled == $1.isEnabled
         }
+    }
+
+    /// True when replacing the working state would lose sound that exists
+    /// nowhere else: it differs from the active preset, or there is no
+    /// active preset and it matches none of the presets (e.g. after
+    /// deleting the active one). The UI must ask before replacing it.
+    public var hasUnsavedChanges: Bool {
+        if activePreset != nil { return isActivePresetModified }
+        return !presets.contains { Self.sameSound($0.bands, $0.preampDecibels, bands, preampDecibels) }
+    }
+
+    /// A free name for saving the working state without asking for one.
+    public var suggestedNewPresetName: String {
+        PresetNames.unique(PresetNames.untitled, among: presets.map(\.name))
     }
 
     /// The validated, trimmed name, unique among the presets except `excluding`.
@@ -115,16 +139,18 @@ extension AppSettings {
         presets[index].name = try validatedPresetName(name, excluding: id)
     }
 
-    /// Deletes a preset (never the last one). Its output assignments and
-    /// remembered edits go too. Deleting the ACTIVE preset leaves the
-    /// working state (what is playing) unchanged, with no active preset.
+    /// Deletes a preset (never the last one) and its output assignments.
+    /// Remembered edits based on it are KEPT (their base is cleared).
+    /// Deleting the ACTIVE preset leaves the working state (what is playing)
+    /// unchanged, with no active preset: `hasUnsavedChanges` is then true.
     public mutating func deletePreset(id: UUID) throws {
         guard let index = presets.firstIndex(where: { $0.id == id }) else { throw PresetError.notFound }
         guard presets.count > 1 else { throw PresetError.lastPreset }
         presets.remove(at: index)
         if activePresetID == id { activePresetID = nil }
         presetAssignments = presetAssignments.filter { $0.value != id }
-        editsByDevice = editsByDevice.filter { $0.value.presetID != id }
+        for (uid, edits) in editsByDevice where edits.presetID == id { editsByDevice[uid]?.presetID = nil }
+        pruneDeviceNames()
     }
 
     /// A copy named "<name> copia" (then "copia 2"…), right after the
@@ -135,8 +161,7 @@ extension AppSettings {
         guard let index = presets.firstIndex(where: { $0.id == id }) else { throw PresetError.notFound }
         var copy = presets[index]
         copy.id = UUID()
-        let base = String("\(copy.name) copia".prefix(PresetNames.maximumLength - 3))
-        copy.name = PresetNames.unique(base, among: presets.map(\.name))
+        copy.name = PresetNames.unique("\(copy.name) copia", among: presets.map(\.name))
         presets.insert(copy, at: index + 1)
         return copy
     }
@@ -151,6 +176,7 @@ extension AppSettings {
 
     public mutating func clearAssignment(deviceUID uid: String) {
         presetAssignments[uid] = nil
+        pruneDeviceNames()
     }
 
     /// What `outputDidChange` did to the working state.
@@ -160,20 +186,23 @@ extension AppSettings {
         /// The new output's assigned preset was applied.
         case appliedPreset(UUID)
         /// Edits previously made on the new output were restored.
-        case restoredEdits(presetID: UUID?)
+        /// `presetID`: their base (now active); `assignedPresetID`: the
+        /// output's assignment when it differs from that base (the user may
+        /// want to apply it), else nil.
+        case restoredEdits(presetID: UUID?, assignedPresetID: UUID?)
     }
 
     /// Call whenever the macOS default output may have changed (also at
     /// launch). Records the new output; with per-output presets enabled:
-    ///   * the working state is replaced ONLY when the new output has an
-    ///     assignment (its preset is applied) or has edits remembered;
-    ///   * whenever it is replaced and it differs from its preset (unsaved
-    ///     edits) or has no preset, those edits are remembered for the
-    ///     output being left, and restored when that output comes back —
-    ///     an automatic switch never loses edits;
-    ///   * coming back to an output with remembered edits restores them,
-    ///     but only if they were based on the preset assigned to it now
-    ///     (or it has no assignment); otherwise its preset is applied.
+    ///   * the working state is replaced ONLY when the new output has edits
+    ///     remembered (they are restored) or an assignment (its preset is
+    ///     applied);
+    ///   * remembered edits always win over the assignment (user work is
+    ///     never discarded automatically), even if they were based on
+    ///     another preset than the one assigned now;
+    ///   * whenever the working state is replaced and has unsaved changes,
+    ///     they are remembered for the output being left and restored when
+    ///     that output comes back: an automatic switch never loses work.
     public mutating func outputDidChange(to uid: String?) -> OutputSwitch {
         let previous = lastOutputDeviceUID
         guard let uid, uid != previous else { return .unchanged }
@@ -181,26 +210,24 @@ extension AppSettings {
         guard isPresetPerOutputEnabled else { return .unchanged }
 
         let assigned = presetAssignments[uid].flatMap { id in presets.contains { $0.id == id } ? id : nil }
-        let remembered = editsByDevice[uid]
-        let restore = remembered.flatMap { edits -> DeviceEdits? in
-            assigned == nil || edits.presetID == assigned ? edits : nil
-        }
+        let restore = editsByDevice[uid]
         guard assigned != nil || restore != nil else { return .unchanged }
 
-        // About to replace the working state: keep its unsaved edits.
+        // About to replace the working state: keep its unsaved changes.
         if let previous {
-            if isActivePresetModified || activePresetID == nil {
+            if hasUnsavedChanges {
                 editsByDevice[previous] = DeviceEdits(presetID: activePresetID, bands: bands, preampDecibels: preampDecibels)
             } else {
                 editsByDevice[previous] = nil
             }
         }
         editsByDevice[uid] = nil
+        pruneDeviceNames()
         if let restore {
             bands = restore.bands
             preampDecibels = restore.preampDecibels
             activePresetID = restore.presetID.flatMap { id in presets.contains { $0.id == id } ? id : nil }
-            return .restoredEdits(presetID: activePresetID)
+            return .restoredEdits(presetID: activePresetID, assignedPresetID: assigned == activePresetID ? nil : assigned)
         }
         guard let assigned, (try? applyPreset(id: assigned)) != nil else { return .unchanged }
         return .appliedPreset(assigned)

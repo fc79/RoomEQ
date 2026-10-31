@@ -12,7 +12,8 @@ struct ExcludedApp: Identifiable, Hashable, Sendable {
     /// Installed app bundle (for the icon: `NSWorkspace.shared.icon(forFile: url.path)`),
     /// nil when not installed.
     let url: URL?
-    /// Italian warning about this exclusion (REW), else nil.
+    /// Italian warning(s) about this exclusion, one per line (REW; an ID so
+    /// short it would exclude many apps), else nil.
     let warning: String?
 
     var id: String { bundleID }
@@ -28,8 +29,10 @@ struct AppInfo: Identifiable, Hashable, Sendable {
     let isRunning: Bool
     /// Currently sending audio to an output (Core Audio process list).
     let isPlayingAudio: Bool
-    /// Italian warning if excluded (REW), else nil.
-    var warning: String? { ExclusionRules.warning(forBundleID: bundleID) }
+    /// Italian warning if excluded (REW, very short ID), else nil. Prefer
+    /// `AudioEngineController.warningForExcluding(bundleID:)`, which also
+    /// knows whether the ID belongs to an installed app.
+    var warning: String? { ExclusionRules.warning(forBundleID: bundleID, isInstalledApp: url != nil) }
 
     var id: String { bundleID }
 }

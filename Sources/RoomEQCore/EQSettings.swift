@@ -66,9 +66,10 @@ public struct EQSettings: Codable, Sendable, Equatable {
         var bands: [EQBand]
         if let stored = stored.bands {
             bands = []
-            for (index, band) in stored.enumerated() {
-                if let band = band.band {
+            for (index, entry) in stored.enumerated() {
+                if let band = entry.band {
                     bands.append(band)
+                    if let problem = entry.problem { warnings.append("Filtro salvato \(index + 1): \(problem)") }
                 } else {
                     warnings.append("Filtro salvato \(index + 1) illeggibile, ignorato")
                 }
@@ -133,10 +134,13 @@ private struct StoredSettings: Decodable {
 }
 
 /// One band; decoding never throws (so the array keeps going), `band` is nil
-/// if the element is unusable. Missing ID -> new ID; missing isEnabled -> on.
-/// Shared by every lenient settings decoder.
+/// if the element is unusable. Missing/unreadable ID -> new ID, missing or
+/// unreadable isEnabled -> on; each such fallback is reported in `problem`
+/// (so the caller keeps a backup). Shared by every lenient settings decoder.
 struct LenientBand: Decodable {
     let band: EQBand?
+    /// Italian description of a fallback used, nil if none.
+    var problem: String?
 
     enum CodingKeys: String, CodingKey {
         case id, frequency, gain, q, isEnabled
@@ -154,6 +158,10 @@ struct LenientBand: Decodable {
         }
         let id = (try? container.decodeIfPresent(UUID.self, forKey: .id)) ?? nil
         let isEnabled = (try? container.decodeIfPresent(Bool.self, forKey: .isEnabled)) ?? nil
+        var problems: [String] = []
+        if id == nil { problems.append("identificativo illeggibile, rigenerato") }
+        if isEnabled == nil { problems.append("stato attivo/disattivo illeggibile, attivato") }
+        problem = problems.isEmpty ? nil : problems.joined(separator: "; ")
         band = EQBand(id: id ?? UUID(), frequency: frequency, gain: gain, q: q, isEnabled: isEnabled ?? true)
     }
 }

@@ -57,6 +57,12 @@ public enum AudioFormatText {
         let whole = tenths / 10, fraction = tenths % 10
         return fraction == 0 ? "\(whole) kHz" : "\(whole),\(fraction) kHz"
     }
+
+    /// "44,1 → 48 kHz" (or just "48 kHz" without a known old rate).
+    public static func change(from old: Double?, to new: Double) -> String {
+        guard let old, old > 0 else { return kilohertz(new) }
+        return kilohertz(old).replacingOccurrences(of: " kHz", with: "") + " → " + kilohertz(new)
+    }
 }
 
 /// RoomEQ never converts sample rates: the tap, the output device and the
@@ -68,12 +74,12 @@ public enum SampleRateGuard {
             return "Frequenza di campionamento sconosciuta (tap \(AudioFormatText.kilohertz(tapRate)), "
                 + "dispositivo \(AudioFormatText.kilohertz(deviceRate))): RoomEQ non si avvia."
         }
-        if tapRate != deviceRate {
+        if !SampleRates.same(tapRate, deviceRate) {
             return "La frequenza del tap (\(AudioFormatText.kilohertz(tapRate))) non coincide con quella del "
                 + "dispositivo (\(AudioFormatText.kilohertz(deviceRate))): RoomEQ non converte la frequenza, "
                 + "quindi non si avvia."
         }
-        if captureRate != deviceRate {
+        if !SampleRates.same(captureRate, deviceRate) {
             return "La frequenza di cattura (\(AudioFormatText.kilohertz(captureRate))) non coincide con quella del "
                 + "dispositivo (\(AudioFormatText.kilohertz(deviceRate))): RoomEQ non converte la frequenza, "
                 + "quindi non si avvia."

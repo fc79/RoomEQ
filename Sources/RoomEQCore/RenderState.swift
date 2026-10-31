@@ -373,6 +373,20 @@ public final class RenderStateHandle: @unchecked Sendable {
     }
 
     /// nil for NaN; otherwise limited to 0...1 (infinities included).
+    /// Hands a whole working EQ state to the audio thread: the filters
+    /// (every band ramps, 30 ms) AND the preamp (15 ms gain ramp), both for
+    /// this session's sample rate. The controller publishes every change of
+    /// bands or preamp (edit, preset, automatic per-output switch, restored
+    /// edits, import) through here, so the preamp can never be left behind.
+    /// Returns the design used.
+    @discardableResult
+    public func publishWorkingState(bands: [EQBand], preampDecibels: Double) -> EQDesign {
+        let design = EQDesign(bands: bands, sampleRate: configuration.sampleRate)
+        publishFilters(design.sections)
+        setPreamp(decibels: preampDecibels)
+        return design
+    }
+
     static func clampGain(_ linear: Float) -> Float? {
         guard !linear.isNaN else { return nil }
         return min(max(linear, 0), 1)

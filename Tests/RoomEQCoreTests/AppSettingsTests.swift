@@ -66,11 +66,16 @@ struct PresetTests {
         try settings.assignPreset(id: headphones, toDeviceUID: "usb-1")
         settings.editsByDevice["usb-1"] = DeviceEdits(presetID: headphones, bands: [], preampDecibels: 0)
         let playing = settings.bands
+        #expect(!settings.hasUnsavedChanges)
         try settings.deletePreset(id: headphones)  // the active one
         #expect(settings.presets.map(\.id) == [studio])
         #expect(settings.activePresetID == nil && !settings.isActivePresetModified)
         #expect(settings.bands == playing)  // the sound doesn't change
-        #expect(settings.presetAssignments.isEmpty && settings.editsByDevice.isEmpty)
+        // ...and it now exists in no preset: replacing it must be confirmed.
+        #expect(settings.hasUnsavedChanges)
+        #expect(settings.presetAssignments.isEmpty)
+        // Remembered edits are kept, only their base is cleared.
+        #expect(settings.editsByDevice["usb-1"] == DeviceEdits(presetID: nil, bands: [], preampDecibels: 0))
         #expect(throws: PresetError.lastPreset) { try settings.deletePreset(id: studio) }
         #expect(throws: PresetError.noActivePreset) { try settings.saveCurrentToActivePreset() }
     }
@@ -125,21 +130,36 @@ struct OutputPresetTests {
         #expect(settings.outputDidChange(to: "cuffie") == .appliedPreset(headphones))
         #expect(settings.editsByDevice["casse"]?.bands == edited)
         settings.preampDecibels = -4  // unsaved edit on the headphones
-        #expect(settings.outputDidChange(to: "casse") == .restoredEdits(presetID: studio))
+        #expect(settings.outputDidChange(to: "casse") == .restoredEdits(presetID: studio, assignedPresetID: nil))
         #expect(settings.bands == edited && settings.activePresetID == studio && settings.isActivePresetModified)
         #expect(settings.editsByDevice["casse"] == nil)
         #expect(settings.editsByDevice["cuffie"]?.preampDecibels == -4)
-        #expect(settings.outputDidChange(to: "cuffie") == .restoredEdits(presetID: headphones))
+        #expect(settings.outputDidChange(to: "cuffie") == .restoredEdits(presetID: headphones, assignedPresetID: nil))
         #expect(settings.preampDecibels == -4)
     }
 
-    @Test func rememberedEditsForAnotherPresetAreNotRestored() throws {
+    /// User work wins over a changed assignment: the edits are restored and
+    /// the result names the preset assigned now.
+    @Test func rememberedEditsWinOverAChangedAssignment() throws {
         var (settings, studio, headphones) = try setup()
         settings.bands[0].gain = -1
+        let edited = settings.bands
         _ = settings.outputDidChange(to: "cuffie")
         try settings.assignPreset(id: headphones, toDeviceUID: "casse")  // reassigned meanwhile
-        #expect(settings.outputDidChange(to: "casse") == .appliedPreset(headphones))
-        _ = studio
+        #expect(settings.outputDidChange(to: "casse") == .restoredEdits(presetID: studio, assignedPresetID: headphones))
+        #expect(settings.bands == edited && settings.activePresetID == studio)
+    }
+
+    /// Edits whose base preset was deleted are still restored (no base).
+    @Test func rememberedEditsSurviveDeletingTheirPreset() throws {
+        var (settings, studio, _) = try setup()
+        settings.bands[0].gain = -1
+        let edited = settings.bands
+        _ = settings.outputDidChange(to: "cuffie")
+        try settings.deletePreset(id: studio)
+        #expect(settings.editsByDevice["casse"]?.bands == edited)
+        #expect(settings.outputDidChange(to: "casse") == .restoredEdits(presetID: nil, assignedPresetID: nil))
+        #expect(settings.bands == edited && settings.activePresetID == nil && settings.hasUnsavedChanges)
     }
 
     @Test func unassignedOutputKeepsTheCurrentSound() throws {
@@ -157,7 +177,7 @@ struct OutputPresetTests {
         settings.bands[2].gain = -2  // edits made on the unassigned output
         let edited = settings.bands
         #expect(settings.outputDidChange(to: "cuffie") == .appliedPreset(headphones))
-        #expect(settings.outputDidChange(to: "hdmi") == .restoredEdits(presetID: settings.presets[0].id))
+        #expect(settings.outputDidChange(to: "hdmi") == .restoredEdits(presetID: settings.presets[0].id, assignedPresetID: nil))
         #expect(settings.bands == edited)
     }
 

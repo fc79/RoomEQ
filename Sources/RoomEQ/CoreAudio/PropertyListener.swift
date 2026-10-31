@@ -6,7 +6,12 @@ import RoomEQCore
 
 /// Registers `handler` for changes of `address` on `object`. The handler runs
 /// on `queue`. Call `remove()` to unregister (also done on deinit).
-final class PropertyListener {
+///
+/// `@unchecked Sendable`: everything is set in `init`; the only mutation is
+/// `registered` in `remove()`, and callers create/remove a given listener
+/// from one queue at a time (the controller does both on its device queue,
+/// so HAL (un)registration never blocks the main thread).
+final class PropertyListener: @unchecked Sendable {
     let object: AudioObjectID
     let address: AudioObjectPropertyAddress
     private let queue: DispatchQueue

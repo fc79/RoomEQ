@@ -3,6 +3,15 @@
 import CoreAudio
 
 public enum SampleRates {
+    /// Rates closer than this are the same rate (HAL values can carry
+    /// tiny floating-point differences).
+    public static let tolerance = 0.5
+
+    public static func same(_ a: Double, _ b: Double) -> Bool { abs(a - b) <= tolerance }
+
+    /// `rate` is one of `rates` (within the tolerance).
+    public static func contains(_ rates: [Double], _ rate: Double) -> Bool { rates.contains { same($0, rate) } }
+
     /// The standard rates offered when a device reports a continuous range.
     public static let standard: [Double] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000]
 

@@ -37,9 +37,10 @@ enum AudioProcesses {
     }
 
     /// True if `bundleID` is `excluded` or one of its helpers
-    /// (e.g. "com.ableton.live.something" for "com.ableton.live").
+    /// (e.g. "com.ableton.live.something" for "com.ableton.live"), ignoring
+    /// case (see `ExclusionRules.matches`).
     static func bundleID(_ bundleID: String, matches excluded: String) -> Bool {
-        bundleID == excluded || bundleID.hasPrefix(excluded + ".")
+        ExclusionRules.matches(processBundleID: bundleID, excluded: excluded)
     }
 
     /// Process objects of currently running processes whose bundle ID
@@ -137,17 +138,22 @@ final class ProcessTap {
         return description
     }
 
+    /// The user's exclusions plus RoomEQ's own bundle ID, sorted, unique
+    /// (ignoring case).
+    static func bundleIDList(_ userExcluded: [String]) -> [String] {
+        let ownBundleID = Bundle.main.bundleIdentifier ?? "com.federicociapi.RoomEQ"
+        var result: [String] = []
+        for id in userExcluded + [ownBundleID] where !result.contains(where: { ExclusionRules.same($0, id) }) {
+            result.append(id)
+        }
+        return result.sorted()
+    }
+
     /// Creates the tap.
     /// - Parameters:
     ///   - excludedBundleIDs: bundle IDs to exclude (RoomEQ's own is added).
     ///   - deviceUID / stream: the output stream to tap.
     ///   - muteBehavior: `.mutedWhenTapped` (apps silenced only while we read).
-    /// The user's exclusions plus RoomEQ's own bundle ID, sorted, unique.
-    static func bundleIDList(_ userExcluded: [String]) -> [String] {
-        let ownBundleID = Bundle.main.bundleIdentifier ?? "com.federicociapi.RoomEQ"
-        return Array(Set(userExcluded + [ownBundleID])).sorted()
-    }
-
     static func create(
         excludedBundleIDs userExcluded: [String], deviceUID: String, stream: UInt,
         muteBehavior: CATapMuteBehavior = .mutedWhenTapped

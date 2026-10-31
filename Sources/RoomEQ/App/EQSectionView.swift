@@ -14,6 +14,8 @@ struct EQSectionView: View {
     let controller: AudioEngineController
 
     @State private var importWarningsExpanded = false
+    /// Asking before an import replaces unsaved work.
+    @State private var confirmImport = false
 
     var body: some View {
         PanelSection(title: "EQ") {
@@ -26,6 +28,13 @@ struct EQSectionView: View {
             EQBandsList(controller: controller)
             importBlock
             filterWarningsBlock
+        }
+        .alert("Importare da REW?", isPresented: $confirmImport) {
+            Button("Scegli il file…", role: .destructive) { chooseREWFile() }
+            Button("Annulla", role: .cancel) {}
+        } message: {
+            Text(controller.activePreset.map { "I filtri importati sostituiscono il suono attuale: le modifiche non salvate a «\($0.name)» andranno perse." }
+                ?? "I filtri importati sostituiscono il suono attuale, che non è salvato in nessun preset e andrà perso.")
         }
     }
 
@@ -83,7 +92,10 @@ struct EQSectionView: View {
     private var importBlock: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Button("Importa da REW…") { chooseREWFile() }
+                Button("Importa da REW…") {
+                    // Unsaved work is never replaced without asking.
+                    if controller.hasUnsavedChanges { confirmImport = true } else { chooseREWFile() }
+                }
                     .disabled(controller.isImporting)
                 if controller.isImporting {
                     ProgressView().controlSize(.small)
