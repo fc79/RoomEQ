@@ -1,7 +1,8 @@
 // A fixed-duration linear ramp, for click-free parameter changes.
 //
-// Used on the real-time thread for the output gain and the bypass
-// crossfade (and in stage 3 for EQ parameter smoothing). The duration is a
+// Used on the real-time thread for the preamp gain and the bypass (EQ
+// on/off) crossfade. (EQ filter changes use the bank crossfade in
+// DSPProcessor.swift instead.) The duration is a
 // number of samples computed from the sample rate, so a change always takes
 // the same TIME regardless of the IO buffer size; the ramp state is carried
 // from one IO cycle to the next.

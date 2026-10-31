@@ -9,6 +9,13 @@
 // Output device: ALWAYS the macOS default output (tapped device = output
 // device), followed automatically when it changes.
 //
+// EQ (stage 3): the band list, preamp and EQ on/off live here, are saved
+// to UserDefaults on every change and loaded at launch (the user's REW
+// filters when nothing is saved). Every change of the band list is turned
+// into coefficients for the running session's sample rate (48 kHz while
+// stopped, for the curve) and handed to the audio thread, which switches
+// click-free. Every session start recomputes them for the actual rate.
+//
 // Invariant: there is never a running engine session the controller does
 // not know about. A session becomes "active" only when its start completes
 // while that launch is still wanted; any other completed start is stopped
@@ -74,12 +81,6 @@ final class AudioEngineController {
     private(set) var bufferSize = BufferSize.defaultSize
     /// Buffer sizes the devices accept (64/128/256 within their ranges).
     private(set) var bufferSizeOptions = BufferSize.preferredSizes
-    /// Output gain in dB (applied after the DSP chain, ramped over 15 ms).
-    private(set) var gainDecibels: Double = 0
-    static let gainRange: ClosedRange<Double> = -60...12
-    /// When true the output crossfades (10 ms) to the unprocessed signal.
-    /// Stage 2: no audible difference.
-    private(set) var isBypassed = false
     /// Apps never captured (RoomEQ itself is always excluded in addition).
     private(set) var excludedBundleIDs = ["com.ableton.live"]
 
@@ -104,12 +105,40 @@ final class AudioEngineController {
     /// Tap format of the running session, e.g. "44,1 kHz · 10 ch".
     private(set) var tapFormatDescription: String?
 
-    // MARK: Hooks
+    // MARK: EQ
 
-    /// Called after a (re)start whenever the sample rate differs from the
-    /// previous run's (and on the first start). Stage 3 recomputes the EQ
-    /// coefficients here.
-    @ObservationIgnored var onSampleRateChange: ((Double) -> Void)?
+    /// The EQ bands in processing order (at most `EQBand.maximumCount`).
+    private(set) var bands: [EQBand]
+    /// EQ on (processed signal) or off (original signal, 10 ms crossfade).
+    /// The filters keep running while off, so switching is click-free.
+    private(set) var isEQEnabled: Bool
+    /// Output preamp in dB, `preampRange` (-24…0): attenuation only.
+    /// Applied (15 ms ramp) with the EQ on and off.
+    private(set) var preampDecibels: Double
+    static let preampRange = Preamp.range
+    /// Largest boost of the combined EQ curve between 20 Hz and 20 kHz
+    /// (0 when the curve never goes above 0 dB).
+    private(set) var maxCurveBoostDecibels: Double = 0
+    /// Preamp that would keep the curve at or below 0 dB (-maxBoost rounded
+    /// up to 0,1 dB). Only a suggestion: call `setPreamp` to apply it.
+    private(set) var suggestedPreampDecibels: Double = 0
+    /// Enabled bands that are NOT processed, with the reason (e.g. Fc too
+    /// high for the current sample rate), keyed by band ID.
+    private(set) var bandIssues: [UUID: String] = [:]
+    /// The same messages in band order.
+    private(set) var filterWarnings: [String] = []
+    /// Sample rate the curve, the issues and the coefficients refer to:
+    /// the running session's, or `idleSampleRate` when stopped.
+    private(set) var eqSampleRate: Double = AudioEngineController.idleSampleRate
+    static let idleSampleRate: Double = 48_000
+
+    /// Result of the last REW import: warnings (skipped filters, other
+    /// equaliser…), a one-line summary on success, an error otherwise.
+    private(set) var lastImportWarnings: [String] = []
+    private(set) var lastImportSummary: String?
+    private(set) var lastImportError: String?
+    /// True while a file is being read.
+    private(set) var isImporting = false
 
     // MARK: Private
 
@@ -126,11 +155,26 @@ final class AudioEngineController {
     @ObservationIgnored private var launchGeneration = 0
     @ObservationIgnored private var meterTimer: Timer?
     @ObservationIgnored private var deviceListeners: [PropertyListener] = []
-    @ObservationIgnored private var lastSampleRate: Double?
     @ObservationIgnored private var automaticRestarts: [Date] = []
     @ObservationIgnored private var prepared = false
+    /// Current EQ design (coefficients at `eqSampleRate`). Observed, so
+    /// views calling `curveResponse` refresh when it changes.
+    private var eqDesign: EQDesign
+    @ObservationIgnored private let userDefaults: UserDefaults
+    @ObservationIgnored private let importQueue = DispatchQueue(
+        label: "com.federicociapi.RoomEQ.import", qos: .userInitiated)
+    @ObservationIgnored private var importGeneration = 0
+    static let settingsKey = "EQSettings"
 
-    init() {}
+    init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
+        let settings = userDefaults.data(forKey: Self.settingsKey).flatMap(EQSettings.decode) ?? .defaults()
+        bands = settings.bands
+        isEQEnabled = settings.isEQEnabled
+        preampDecibels = settings.preampDecibels
+        eqDesign = EQDesign(bands: settings.bands, sampleRate: Self.idleSampleRate)
+        updateEQ()
+    }
 
     /// Call once at launch: device list and device-change listeners
     /// (device list + macOS default output).
@@ -240,16 +284,93 @@ final class AudioEngineController {
         restartIfActive(reason: "cambio app escluse")
     }
 
-    /// Applied live, smoothly (15 ms ramp).
-    func setGainDecibels(_ decibels: Double) {
-        gainDecibels = min(max(decibels, Self.gainRange.lowerBound), Self.gainRange.upperBound)
-        renderState?.setGain(linear: Float(Decibels.linear(fromDecibels: gainDecibels)))
+    // MARK: EQ settings (all applied live and saved)
+
+    /// Preamp in dB, clamped to -24…0. Applied smoothly (15 ms ramp).
+    func setPreamp(_ decibels: Double) {
+        let value = Preamp.clamp(decibels)
+        guard value != preampDecibels else { return }
+        preampDecibels = value
+        renderState?.setPreamp(decibels: value)
+        saveSettings()
     }
 
-    /// Applied live (10 ms crossfade).
-    func setBypass(_ bypassed: Bool) {
-        isBypassed = bypassed
-        renderState?.setBypass(bypassed)
+    /// EQ on/off (10 ms crossfade to/from the original signal).
+    func setEQEnabled(_ enabled: Bool) {
+        guard enabled != isEQEnabled else { return }
+        isEQEnabled = enabled
+        renderState?.setBypass(!enabled)
+        saveSettings()
+    }
+
+    /// Replaces the band with the same ID (unknown IDs are ignored).
+    /// Values are clamped to `EQBand.frequencyRange` / `gainRange` /
+    /// `qRange`. Fine for continuous slider drags: changes are coalesced by
+    /// the audio thread and the last one is always applied.
+    func setBand(_ band: EQBand) {
+        guard let index = bands.firstIndex(where: { $0.id == band.id }) else { return }
+        let clamped = band.clamped()
+        guard bands[index] != clamped else { return }
+        bands[index] = clamped
+        bandsChanged()
+    }
+
+    func setBandEnabled(id: EQBand.ID, _ enabled: Bool) {
+        guard let index = bands.firstIndex(where: { $0.id == id }), bands[index].isEnabled != enabled else { return }
+        bands[index].isEnabled = enabled
+        bandsChanged()
+    }
+
+    func removeBand(id: EQBand.ID) {
+        guard let index = bands.firstIndex(where: { $0.id == id }) else { return }
+        bands.remove(at: index)
+        bandsChanged()
+    }
+
+    /// Appends a neutral band (1 kHz, 0 dB, Q 1). Returns nil (and changes
+    /// nothing) when there are already `EQBand.maximumCount` bands.
+    @discardableResult
+    func addBand() -> EQBand? {
+        guard bands.count < EQBand.maximumCount else { return nil }
+        let band = EQBand.neutral()
+        bands.append(band)
+        bandsChanged()
+        return band
+    }
+
+    /// Back to the user's REW measurement filters (preamp and EQ on/off unchanged).
+    func resetToDefaultFilters() {
+        bands = EQBand.defaultBands()
+        bandsChanged()
+    }
+
+    /// Combined EQ response in dB at each frequency (Hz), for drawing.
+    /// Uses the running session's sample rate, or 48 kHz when stopped.
+    /// Bands that are disabled or not processable are not included.
+    func curveResponse(frequencies: [Double]) -> [Double] {
+        EQCurve.responseDecibels(
+            coefficients: eqDesign.coefficients, sampleRate: eqDesign.sampleRate, frequencies: frequencies)
+    }
+
+    /// Imports a REW "Export filter settings as text" file. The file is read
+    /// and parsed on a background queue; then, on success, its PK filters
+    /// replace the current bands (applied live, saved). Outcome in
+    /// `lastImportSummary` / `lastImportWarnings` / `lastImportError`.
+    func importREWFile(url: URL) {
+        importGeneration += 1
+        let generation = importGeneration
+        isImporting = true
+        lastImportError = nil
+        importQueue.async { [weak self] in
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            let result = Result { try REWImport.load(url: url) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.finishImport(result, fileName: url.lastPathComponent, generation: generation)
+                }
+            }
+        }
     }
 
     /// Re-reads the device list and the macOS default output on a background
@@ -291,8 +412,9 @@ final class AudioEngineController {
             outputPair: outputChannelPair,
             bufferFrames: bufferSize,
             excludedBundleIDs: excludedBundleIDs,
-            gain: Float(Decibels.linear(fromDecibels: gainDecibels)),
-            bypass: isBypassed,
+            gain: Preamp.linearGain(decibels: preampDecibels),
+            bypass: !isEQEnabled,
+            bands: bands,
             processListFallbackEnabled: !UserDefaults.standard.bool(forKey: "DisableProcessExclusionFallback"))
     }
 
@@ -313,6 +435,7 @@ final class AudioEngineController {
         activeOutputDevice = nil
         tapFormatDescription = nil
         ringStatus = .empty
+        updateEQ()  // back to the idle sample rate
     }
 
     private func launch(on device: OutputDeviceInfo, statusText: String) {
@@ -347,8 +470,8 @@ final class AudioEngineController {
             renderState = info.renderState
             link = info.link
             // Re-apply live settings changed while the engine was starting.
-            info.renderState.setGain(linear: Float(Decibels.linear(fromDecibels: gainDecibels)))
-            info.renderState.setBypass(isBypassed)
+            info.renderState.setPreamp(decibels: preampDecibels)
+            info.renderState.setBypass(!isEQEnabled)
             if !info.renderState.setOutputPair(outputChannelPair) { outputChannelPair = info.outputPair }
             sampleRate = info.sampleRate
             latency = info.latency
@@ -360,10 +483,9 @@ final class AudioEngineController {
             state = .running
             status = "In funzione su \(info.outputDevice.name) · \(AudioFormatText.kilohertz(info.sampleRate)) · buffer \(info.bufferFrames)"
             startMeters()
-            if lastSampleRate != info.sampleRate {
-                lastSampleRate = info.sampleRate
-                onSampleRateChange?(info.sampleRate)
-            }
+            // Curve and issues for this session's rate; bands changed while
+            // starting are published (an unchanged set is not re-sent).
+            updateEQ()
             // The macOS output may have changed while starting.
             followSystemOutputIfNeeded()
         case .failure(let error):
@@ -442,6 +564,66 @@ final class AudioEngineController {
         state = .failed
         lastError = message
         status = "Errore: \(message)"
+    }
+
+    // MARK: EQ internals
+
+    private func bandsChanged() {
+        updateEQ()
+        saveSettings()
+    }
+
+    /// Recomputes the design for the current rate, hands it to the audio
+    /// thread (if running) and refreshes the derived values.
+    private func updateEQ() {
+        let rate = renderState?.configuration.sampleRate ?? Self.idleSampleRate
+        let design = EQDesign(bands: bands, sampleRate: rate)
+        renderState?.publishFilters(design.sections)
+        if design != eqDesign { eqDesign = design }
+        if rate != eqSampleRate { eqSampleRate = rate }
+        if design.issues != bandIssues { bandIssues = design.issues }
+        if design.warnings != filterWarnings { filterWarnings = design.warnings }
+        let boost = EQCurve.maximumBoostDecibels(design: design, bands: bands)
+        if boost != maxCurveBoostDecibels { maxCurveBoostDecibels = boost }
+        let suggested = EQCurve.suggestedPreampDecibels(forMaximumBoost: boost)
+        if suggested != suggestedPreampDecibels { suggestedPreampDecibels = suggested }
+    }
+
+    private func saveSettings() {
+        let settings = EQSettings(bands: bands, preampDecibels: preampDecibels, isEQEnabled: isEQEnabled)
+        do {
+            userDefaults.set(try settings.encoded(), forKey: Self.settingsKey)
+        } catch {
+            Log.app.error("Saving EQ settings failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func finishImport(_ result: Result<REWImportResult, Error>, fileName: String, generation: Int) {
+        guard generation == importGeneration else { return }  // a newer import is running
+        isImporting = false
+        switch result {
+        case .success(let imported):
+            bands = imported.bands
+            bandsChanged()
+            lastImportWarnings = imported.warnings
+            lastImportError = nil
+            let count = imported.bands.count
+            var summary = count == 1 ? "Importato 1 filtro" : "Importati \(count) filtri"
+            summary += " da «\(fileName)»"
+            let off = imported.bands.filter { !$0.isEnabled }.count
+            if off > 0 { summary += off == 1 ? " (1 disattivato)" : " (\(off) disattivati)" }
+            lastImportSummary = summary
+            Log.app.info("REW import: \(count) bands, \(imported.warnings.count) warnings")
+        case .failure(let error):
+            if case .noUsableFilters(_, let warnings) = error as? REWImportError {
+                lastImportWarnings = warnings
+            } else {
+                lastImportWarnings = []
+            }
+            lastImportSummary = nil
+            lastImportError = (error as? LocalizedError)?.errorDescription ?? "Importazione non riuscita: \(error.localizedDescription)"
+            Log.app.error("REW import failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func startMeters() {

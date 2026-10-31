@@ -178,8 +178,8 @@ struct RenderKernelTests {
     }
 
     /// Bypass crossfades over a fixed time (10 ms = 10 samples at 1 kHz)
-    /// across IO cycles; with the stage-2 passthrough DSP the output must not
-    /// change at all while crossfading.
+    /// across IO cycles; with no EQ bands (bit-exact passthrough) the output
+    /// must not change at all while crossfading.
     @Test func bypassCrossfadesOverFixedTime() {
         let frames = 4
         let input = makeInput(frames: frames, left: { _ in 0.5 }, right: { _ in -0.5 })

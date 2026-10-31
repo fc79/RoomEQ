@@ -97,8 +97,13 @@ struct EngineConfiguration: Equatable {
     var outputPair: OutputChannelPair
     var bufferFrames: Int
     var excludedBundleIDs: [String]
+    /// Preamp as linear gain (0...1, never a boost).
     var gain: Float
+    /// true = EQ off (dry signal).
     var bypass: Bool
+    /// EQ bands; the coefficients are computed for the session's actual
+    /// sample rate when the render state is built.
+    var bands: [EQBand]
     /// Update the tap when an excluded app starts after the tap was created
     /// (see `handleProcessListChanged`). Can be turned off for testing with
     /// `defaults write com.federicociapi.RoomEQ DisableProcessExclusionFallback -bool YES`.
@@ -331,11 +336,17 @@ final class EngineSession {
             "Buffers: capture \(captureBuffer), output \(self.bufferFrames), largest callback \(maxCallback); ring \(link.capacity) frames, maximum delay \(link.maximumDelay)"
         )
         let pair = configuration.outputPair.right < outputLayout.channelCount ? configuration.outputPair : .firstPair
+        // EQ coefficients for THIS session's sample rate (active from the
+        // first rendered sample, no crossfade needed).
+        let design = EQDesign(bands: configuration.bands, sampleRate: sampleRate)
+        for warning in design.warnings {
+            Log.engine.notice("EQ at \(self.sampleRate) Hz: \(warning, privacy: .public)")
+        }
         let renderState = RenderStateHandle(
             configuration: RenderConfiguration(
                 inputLayout: captureLayout, tapLeft: sourceLeft, tapRight: sourceRight, outputLayout: outputLayout,
                 sampleRate: sampleRate),
-            gain: configuration.gain, bypass: configuration.bypass, outputPair: pair)
+            gain: configuration.gain, bypass: configuration.bypass, outputPair: pair, filters: design.sections)
         self.renderState = renderState
         let context = UnsafeMutablePointer<SplitOutputContext>.allocate(capacity: 1)
         context.initialize(to: SplitOutputContext(state: renderState.pointer, link: link.pointer))

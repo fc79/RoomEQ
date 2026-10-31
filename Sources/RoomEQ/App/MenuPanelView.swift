@@ -1,4 +1,5 @@
-// The menu-bar panel (stage 2 TEST UI: passthrough, no EQ).
+// The menu-bar panel (test UI from stage 2; the EQ controls exist in
+// AudioEngineController since stage 3 and get their section in the UI step).
 //
 // Pure view over `AudioEngineController`: it only reads the observable
 // properties and calls the controller's methods. Each block is its own

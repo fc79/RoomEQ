@@ -8,11 +8,13 @@
 //   1. silence every output buffer (all channels we don't write stay at 0);
 //   2. check the output (and, for `render`, input) buffer lists match the
 //      layout recorded at start (else stay silent and count an invalid cycle);
-//   3. for each chunk: copy the tap's L/R into the dry and wet scratch
-//      buffers (input peak), run the DSP chain on the wet copy, crossfade
-//      dry/wet (bypass), apply the gain (fixed-time ramp), replace NaN/Inf
-//      with silence, count clipping, measure the output peak, clamp to
-//      [-1, 1] and write L/R into the selected output channel pair;
+//   3. for each chunk: copy the tap's L/R into the dry scratch buffers
+//      (input peak); take a new EQ filter set from the mailbox if one is
+//      waiting and no bank switch is running; run the EQ (DSPProcessor)
+//      from dry into wet; crossfade dry/wet (bypass = EQ off), apply the
+//      preamp (fixed-time ramp, never above unity), replace NaN/Inf with
+//      silence, count clipping, measure the output peak, clamp to [-1, 1]
+//      and write L/R into the selected output channel pair;
 //   4. publish meters with atomics.
 
 import CoreAudio
@@ -128,11 +130,11 @@ public enum RenderKernel {
         return (outL, outR, min(outputFrames, min(outL.frames, outR.frames)))
     }
 
-    /// Step 3-4: for each chunk, copy the source into the dry and wet
-    /// scratch buffers (input peak), run the DSP chain on the wet copy,
-    /// crossfade dry/wet (bypass), apply the gain (fixed-time ramp), replace
-    /// NaN/Inf with silence, count clipping, measure the output peak, clamp
-    /// to [-1, 1] and write L/R; then publish the meters.
+    /// Step 3-4: for each chunk, copy the source into the dry scratch
+    /// buffers (input peak), pick up a new filter set, run the EQ from dry
+    /// into wet, crossfade dry/wet (bypass), apply the preamp (fixed-time
+    /// ramp), replace NaN/Inf with silence, count clipping, measure the
+    /// output peak, clamp to [-1, 1] and write L/R; then publish the meters.
     @inline(__always)
     static func process(
         state: UnsafeMutablePointer<RenderState>,
@@ -164,15 +166,18 @@ public enum RenderKernel {
                 let right = sourceRight[(done + frame) * rightStride]
                 dryL[frame] = left
                 dryR[frame] = right
-                wetL[frame] = left
-                wetR[frame] = right
                 let absL = left.magnitude, absR = right.magnitude
                 if absL > inPeakL { inPeakL = absL }
                 if absR > inPeakR { inPeakR = absR }
             }
 
-            // The DSP chain always runs (keeps its state warm while bypassed).
-            state.pointee.processor.process(left: wetL, right: wetR, frameCount: count)
+            // The EQ always runs (keeps its state warm while bypassed).
+            // A new filter set is taken only between bank switches; until
+            // then it waits in the mailbox (newer sets replace it there).
+            if !state.pointee.processor.isTransitioning { acceptPublishedFilters(state) }
+            state.pointee.processor.process(
+                inputLeft: UnsafePointer(dryL), inputRight: UnsafePointer(dryR), outputLeft: wetL, outputRight: wetR,
+                frameCount: count)
 
             for frame in 0..<count {
                 let mix = wetMix.next()
@@ -203,6 +208,22 @@ public enum RenderKernel {
         state.pointee.diagnosticOutputPeakBits.max(max(outPeakL, outPeakR).bitPattern, ordering: .relaxed)
         if clipped > 0 { state.pointee.clippedSamples.wrappingAdd(clipped, ordering: .relaxed) }
         if nonFinite > 0 { state.pointee.nonFiniteSamples.wrappingAdd(nonFinite, ordering: .relaxed) }
+    }
+
+    /// If the main thread published a filter set the RT thread hasn't taken
+    /// yet, swaps it in (triple buffer, see RenderState.swift) and starts
+    /// the click-free bank switch.
+    @inline(__always)
+    static func acceptPublishedFilters(_ state: UnsafeMutablePointer<RenderState>) {
+        guard state.pointee.filterMailbox.load(ordering: .relaxed) & FilterMailbox.dirtyFlag != 0 else { return }
+        // Acquire: everything the writer stored in the slot is visible.
+        let previous = state.pointee.filterMailbox.exchange(
+            state.pointee.filterReadSlot, ordering: .acquiringAndReleasing)
+        let slot = previous & FilterMailbox.slotMask
+        state.pointee.filterReadSlot = slot
+        state.pointee.processor.beginTransition(
+            to: UnsafePointer(state.pointee.filterSlots + slot * DSPProcessor.maximumSections),
+            count: state.pointee.filterSlotCounts[slot])
     }
 
     /// Counts one device overload. Real-time safe (one atomic increment);

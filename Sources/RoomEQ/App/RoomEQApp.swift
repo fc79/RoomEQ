@@ -1,8 +1,8 @@
 // App entry point: a menu-bar-only app (LSUIElement in Info.plist).
 //
-// The panel is `MenuPanelView` (MenuPanelView.swift). In stage 2 it is a test
-// panel (passthrough, no EQ); the final UI comes in stage 4 and can reuse the
-// building blocks in PanelComponents.swift.
+// The panel is `MenuPanelView` (MenuPanelView.swift): still the stage-2 test
+// panel (the EQ section is added on top of the stage-3 controller API); the
+// final UI can reuse the building blocks in PanelComponents.swift.
 
 import SwiftUI
 

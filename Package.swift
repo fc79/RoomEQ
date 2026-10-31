@@ -1,7 +1,7 @@
 // swift-tools-version: 6.0
 //
 // RoomEQ — personal macOS menu-bar app that captures system audio through a
-// Core Audio process tap and plays it back (later: with room-correction EQ).
+// Core Audio process tap and plays it back with a room-correction EQ.
 //
 // Build the .app with ./build.sh, run the unit tests with ./run-tests.sh
 // (or `swift test`).
@@ -21,9 +21,9 @@ let package = Package(
         .executable(name: "RoomEQ", targets: ["RoomEQ"])
     ],
     targets: [
-        // Pure, hardware-independent logic: render kernel (real-time path),
+        // Pure, hardware-independent logic: render kernel and EQ filter
+        // banks (real-time path), biquad design, REW import, EQ settings,
         // channel layout math, latency math, small value types. Unit-tested.
-        // Stage 3 adds the biquad DSP and the REW parser here.
         .target(
             name: "RoomEQCore"
         ),

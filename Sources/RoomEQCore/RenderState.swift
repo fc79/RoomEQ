@@ -5,8 +5,14 @@
 // * `RenderState` lives in manually allocated memory (see `RenderStateHandle`)
 //   so its address never changes and the real-time thread can reach it
 //   through a plain pointer: no reference counting, no locks.
-// * "Control" values (gain, bypass, output pair) are written by the main
-//   thread and read by the real-time thread through atomics.
+// * "Control" values (preamp gain, bypass, output pair) are written by the
+//   main thread and read by the real-time thread through atomics.
+// * EQ filter sets are handed over through a lock-free triple buffer
+//   (`filterMailbox` + three preallocated slots): the writer (main thread,
+//   serialised by a mutex in `RenderStateHandle`, never taken by the RT
+//   thread) fills its private slot and atomically swaps it with the
+//   "latest" slot; the RT thread swaps the latest slot with its own when the
+//   dirty flag is set. The latest set always wins; none is ever torn.
 // * "Meter" values are written by the real-time thread (and the overload
 //   listener) and read by the main thread through atomics.
 // * Layout tables are filled once in `init` and are read-only afterwards.
@@ -16,6 +22,16 @@
 
 import CoreAudio
 import Synchronization
+
+/// Triple-buffer bookkeeping for EQ filter sets (see the threading contract).
+enum FilterMailbox {
+    /// Low bits: index (0...2) of the slot holding the latest set.
+    static let slotMask = 0b11
+    /// Set by the writer when the latest slot holds a set the RT thread has
+    /// not taken yet.
+    static let dirtyFlag = 0b100
+    static let slotCount = 3
+}
 
 /// Everything needed to build a `RenderState` (computed on a normal thread).
 public struct RenderConfiguration: Sendable {
@@ -33,10 +49,12 @@ public struct RenderConfiguration: Sendable {
     /// Size of the internal processing chunk. IO buffers larger than this
     /// are processed in several chunks, so any IO size works.
     public var chunkFrames: Int
-    /// Duration of a gain change (seconds), independent of buffer size.
+    /// Duration of a preamp change (seconds), independent of buffer size.
     public var gainRampSeconds: Double
-    /// Duration of the bypass crossfade (seconds).
+    /// Duration of the bypass (EQ on/off) crossfade (seconds).
     public var bypassCrossfadeSeconds: Double
+    /// Duration of the crossfade between EQ filter banks (seconds).
+    public var filterCrossfadeSeconds: Double
 
     public init(
         inputLayout: BufferListLayout,
@@ -46,7 +64,8 @@ public struct RenderConfiguration: Sendable {
         sampleRate: Double,
         chunkFrames: Int = 1024,
         gainRampSeconds: Double = 0.015,
-        bypassCrossfadeSeconds: Double = 0.010
+        bypassCrossfadeSeconds: Double = 0.010,
+        filterCrossfadeSeconds: Double = 0.020
     ) {
         self.inputLayout = inputLayout
         self.tapLeft = tapLeft
@@ -56,6 +75,7 @@ public struct RenderConfiguration: Sendable {
         self.chunkFrames = chunkFrames
         self.gainRampSeconds = gainRampSeconds
         self.bypassCrossfadeSeconds = bypassCrossfadeSeconds
+        self.filterCrossfadeSeconds = filterCrossfadeSeconds
     }
 }
 
@@ -64,11 +84,15 @@ public struct RenderConfiguration: Sendable {
 public struct RenderState: ~Copyable {
     // MARK: Control (main thread -> real-time thread)
 
-    /// Target linear gain. The real-time thread ramps towards it.
+    /// Target linear gain (preamp, 0...1: never a boost). The real-time
+    /// thread ramps towards it. Applied after the dry/wet mix, so it acts
+    /// both with the EQ on and off.
     public let targetGain: Atomic<Float>
-    /// When true the output crossfades to the unprocessed (dry) signal.
-    /// The DSP chain keeps running so un-bypassing is click-free too.
+    /// When true (EQ off) the output crossfades to the unprocessed (dry)
+    /// signal. The DSP chain keeps running so switching back is click-free.
     public let bypass: Atomic<Bool>
+    /// Latest-slot index + dirty flag of the filter-set triple buffer.
+    public let filterMailbox: Atomic<Int>
     /// Output channel pair, packed with `OutputChannelPair.packed`.
     public let outputPair: Atomic<UInt32>
 
@@ -113,26 +137,50 @@ public struct RenderState: ~Copyable {
     let outputChannelCount: Int
     let outputLocations: UnsafeMutablePointer<ChannelLocation>
 
+    // MARK: Filter-set slots (written by the writer only in its own slot)
+
+    /// `FilterMailbox.slotCount` slots of `DSPProcessor.maximumSections`.
+    let filterSlots: UnsafeMutablePointer<FilterSection>
+    let filterSlotCounts: UnsafeMutablePointer<Int>
+
     // MARK: RT-private
 
-    /// Output gain, ramped over a fixed time.
+    /// Preamp gain, ramped over a fixed time.
     var gainRamp: LinearRamp
     /// Wet (processed) share of the output: 1 = DSP on, 0 = bypassed.
     var wetMix: LinearRamp
     /// Scratch buffers (one chunk per channel), preallocated:
-    /// dry = tap signal, wet = after the DSP chain.
+    /// dry = tap signal, wet = after the DSP chain (EQ).
     let dryLeft: UnsafeMutablePointer<Float>
     let dryRight: UnsafeMutablePointer<Float>
     let wetLeft: UnsafeMutablePointer<Float>
     let wetRight: UnsafeMutablePointer<Float>
     let chunkFrames: Int
-    /// The DSP chain (stage 3: EQ).
+    /// Slot the RT thread currently owns (filter-set triple buffer).
+    var filterReadSlot: Int
+    /// The DSP chain: the EQ filter banks.
     var processor: DSPProcessor
 
-    public init(configuration: RenderConfiguration, gain: Float, bypass: Bool, outputPair: OutputChannelPair) {
+    /// `gain` is clamped to 0...1. `filters` is the initial EQ set (already
+    /// computed for `configuration.sampleRate`); it is active immediately.
+    public init(
+        configuration: RenderConfiguration, gain: Float, bypass: Bool, outputPair: OutputChannelPair,
+        filters: [FilterSection] = []
+    ) {
+        let gain = RenderStateHandle.clampGain(gain)
         targetGain = Atomic(gain)
         self.bypass = Atomic(bypass)
         self.outputPair = Atomic(outputPair.packed)
+        // Slot 0: RT-owned, slot 1: latest (nothing new), slot 2: writer's.
+        filterMailbox = Atomic(1)
+        filterReadSlot = 0
+        let slotCapacity = FilterMailbox.slotCount * DSPProcessor.maximumSections
+        filterSlots = .allocate(capacity: slotCapacity)
+        filterSlots.initialize(
+            repeating: FilterSection(coefficients: .identity, bandIDHigh: 0, bandIDLow: 0, settleFrames: 0),
+            count: slotCapacity)
+        filterSlotCounts = .allocate(capacity: FilterMailbox.slotCount)
+        filterSlotCounts.initialize(repeating: 0, count: FilterMailbox.slotCount)
 
         inputPeakLeftBits = Atomic(0)
         inputPeakRightBits = Atomic(0)
@@ -183,10 +231,14 @@ public struct RenderState: ~Copyable {
         dryRight = scratch()
         wetLeft = scratch()
         wetRight = scratch()
-        processor = DSPProcessor(sampleRate: rate)
+        processor = DSPProcessor(
+            sampleRate: rate, maximumFrames: chunk, crossfadeSeconds: configuration.filterCrossfadeSeconds,
+            sections: filters)
     }
 
     deinit {
+        filterSlots.deallocate()
+        filterSlotCounts.deallocate()
         outputBufferChannels.deallocate()
         outputLocations.deallocate()
         dryLeft.deallocate()
@@ -246,11 +298,24 @@ public final class RenderStateHandle: @unchecked Sendable {
     public let pointer: UnsafeMutablePointer<RenderState>
     public let configuration: RenderConfiguration
 
-    public init(configuration: RenderConfiguration, gain: Float, bypass: Bool, outputPair: OutputChannelPair) {
+    /// Writer side of the filter-set triple buffer. Only non-RT code takes
+    /// this mutex; it serialises writers (normally just the main thread).
+    private struct FilterWriter {
+        var slot: Int
+        var lastPublished: [FilterSection]
+    }
+    private let filterWriter: Mutex<FilterWriter>
+
+    public init(
+        configuration: RenderConfiguration, gain: Float, bypass: Bool, outputPair: OutputChannelPair,
+        filters: [FilterSection] = []
+    ) {
         self.configuration = configuration
         pointer = .allocate(capacity: 1)
         pointer.initialize(
-            to: RenderState(configuration: configuration, gain: gain, bypass: bypass, outputPair: outputPair))
+            to: RenderState(
+                configuration: configuration, gain: gain, bypass: bypass, outputPair: outputPair, filters: filters))
+        filterWriter = Mutex(FilterWriter(slot: 2, lastPublished: Array(filters.prefix(DSPProcessor.maximumSections))))
     }
 
     deinit {
@@ -261,12 +326,49 @@ public final class RenderStateHandle: @unchecked Sendable {
     /// Number of output channels known to the render state.
     public var outputChannelCount: Int { configuration.outputLayout.channelCount }
 
+    /// Linear preamp / fade gain, clamped to 0...1 (never a boost; NaN -> 0).
     public func setGain(linear: Float) {
-        pointer.pointee.targetGain.store(linear, ordering: .relaxed)
+        pointer.pointee.targetGain.store(Self.clampGain(linear), ordering: .relaxed)
     }
 
+    /// Preamp in dB, clamped to `Preamp.range` (-24...0 dB).
+    public func setPreamp(decibels: Double) {
+        setGain(linear: Preamp.linearGain(decibels: decibels))
+    }
+
+    /// The target gain currently set (linear).
+    public var targetGain: Float { pointer.pointee.targetGain.load(ordering: .relaxed) }
+
+    /// `true` = EQ off (dry signal), `false` = EQ on.
     public func setBypass(_ enabled: Bool) {
         pointer.pointee.bypass.store(enabled, ordering: .relaxed)
+    }
+
+    /// Hands a new EQ filter set (computed for `configuration.sampleRate`)
+    /// to the real-time thread, which switches to it click-free. Lock-free
+    /// for the RT thread; returns false if `sections` equals the set
+    /// published last (nothing to do). At most `maximumSections` are used.
+    @discardableResult
+    public func publishFilters(_ sections: [FilterSection]) -> Bool {
+        let sections = Array(sections.prefix(DSPProcessor.maximumSections))
+        let state = pointer
+        return filterWriter.withLock { writer in
+            guard writer.lastPublished != sections else { return false }
+            let base = writer.slot * DSPProcessor.maximumSections
+            for (index, section) in sections.enumerated() { state.pointee.filterSlots[base + index] = section }
+            state.pointee.filterSlotCounts[writer.slot] = sections.count
+            // Release: the slot contents are visible before the new index.
+            let previous = state.pointee.filterMailbox.exchange(
+                writer.slot | FilterMailbox.dirtyFlag, ordering: .acquiringAndReleasing)
+            writer.slot = previous & FilterMailbox.slotMask
+            writer.lastPublished = sections
+            return true
+        }
+    }
+
+    static func clampGain(_ linear: Float) -> Float {
+        guard linear.isFinite else { return 0 }
+        return min(max(linear, 0), 1)
     }
 
     /// Routes the tap to `pair`. Returns false (and changes nothing) if the
