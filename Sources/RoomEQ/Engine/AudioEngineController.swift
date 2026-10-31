@@ -3,8 +3,11 @@
 // Everything here runs on the main thread. The UI reads the observable
 // properties and calls the methods; it never talks to Core Audio directly.
 // All properties are read-only from outside: change them through the
-// `set...` / `select...` methods, which validate and apply the change
-// (live where possible, otherwise by restarting the engine).
+// `set...` methods, which validate and apply the change (live where
+// possible, otherwise by restarting the engine).
+//
+// Output device: ALWAYS the macOS default output (tapped device = output
+// device), followed automatically when it changes.
 //
 // Invariant: there is never a running engine session the controller does
 // not know about. A session becomes "active" only when its start completes
@@ -47,40 +50,29 @@ final class AudioEngineController {
 
     // MARK: Devices and routing
 
-    /// Output-capable devices (RoomEQ's own aggregate excluded).
+    /// Output-capable devices (RoomEQ's own aggregates excluded), for stage 4.
     private(set) var outputDevices: [OutputDeviceInfo] = []
-    /// UID chosen by the user, or nil for automatic (Quantum, else default output).
-    private(set) var selectedOutputDeviceUID: String?
-    /// Automatic choice (Quantum, else system default), updated with the device list.
-    private(set) var automaticOutputDevice: OutputDeviceInfo?
+    /// The macOS default output device: RoomEQ taps it and plays on it.
+    private(set) var systemOutputDevice: OutputDeviceInfo?
     /// The device the RUNNING session actually uses (nil when not running).
     private(set) var activeOutputDevice: OutputDeviceInfo?
     var activeOutputDeviceUID: String? { activeOutputDevice?.uid }
+    /// The device that is (or would be) used.
+    var effectiveOutputDevice: OutputDeviceInfo? { activeOutputDevice ?? systemOutputDevice }
 
-    /// The device that should be used: the user's choice if present,
-    /// otherwise the automatic choice. While running in automatic mode the
-    /// engine follows it (e.g. back to the Quantum when it is plugged in).
-    var effectiveOutputDevice: OutputDeviceInfo? {
-        if let uid = selectedOutputDeviceUID, let device = outputDevices.first(where: { $0.uid == uid }) {
-            return device
-        }
-        return automaticOutputDevice
-    }
-
-    /// Output channel pair the tap is routed to (default 1–2).
+    /// Output channel pair the audio is routed to (default 1–2).
     private(set) var outputChannelPair: OutputChannelPair = .firstPair
     /// Pairs offered by the active device (or, when not running, by the
     /// device that would be used).
     var availableChannelPairs: [OutputChannelPair] {
-        OutputChannelPair.available(
-            forChannelCount: (activeOutputDevice ?? effectiveOutputDevice)?.outputChannelCount ?? 2)
+        OutputChannelPair.available(forChannelCount: effectiveOutputDevice?.outputChannelCount ?? 2)
     }
 
     // MARK: Buffer, level, exclusions
 
-    /// IO buffer size in frames (the value actually applied when running).
+    /// IO buffer size in frames, same on the capture and output side.
     private(set) var bufferSize = BufferSize.defaultSize
-    /// Buffer sizes the current device accepts (64/128/256 within its range).
+    /// Buffer sizes the devices accept (64/128/256 within their ranges).
     private(set) var bufferSizeOptions = BufferSize.preferredSizes
     /// Output gain in dB (applied after the DSP chain, ramped over 15 ms).
     private(set) var gainDecibels: Double = 0
@@ -90,43 +82,27 @@ final class AudioEngineController {
     private(set) var isBypassed = false
     /// Apps never captured (RoomEQ itself is always excluded in addition).
     private(set) var excludedBundleIDs = ["com.ableton.live"]
-    /// How system audio is captured: device tap (default) or global
-    /// mixdown (diagnostic). Persisted in UserDefaults `TapMode`.
-    private(set) var tapMode: TapMode =
-        UserDefaults.standard.string(forKey: TapMode.defaultsKey).flatMap(TapMode.init(rawValue:)) ?? .defaultMode
 
     // MARK: Readouts
 
     private(set) var sampleRate: Double?
     private(set) var latency: LatencyBreakdown?
-    /// e.g. "Stima 12.3 ms (ingresso 1.2 + buffer 5.8 + uscita 5.3) a 44100 Hz".
+    /// e.g. "Stima 5,7 ms (ingresso … + buffer … + anello … + uscita …)".
     var latencySummary: String { latency?.summary ?? "—" }
     /// Meters, refreshed ~25 times per second while running. Peaks are the
     /// maximum since the previous refresh; counters are cumulative per run.
     private(set) var meters = MeterSnapshot.silent
-    /// Tap format of the running session, e.g. "44,1 kHz · 2 ch" (diagnostics).
-    private(set) var tapFormatDescription: String?
-
-    // MARK: Tap diagnostic
-
-    /// True while the tap diagnostic matrix runs (a few seconds).
-    private(set) var isRunningTapDiagnostic = false
-    /// Compact result of the last diagnostic (one line per configuration).
-    private(set) var tapDiagnosticSummary: String?
-    /// Diagnostics only run with the engine stopped, one at a time.
-    var canRunTapDiagnostic: Bool {
-        (state == .stopped || state == .failed) && !isRunningTapDiagnostic && !isRunningSplitExperiment
+    /// Ring buffer status (delay, underruns, capture overloads…), refreshed
+    /// with the meters.
+    private(set) var ringStatus = SplitLinkStatus.empty
+    /// Ring read delay in frames / ms (nil when not running).
+    var ringDelayFrames: Int? { isRunning ? Int(ringStatus.delayFrames) : nil }
+    var ringDelayMilliseconds: Double? {
+        guard let frames = ringDelayFrames, let sampleRate, sampleRate > 0 else { return nil }
+        return Double(frames) * 1000 / sampleRate
     }
-    var canRunSplitExperiment: Bool { canRunTapDiagnostic }
-
-    /// True while the split experiment runs (~30 s per output device).
-    private(set) var isRunningSplitExperiment = false
-    /// Progress while running, then one summary line per device.
-    private(set) var splitExperimentSummary: String?
-    /// Where the full experiment report is written.
-    var splitExperimentReportPath: String { SplitExperiment.reportURL.path }
-    /// Where the full diagnostic report is written.
-    var tapDiagnosticReportPath: String { TapDiagnostics.reportURL.path }
+    /// Tap format of the running session, e.g. "44,1 kHz · 10 ch".
+    private(set) var tapFormatDescription: String?
 
     // MARK: Hooks
 
@@ -142,6 +118,7 @@ final class AudioEngineController {
     @ObservationIgnored private let deviceQueue = DispatchQueue(
         label: "com.federicociapi.RoomEQ.devices", qos: .userInitiated)
     @ObservationIgnored private var renderState: RenderStateHandle?
+    @ObservationIgnored private var link: SplitLinkHandle?
     /// ID of the engine session this controller considers running.
     @ObservationIgnored private var activeSessionID: Int?
     /// Incremented whenever pending launches become unwanted (new launch,
@@ -157,14 +134,12 @@ final class AudioEngineController {
 
     init() {}
 
-    /// Call once at launch: device list and device-change listeners.
+    /// Call once at launch: device list and device-change listeners
+    /// (device list + macOS default output).
     func prepare() {
         guard !prepared else { return }
         prepared = true
         engine.eventHandler = { [weak self] event in self?.handle(event) }
-        // No leftover clean-up: tap and aggregate are private, so the HAL
-        // removes them when a previous instance exits (even on a crash) and
-        // they would be invisible to us anyway. See AggregateDevice.swift.
         refreshDevices()
         let system = AudioObjectID(kAudioObjectSystemObject)
         for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultOutputDevice] {
@@ -183,9 +158,7 @@ final class AudioEngineController {
     // MARK: Start / stop
 
     func start() {
-        guard state == .stopped || state == .failed, !isRunningTapDiagnostic, !isRunningSplitExperiment else {
-            return
-        }
+        guard state == .stopped || state == .failed else { return }
         automaticRestarts.removeAll()
         audioCapturePermissionLikelyDenied = false
         lastError = nil
@@ -194,8 +167,8 @@ final class AudioEngineController {
         let generation = invalidatePendingLaunches()
         refreshDevices { [weak self] in
             guard let self, self.state == .starting, self.launchGeneration == generation else { return }
-            guard let device = self.effectiveOutputDevice else {
-                self.fail("Nessun dispositivo di uscita disponibile")
+            guard let device = self.systemOutputDevice else {
+                self.fail("Nessun dispositivo di uscita di macOS disponibile")
                 return
             }
             self.launch(on: device, statusText: "Avvio su \(device.name)…")
@@ -222,7 +195,7 @@ final class AudioEngineController {
     }
 
     /// Synchronous shutdown for app termination and SIGINT/SIGTERM: returns
-    /// once the tap and aggregate are destroyed.
+    /// once the IOProcs, the aggregate and the tap are destroyed.
     func shutdown() {
         invalidatePendingLaunches()
         clearActiveSession()
@@ -233,17 +206,6 @@ final class AudioEngineController {
     }
 
     // MARK: Settings
-
-    /// nil = automatic choice. Restarts the engine if running.
-    func selectOutputDevice(uid: String?) {
-        guard uid != selectedOutputDeviceUID else { return }
-        selectedOutputDeviceUID = uid
-        let channels = effectiveOutputDevice?.outputChannelCount ?? 2
-        if !OutputChannelPair.available(forChannelCount: channels).contains(outputChannelPair) {
-            outputChannelPair = .firstPair
-        }
-        restartIfActive(reason: "cambio dispositivo di uscita")
-    }
 
     /// Applied live (validated against the active device).
     func setOutputChannelPair(_ pair: OutputChannelPair) {
@@ -261,24 +223,12 @@ final class AudioEngineController {
         outputChannelPair = pair
     }
 
-    /// Applied live when running (clamped to the device's range). Reverts
-    /// to the previous value if the device refuses it.
+    /// Restarts the engine if running (the delay is re-measured for the new
+    /// buffer size).
     func setBufferSize(_ frames: Int) {
         guard frames != bufferSize else { return }
-        let previous = bufferSize
         bufferSize = frames
-        guard isRunning else { return }
-        engine.setBufferSize(frames) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let (latency, applied)):
-                self.latency = latency
-                self.bufferSize = applied
-            case .failure(let error):
-                self.bufferSize = previous
-                self.lastError = error.localizedDescription
-            }
-        }
+        restartIfActive(reason: "buffer \(frames)")
     }
 
     /// Restarts the engine if running (the tap must be rebuilt).
@@ -290,59 +240,6 @@ final class AudioEngineController {
         guard cleaned != excludedBundleIDs else { return }
         excludedBundleIDs = cleaned
         restartIfActive(reason: "cambio app escluse")
-    }
-
-    /// Probes several tap configurations (formats, safety offsets) without
-    /// playing or muting anything. Only with the engine stopped.
-    func runTapDiagnostic() {
-        guard canRunTapDiagnostic else { return }
-        isRunningTapDiagnostic = true
-        tapDiagnosticSummary = "Diagnostica in corso…"
-        refreshDevices { [weak self] in
-            guard let self else { return }
-            guard let device = self.effectiveOutputDevice else {
-                self.isRunningTapDiagnostic = false
-                self.tapDiagnosticSummary = "Nessun dispositivo di uscita disponibile"
-                return
-            }
-            self.engine.runTapDiagnostics(outputDevice: device, excludedBundleIDs: self.excludedBundleIDs) {
-                [weak self] result in
-                guard let self else { return }
-                self.isRunningTapDiagnostic = false
-                switch result {
-                case .success(let summary): self.tapDiagnosticSummary = summary
-                case .failure(let error): self.tapDiagnosticSummary = error.localizedDescription
-                }
-            }
-        }
-    }
-
-    /// Experiment "option 1": device tap in a tap-only aggregate + IOProc on
-    /// the physical device (silence), per output device. Nothing is muted or
-    /// routed. Only with the engine stopped.
-    func runSplitExperiment() {
-        guard canRunSplitExperiment else { return }
-        isRunningSplitExperiment = true
-        splitExperimentSummary = "Esperimento in corso… riproduci musica (es. Spotify)"
-        engine.runSplitExperiment(
-            excludedBundleIDs: excludedBundleIDs,
-            progress: { [weak self] text in self?.splitExperimentSummary = text },
-            completion: { [weak self] result in
-                guard let self else { return }
-                self.isRunningSplitExperiment = false
-                switch result {
-                case .success(let summary): self.splitExperimentSummary = summary
-                case .failure(let error): self.splitExperimentSummary = error.localizedDescription
-                }
-            })
-    }
-
-    /// Changes the capture mode (persisted). Restarts the engine if running.
-    func setTapMode(_ mode: TapMode) {
-        guard mode != tapMode else { return }
-        tapMode = mode
-        UserDefaults.standard.set(mode.rawValue, forKey: TapMode.defaultsKey)
-        restartIfActive(reason: "modalità di cattura \(mode.displayName.lowercased())")
     }
 
     /// Applied live, smoothly (15 ms ramp).
@@ -357,17 +254,16 @@ final class AudioEngineController {
         renderState?.setBypass(bypassed)
     }
 
-    /// Re-reads the device list on a background queue and publishes it on
-    /// the main thread; then runs `completion` (on main).
+    /// Re-reads the device list and the macOS default output on a background
+    /// queue and publishes them on the main thread; then runs `completion`.
     func refreshDevices(then completion: (@MainActor () -> Void)? = nil) {
         deviceQueue.async { [weak self] in
             let devices = AudioDevices.outputDevices()
-            let automatic = AudioDevices.preferredOutputDevice(
-                in: devices, defaultOutputID: AudioDevices.defaultOutputDeviceID())
+            let systemOutput = AudioDevices.defaultOutputDeviceID().flatMap(AudioDevices.info(for:))
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.applyDeviceList(devices, automatic: automatic)
+                    self.applyDeviceList(devices, systemOutput: systemOutput)
                     completion?()
                 }
             }
@@ -376,20 +272,17 @@ final class AudioEngineController {
 
     // MARK: Internals
 
-    private func applyDeviceList(_ devices: [OutputDeviceInfo], automatic: OutputDeviceInfo?) {
+    private func applyDeviceList(_ devices: [OutputDeviceInfo], systemOutput: OutputDeviceInfo?) {
         if devices != outputDevices { outputDevices = devices }
-        if automatic != automaticOutputDevice { automaticOutputDevice = automatic }
-        followAutomaticChoiceIfNeeded()
+        if systemOutput != systemOutputDevice { systemOutputDevice = systemOutput }
+        followSystemOutputIfNeeded()
     }
 
-    /// In automatic mode, move the running engine to the automatic choice
-    /// when it changes (e.g. the Quantum is plugged back in).
-    private func followAutomaticChoiceIfNeeded() {
-        guard isRunning, selectedOutputDeviceUID == nil,
-            let automatic = automaticOutputDevice, let active = activeOutputDevice,
-            automatic.uid != active.uid
+    /// When the macOS default output changes while running, move RoomEQ to it.
+    private func followSystemOutputIfNeeded() {
+        guard isRunning, let system = systemOutputDevice, let active = activeOutputDevice, system.uid != active.uid
         else { return }
-        automaticRestart(reason: "uscita automatica ora \(automatic.name)")
+        automaticRestart(reason: "uscita di macOS ora \(system.name)")
     }
 
     private func configuration(for device: OutputDeviceInfo) -> EngineConfiguration {
@@ -400,17 +293,7 @@ final class AudioEngineController {
             excludedBundleIDs: excludedBundleIDs,
             gain: Float(Decibels.linear(fromDecibels: gainDecibels)),
             bypass: isBypassed,
-            processListFallbackEnabled: !UserDefaults.standard.bool(forKey: "DisableProcessExclusionFallback"),
-            tapMode: tapMode,
-            tapDriftCompensation: Self.diagnosticFlag("TapDriftCompensation", default: true),
-            tapMixdown: UserDefaults.standard.object(forKey: "TapMixdown") == nil
-                ? nil : UserDefaults.standard.bool(forKey: "TapMixdown"))
-    }
-
-    /// Boolean diagnostic switch from UserDefaults (set with
-    /// `defaults write com.federicociapi.RoomEQ <key> -bool YES|NO`).
-    private static func diagnosticFlag(_ key: String, default defaultValue: Bool) -> Bool {
-        UserDefaults.standard.object(forKey: key) == nil ? defaultValue : UserDefaults.standard.bool(forKey: key)
+            processListFallbackEnabled: !UserDefaults.standard.bool(forKey: "DisableProcessExclusionFallback"))
     }
 
     /// Makes every launch in flight unwanted; returns the new generation.
@@ -425,9 +308,11 @@ final class AudioEngineController {
     private func clearActiveSession() {
         stopMeters()
         renderState = nil
+        link = nil
         activeSessionID = nil
         activeOutputDevice = nil
         tapFormatDescription = nil
+        ringStatus = .empty
     }
 
     private func launch(on device: OutputDeviceInfo, statusText: String) {
@@ -435,6 +320,9 @@ final class AudioEngineController {
         state = .starting
         status = statusText
         lastError = nil
+        if !OutputChannelPair.available(forChannelCount: device.outputChannelCount).contains(outputChannelPair) {
+            outputChannelPair = .firstPair
+        }
         let generation = invalidatePendingLaunches()
         // engine.start stops the current session (if any) before building
         // the new one, on the engine queue.
@@ -457,6 +345,7 @@ final class AudioEngineController {
             activeSessionID = info.sessionID
             activeOutputDevice = info.outputDevice
             renderState = info.renderState
+            link = info.link
             // Re-apply live settings changed while the engine was starting.
             info.renderState.setGain(linear: Float(Decibels.linear(fromDecibels: gainDecibels)))
             info.renderState.setBypass(isBypassed)
@@ -466,16 +355,17 @@ final class AudioEngineController {
             bufferSize = info.bufferFrames
             bufferSizeOptions = info.bufferSizeOptions
             tapFormatDescription = info.tapFormatSummary
+            ringStatus = info.link.status()
             audioCapturePermissionLikelyDenied = false
             state = .running
-            status = "In funzione su \(info.outputDevice.name) · \(Int(info.sampleRate)) Hz · buffer \(info.bufferFrames)"
+            status = "In funzione su \(info.outputDevice.name) · \(AudioFormatText.kilohertz(info.sampleRate)) · buffer \(info.bufferFrames)"
             startMeters()
             if lastSampleRate != info.sampleRate {
                 lastSampleRate = info.sampleRate
                 onSampleRateChange?(info.sampleRate)
             }
-            // The device list may have changed while starting.
-            followAutomaticChoiceIfNeeded()
+            // The macOS output may have changed while starting.
+            followSystemOutputIfNeeded()
         case .failure(let error):
             guard wanted else { return }  // the failed session is already torn down
             if error is AudioCapturePermissionError { audioCapturePermissionLikelyDenied = true }
@@ -490,21 +380,17 @@ final class AudioEngineController {
             automaticRestart(reason: reason)
 
         case .deviceLost(let sessionID, let name):
-            // The engine has already stopped that session.
+            // The engine has already stopped that session. macOS normally
+            // switches its default output: follow it.
             guard sessionID == activeSessionID else { return }
             let lostUID = activeOutputDevice?.uid
             clearActiveSession()
-            guard selectedOutputDeviceUID == nil else {
-                fail("\(name) è stato scollegato")
-                return
-            }
-            // Automatic mode: continue on the next automatic choice.
             state = .starting
-            status = "\(name) scollegato, cerco un'altra uscita…"
+            status = "\(name) scollegato, passo all'uscita di macOS…"
             let generation = invalidatePendingLaunches()
             refreshDevices { [weak self] in
                 guard let self, self.state == .starting, self.launchGeneration == generation else { return }
-                guard let device = self.effectiveOutputDevice, device.uid != lostUID else {
+                guard let device = self.systemOutputDevice, device.uid != lostUID else {
                     self.fail("\(name) è stato scollegato")
                     return
                 }
@@ -512,10 +398,9 @@ final class AudioEngineController {
                 self.lastError = "\(name) è stato scollegato: audio su \(device.name)"
             }
 
-        case .latencyChanged(let sessionID, let latency, let frames):
+        case .latencyChanged(let sessionID, let latency):
             guard sessionID == activeSessionID else { return }
             self.latency = latency
-            bufferSize = frames
         }
     }
 
@@ -533,8 +418,8 @@ final class AudioEngineController {
 
     private func restartIfActive(reason: String) {
         guard state == .running || state == .starting else { return }
-        guard let device = effectiveOutputDevice else {
-            fail("Nessun dispositivo di uscita disponibile")
+        guard let device = systemOutputDevice else {
+            fail("Nessun dispositivo di uscita di macOS disponibile")
             return
         }
         Log.app.info("Restarting engine: \(reason, privacy: .public)")
@@ -571,22 +456,26 @@ final class AudioEngineController {
     }
 
     private func pollMeters() {
-        guard let renderState else { return }
+        guard let renderState, let link else { return }
         let snapshot = renderState.readMeters()
+        let ring = link.status()
         meters = snapshot
+        ringStatus = ring
 
-        // Watchdog: if most cycles are being silenced (buffer layout no
-        // longer matches) for 0.5 s, rebuild the engine.
+        // Watchdog: if most output cycles are silenced (buffer layout no
+        // longer matches, or the capture stopped feeding the ring) for
+        // 0.5 s, rebuild the engine.
         let now = ContinuousClock.now
         let elapsed = lastMeterPoll.map { (now - $0) / .seconds(1) } ?? 0
         lastMeterPoll = now
         if watchdog.update(
-            renderedCycles: snapshot.renderedCycles, invalidCycles: snapshot.invalidCycles, elapsed: elapsed)
+            renderedCycles: snapshot.renderedCycles, invalidCycles: snapshot.invalidCycles &+ ring.underrunCycles,
+            elapsed: elapsed)
         {
             Log.app.error(
-                "Watchdog: \(snapshot.invalidInputCycles) invalid input / \(snapshot.invalidOutputCycles) invalid output cycles; restarting"
+                "Watchdog: \(snapshot.invalidOutputCycles) invalid output cycles, \(ring.underrunCycles) underruns; restarting"
             )
-            automaticRestart(reason: "audio non elaborabile (disposizione dei buffer cambiata)")
+            automaticRestart(reason: "audio non elaborabile")
         }
     }
 }

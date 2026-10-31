@@ -1,8 +1,17 @@
-// One running instance of the audio path: tap + aggregate + IOProc + listeners.
+// One running instance of the SPLIT audio path:
+//
+//   tap (device tap on the output device, no mixdown, muted while read)
+//     -> capture aggregate (tap only, no sub-devices, drift off)
+//     -> capture IOProc: writes the source L/R into the ring (sample time)
+//   output IOProc directly on the output device:
+//     reads the ring at a fixed delay -> render chain -> chosen output pair
+//
+// Never any sample-rate conversion: tap, device and capture aggregate must
+// run at the same rate or the session refuses to start.
 //
 // Lifecycle: init -> start() -> (running) -> teardown(). A session is never
-// restarted; the engine creates a new one instead. All methods must be called
-// on the engine queue (see AudioEngine).
+// restarted; the engine creates a new one. All methods run on the engine
+// queue (see AudioEngine).
 
 import CoreAudio
 import Foundation
@@ -26,26 +35,31 @@ typealias NullableIOProc = @convention(c) (
     UnsafeMutableRawPointer?
 ) -> OSStatus
 
-/// Called by Core Audio once per IO cycle on its real-time thread.
-///
-/// A C function pointer rather than AudioDeviceCreateIOProcIDWithBlock:
-/// both run directly on the HAL IO thread, but invoking a Swift closure
-/// through a block retains/releases the closure context on every cycle
-/// (verified in the disassembly), while a C function involves no reference
-/// counting at all. `clientData` is the `RenderState` pointer, kept alive by
-/// the session until the IOProc is destroyed.
-private func roomEQRender(
-    _ device: AudioObjectID,
-    _ now: UnsafePointer<AudioTimeStamp>?,
-    _ inputData: UnsafePointer<AudioBufferList>?,
-    _ inputTime: UnsafePointer<AudioTimeStamp>?,
-    _ outputData: UnsafeMutablePointer<AudioBufferList>?,
-    _ outputTime: UnsafePointer<AudioTimeStamp>?,
-    _ clientData: UnsafeMutableRawPointer?
+/// Capture IOProc (capture aggregate): tap -> ring. Client data: SplitLink.
+/// Plain C functions, not blocks: invoking a Swift closure through a block
+/// retains/releases its context every cycle; a C function involves no ARC.
+private func captureIOProc(
+    _ device: AudioObjectID, _ now: UnsafePointer<AudioTimeStamp>?, _ input: UnsafePointer<AudioBufferList>?,
+    _ inputTime: UnsafePointer<AudioTimeStamp>?, _ output: UnsafeMutablePointer<AudioBufferList>?,
+    _ outputTime: UnsafePointer<AudioTimeStamp>?, _ clientData: UnsafeMutableRawPointer?
 ) -> OSStatus {
     guard let clientData else { return noErr }
-    RenderKernel.render(
-        state: clientData.assumingMemoryBound(to: RenderState.self), input: inputData, output: outputData)
+    CaptureKernel.capture(
+        clientData.assumingMemoryBound(to: SplitLink.self), now: now, input: input, inputTime: inputTime)
+    return noErr
+}
+
+/// Output IOProc (physical device): ring -> render chain -> device.
+/// Client data: SplitOutputContext (render state + link).
+private func outputIOProc(
+    _ device: AudioObjectID, _ now: UnsafePointer<AudioTimeStamp>?, _ input: UnsafePointer<AudioBufferList>?,
+    _ inputTime: UnsafePointer<AudioTimeStamp>?, _ output: UnsafeMutablePointer<AudioBufferList>?,
+    _ outputTime: UnsafePointer<AudioTimeStamp>?, _ clientData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    guard let clientData else { return noErr }
+    let context = clientData.assumingMemoryBound(to: SplitOutputContext.self)
+    SplitOutputKernel.render(
+        state: context.pointee.state, link: context.pointee.link, outputTime: outputTime, output: output)
     return noErr
 }
 
@@ -53,9 +67,9 @@ private typealias NullableListenerProc = @convention(c) (
     AudioObjectID, UInt32, UnsafePointer<AudioObjectPropertyAddress>?, UnsafeMutableRawPointer?
 ) -> OSStatus
 
-/// kAudioDeviceProcessorOverload listener. Core Audio calls it SYNCHRONOUSLY
-/// from the IO thread, so it only does one atomic increment.
-private func roomEQOverloadListener(
+/// kAudioDeviceProcessorOverload on the output device. Core Audio calls it
+/// SYNCHRONOUSLY from the IO thread: one atomic increment only.
+private func outputOverloadListener(
     _ object: AudioObjectID, _ count: UInt32,
     _ addresses: UnsafePointer<AudioObjectPropertyAddress>?, _ clientData: UnsafeMutableRawPointer?
 ) -> OSStatus {
@@ -64,10 +78,21 @@ private func roomEQOverloadListener(
     return noErr
 }
 
+/// kAudioDeviceProcessorOverload on the capture aggregate (same rules).
+private func captureOverloadListener(
+    _ object: AudioObjectID, _ count: UInt32,
+    _ addresses: UnsafePointer<AudioObjectPropertyAddress>?, _ clientData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    guard let clientData else { return noErr }
+    CaptureKernel.recordOverload(clientData.assumingMemoryBound(to: SplitLink.self))
+    return noErr
+}
+
 // MARK: - Types
 
 /// What the user asked for.
 struct EngineConfiguration: Equatable {
+    /// Always the macOS default output device (chosen by the controller).
     var outputDeviceUID: String
     var outputPair: OutputChannelPair
     var bufferFrames: Int
@@ -78,16 +103,6 @@ struct EngineConfiguration: Equatable {
     /// (see `handleProcessListChanged`). Can be turned off for testing with
     /// `defaults write com.federicociapi.RoomEQ DisableProcessExclusionFallback -bool YES`.
     var processListFallbackEnabled: Bool
-    /// Device tap (default) or global mixdown (diagnostic). UserDefaults `TapMode`.
-    var tapMode: TapMode
-    /// Drift compensation of the tap inside the aggregate. Diagnostic
-    /// UserDefaults `TapDriftCompensation` (default true).
-    var tapDriftCompensation: Bool
-    /// Device mode only: stereo mix of the device stream (true), full
-    /// device layout (false), or nil = automatic: try mixdown, then no
-    /// mixdown, keeping the first tap whose rate equals the device's.
-    /// Diagnostic UserDefaults `TapMixdown` (unset = automatic).
-    var tapMixdown: Bool?
 }
 
 /// What actually got set up.
@@ -99,9 +114,10 @@ struct SessionInfo {
     let bufferSizeOptions: [Int]
     let outputPair: OutputChannelPair
     let latency: LatencyBreakdown
+    let delayFrames: Int
     let renderState: RenderStateHandle
-    let tapMode: TapMode
-    /// Short UI text, e.g. "44,1 kHz · 2 ch".
+    let link: SplitLinkHandle
+    /// Short UI text, e.g. "44,1 kHz · 10 ch".
     let tapFormatSummary: String
 }
 
@@ -118,8 +134,7 @@ struct AudioCapturePermissionError: LocalizedError {
     /// Wraps `error` if its status looks like a permission refusal.
     /// '!hog' (kAudioDevicePermissionsError) is a permission error by
     /// definition; for tap creation we also treat 'nope' (illegal
-    /// operation) as a likely refusal. These mappings are NOT documented for
-    /// taps; check them in the live test.
+    /// operation) as a likely refusal. Not documented for taps.
     static func classify(_ error: Error, tapCreation: Bool) -> Error {
         guard let error = error as? CoreAudioError else { return error }
         let statuses: [OSStatus] =
@@ -136,18 +151,28 @@ enum SessionSignal {
     case configurationMayHaveChanged
     case deviceMayBeGone
     case ioStoppedAbnormally
-    case bufferSizeChanged
     case processListChanged
 }
 
 // MARK: - Session
 
 final class EngineSession {
+    /// Ring capacity per channel (frames).
+    static let ringCapacity = 8192
+    /// Extra frames added to the measured read-ahead need.
+    static let delayMargin: Int64 = 32
+    /// Warm-up: settle, then measure for this long.
+    static let warmupSettle = 0.2
+    static let warmupMeasure = 0.5
+    /// Delay increases allowed per session after underruns.
+    static let maxDelayIncreases = 6
+
     let id: Int
     let configuration: EngineConfiguration
     private(set) var outputDevice: OutputDeviceInfo?
     private(set) var sampleRate: Double = 0
     private(set) var renderState: RenderStateHandle?
+    private(set) var link: SplitLinkHandle?
     /// Set once a restart has been requested, to avoid asking twice.
     var restartRequested = false
     /// A debounced configuration check is pending for this session.
@@ -157,19 +182,24 @@ final class EngineSession {
 
     private var tap: ProcessTap?
     private var aggregate: AggregateDevice?
-    private var layout: AggregateLayout?
     private var tapFormat = AudioStreamBasicDescription()
-    /// Output device's own nominal rate at start (normally == sampleRate).
+    private var tapStream: StreamInfo?
+    private var captureLayout: BufferListLayout?
+    private var outputStreams: [StreamInfo] = []
+    private var outputLayout: BufferListLayout?
+    private var bufferFrames = 0
     private var deviceSampleRate: Double = 0
-    private var ioProcID: AudioDeviceIOProcID?
-    private var started = false
+    private var captureSampleRate: Double = 0
+    private var cachedTapExtraLatency: Int?
+    private var outputContext: UnsafeMutablePointer<SplitOutputContext>?
+    private var captureProcID: AudioDeviceIOProcID?
+    private var outputProcID: AudioDeviceIOProcID?
+    private var captureStarted = false
+    private var outputStarted = false
     private var listeners: [PropertyListener] = []
     private var realtimeListeners: [RealtimeListener] = []
-    /// Device mode: UID of the device whose output stream is tapped (the
-    /// system default output at start).
-    private var tappedDeviceUID: String?
-    /// kAudioSubTapPropertyExtraLatency, read once per session.
-    private var cachedTapExtraLatency: Int?
+    private var delayIncreases = 0
+    private var underrunsSeen: UInt64 = 0
 
     init(id: Int, configuration: EngineConfiguration) {
         self.id = id
@@ -178,129 +208,231 @@ final class EngineSession {
 
     // MARK: Start
 
-    /// Builds and starts everything. On error, call `teardown()`.
+    /// Builds and starts everything, including the warm-up that fixes the
+    /// delay (blocks ~0.7 s). On error, call `teardown()`.
     func start(listenerQueue: DispatchQueue, signal: @escaping (SessionSignal) -> Void) throws -> SessionInfo {
-        // Output device.
+        // Output device (= tapped device).
         guard let deviceID = AudioDevices.deviceID(forUID: configuration.outputDeviceUID),
             let device = AudioDevices.info(for: deviceID)
         else { throw EngineError("Dispositivo di uscita non trovato (\(configuration.outputDeviceUID))") }
-        guard device.outputChannelCount >= 2 else {
-            throw EngineError("\(device.name) ha meno di 2 canali di uscita")
-        }
+        guard device.outputChannelCount >= 2 else { throw EngineError("\(device.name) ha meno di 2 canali di uscita") }
         outputDevice = device
+
+        // Which output stream holds the preferred stereo channels?
+        outputStreams = try DeviceStreams.streams(of: deviceID, scope: kAudioObjectPropertyScopeOutput)
+        let preferred = AudioDevices.preferredStereoChannels(of: deviceID)
+        let leftChannel = preferred?.0 ?? 1
+        var streamIndex = 0, streamFirstChannel = 1, firstChannel = 1
+        for (index, stream) in outputStreams.enumerated() {
+            let count = Int(stream.format.mChannelsPerFrame)
+            if leftChannel >= firstChannel && leftChannel < firstChannel + count {
+                streamIndex = index
+                streamFirstChannel = firstChannel
+                break
+            }
+            firstChannel += count
+        }
         Log.engine.info(
-            "Starting session \(self.id) on \(device.name, privacy: .public) (\(device.outputChannelCount) out, \(device.inputChannelCount) in)"
+            "Starting session \(self.id) on \(device.name, privacy: .public): output streams \(self.outputStreams.map { Int($0.format.mChannelsPerFrame) }, privacy: .public) ch, preferred stereo \(preferred.map { "\($0.0)/\($0.1)" } ?? "n/a (1/2)", privacy: .public) -> tapping stream \(streamIndex)"
         )
 
-        // Tap.
+        // Tap (own process excluded — mandatory, see ProcessTap).
         let tap: ProcessTap
         do {
-            tap = try createTap(outputDevice: device)
+            tap = try ProcessTap.create(
+                excludedBundleIDs: configuration.excludedBundleIDs, deviceUID: device.uid, stream: UInt(streamIndex))
         } catch {
             throw AudioCapturePermissionError.classify(error, tapCreation: true)
         }
         self.tap = tap
         tapFormat = try tap.format()
-        Log.tap.info(
-            "Tap format [mode \(self.configuration.tapMode.rawValue, privacy: .public)]: \(self.tapFormat.logDescription, privacy: .public); output device \(device.name, privacy: .public) at \((try? AudioDevices.nominalSampleRate(of: deviceID)) ?? 0) Hz"
-        )
+        Log.tap.info("Tap format: \(self.tapFormat.logDescription, privacy: .public)")
         Log.tap.info("exclusion-check: description stored by the HAL: \(tap.currentDescriptionSummary(), privacy: .public)")
-        guard tapFormat.mChannelsPerFrame >= 1 else {
-            throw EngineError("Il tap non ha canali")
+        guard tapFormat.isFloat32, tapFormat.mChannelsPerFrame >= 1 else {
+            throw EngineError("Formato del tap non supportato: \(tapFormat.logDescription)")
         }
 
-        // Aggregate, and where the tap ended up inside it (waits up to 3 s
-        // for the HAL to finish building it; fails if the tap stream can't
-        // be identified with certainty).
-        let aggregate = try AggregateDevice.create(
-            mainDeviceUID: device.uid, tapUID: tap.uid, driftCompensation: configuration.tapDriftCompensation)
+        // Capture aggregate: the tap only. Never the device as a sub-device.
+        let aggregate = try AggregateDevice.createCapture(tapUID: tap.uid)
         self.aggregate = aggregate
-        let layout = try AggregateLayout.waitForLayout(
-            aggregate: aggregate, outputDevice: deviceID, tap: tap, tapFormat: tapFormat)
-        self.layout = layout
-
-        // Buffer size (clamped to what the device allows).
-        let range = (try? aggregate.bufferFrameSizeRange()) ?? 0...Int.max
-        let frames = BufferSize.clamp(configuration.bufferFrames, minimum: range.lowerBound, maximum: range.upperBound)
-        do {
-            try aggregate.setBufferFrameSize(frames)
-        } catch {
-            Log.engine.error("\(error.localizedDescription, privacy: .public); continuing with the current size")
+        guard aggregate.activeSubDeviceIDs().isEmpty else {
+            throw EngineError("L'aggregato di cattura contiene un dispositivo: avvio annullato")
+        }
+        let tapStream = try aggregate.waitForTapStream(channels: Int(tapFormat.mChannelsPerFrame))
+        self.tapStream = tapStream
+        guard tapStream.format.isFloat32 else {
+            throw EngineError("Formato dello stream di cattura non supportato: \(tapStream.format.logDescription)")
         }
 
-        sampleRate = try aggregate.nominalSampleRate()
-        deviceSampleRate = (try? AudioDevices.nominalSampleRate(of: deviceID)) ?? sampleRate
-
-        // Render state.
-        // Tap channels feeding L/R: 2-channel tap -> 0/1; a device tap that
-        // kept the device's full layout -> the device's preferred stereo pair.
-        let tapChannels = layout.inputLayout.locations(ofStream: layout.tapStreamIndex)
-        guard !tapChannels.isEmpty else { throw EngineError("Lo stream del tap non ha canali") }
-        var preferredStereo: (Int, Int)?
-        if tapChannels.count > 2 {
-            let tappedID = tappedDeviceUID.flatMap(AudioDevices.deviceID(forUID:)) ?? deviceID
-            preferredStereo = AudioDevices.preferredStereoChannels(of: tappedID)
+        // No sample-rate conversion, ever.
+        deviceSampleRate = (try? AudioDevices.nominalSampleRate(of: deviceID)) ?? 0
+        captureSampleRate = (try? aggregate.nominalSampleRate()) ?? 0
+        if let violation = SampleRateGuard.violation(
+            tapRate: tapFormat.mSampleRate, deviceRate: deviceSampleRate, captureRate: captureSampleRate)
+        {
+            Log.engine.error(
+                "Rate mismatch: tap \(self.tapFormat.mSampleRate), device \(self.deviceSampleRate), capture \(self.captureSampleRate)")
+            throw EngineError(violation)
         }
-        let tapPair = TapChannelSelection.stereoPair(tapChannels: tapChannels.count, preferredStereo: preferredStereo)
-        let tapLeft = tapChannels[tapPair.left], tapRight = tapChannels[tapPair.right]
-        Log.tap.info(
-            "Tap stream has \(tapChannels.count) channel(s); using tap channels \(tapPair.left + 1)/\(tapPair.right + 1) as L/R (preferred stereo \(preferredStereo.map { "\($0.0)/\($0.1)" } ?? "n/a", privacy: .public))"
-        )
-        let pair =
-            configuration.outputPair.right < layout.outputLayout.channelCount ? configuration.outputPair : .firstPair
-        let renderConfiguration = RenderConfiguration(
-            inputLayout: layout.inputLayout, tapLeft: tapLeft, tapRight: tapRight,
-            outputLayout: layout.outputLayout, sampleRate: sampleRate)
+        sampleRate = deviceSampleRate
+
+        // Layouts, cross-checked with what the HAL will hand the IOProcs.
+        let captureLayout = BufferListLayout(streams: [tapStream.formatInfo])
+        let outputLayout = BufferListLayout(streams: outputStreams.map(\.formatInfo))
+        let reportedCapture = try AudioObject.bufferChannelCounts(aggregate.objectID, scope: kAudioObjectPropertyScopeInput)
+        let reportedOutput = try AudioObject.bufferChannelCounts(deviceID, scope: kAudioObjectPropertyScopeOutput)
+        guard captureLayout.matches(reportedBufferChannelCounts: reportedCapture),
+            outputLayout.matches(reportedBufferChannelCounts: reportedOutput)
+        else {
+            throw EngineError(
+                "Disposizione buffer inattesa: cattura \(reportedCapture) vs \(captureLayout.bufferChannelCounts), "
+                    + "uscita \(reportedOutput) vs \(outputLayout.bufferChannelCounts)")
+        }
+        if let bad = outputStreams.first(where: { !$0.format.isFloat32 }) {
+            throw EngineError("Formato di uscita non supportato: \(bad.format.logDescription)")
+        }
+        self.captureLayout = captureLayout
+        self.outputLayout = outputLayout
+
+        // Source = preferred stereo channels within the tapped stream.
+        let tapChannels = captureLayout.locations(ofStream: 0)
+        let sourcePair = TapChannelSelection.stereoPair(
+            tapChannels: tapChannels.count,
+            preferredStereo: TapChannelSelection.preferredWithinStream(preferred, streamFirstChannel: streamFirstChannel))
+        let sourceLeft = tapChannels[sourcePair.left], sourceRight = tapChannels[sourcePair.right]
+        Log.tap.info("Source = tap channels \(sourcePair.left + 1)/\(sourcePair.right + 1) of \(tapChannels.count)")
+
+        // Buffer size: same on both sides, within both ranges.
+        let captureRange = (try? DeviceIO.bufferFrameSizeRange(aggregate.objectID)) ?? 0...4096
+        let deviceRange = (try? DeviceIO.bufferFrameSizeRange(deviceID)) ?? 0...4096
+        let low = max(captureRange.lowerBound, deviceRange.lowerBound)
+        let high = max(low, min(captureRange.upperBound, deviceRange.upperBound))
+        let frames = BufferSize.clamp(configuration.bufferFrames, minimum: low, maximum: high)
+        try DeviceIO.setBufferFrameSize(aggregate.objectID, frames)
+        try DeviceIO.setBufferFrameSize(deviceID, frames)
+        bufferFrames = (try? DeviceIO.bufferFrameSize(deviceID)) ?? frames
+
+        // Shared state for the two IOProcs.
+        let maxOutputFrames = max(4096, deviceRange.upperBound)
+        let link = SplitLinkHandle(
+            configuration: SplitLinkConfiguration(
+                captureLayout: captureLayout, captureLeft: sourceLeft, captureRight: sourceRight,
+                ringCapacity: Self.ringCapacity, maxOutputFrames: maxOutputFrames))
+        self.link = link
+        let pair = configuration.outputPair.right < outputLayout.channelCount ? configuration.outputPair : .firstPair
         let renderState = RenderStateHandle(
-            configuration: renderConfiguration, gain: configuration.gain, bypass: configuration.bypass,
-            outputPair: pair)
+            configuration: RenderConfiguration(
+                inputLayout: captureLayout, tapLeft: sourceLeft, tapRight: sourceRight, outputLayout: outputLayout,
+                sampleRate: sampleRate),
+            gain: configuration.gain, bypass: configuration.bypass, outputPair: pair)
         self.renderState = renderState
-        let statePointer = UnsafeMutableRawPointer(renderState.pointer)
+        let context = UnsafeMutablePointer<SplitOutputContext>.allocate(capacity: 1)
+        context.initialize(to: SplitOutputContext(state: renderState.pointer, link: link.pointer))
+        outputContext = context
 
-        // IOProc (plain C function, render state as client data).
-        var procID: AudioDeviceIOProcID?
-        let ioProc = unsafeBitCast(roomEQRender as NullableIOProc, to: AudioDeviceIOProc.self)
+        // IOProcs.
+        var captureID: AudioDeviceIOProcID?
         try AudioObject.check(
-            AudioDeviceCreateIOProcID(aggregate.objectID, ioProc, statePointer, &procID),
-            "Creazione della callback audio")
-        guard let procID else { throw EngineError("Creazione della callback audio: ID mancante") }
-        ioProcID = procID
+            AudioDeviceCreateIOProcID(
+                aggregate.objectID, unsafeBitCast(captureIOProc as NullableIOProc, to: AudioDeviceIOProc.self),
+                link.rawPointer, &captureID),
+            "Creazione della callback di cattura")
+        captureProcID = captureID
+        var outputID: AudioDeviceIOProcID?
+        try AudioObject.check(
+            AudioDeviceCreateIOProcID(
+                deviceID, unsafeBitCast(outputIOProc as NullableIOProc, to: AudioDeviceIOProc.self),
+                UnsafeMutableRawPointer(context), &outputID),
+            "Creazione della callback di uscita")
+        outputProcID = outputID
+        guard let captureID, let outputID else { throw EngineError("Creazione delle callback: ID mancante") }
 
-        // Only the tap stream is needed as input.
-        do {
-            try aggregate.setInputStreamUsage(
-                ioProc: procID, enabled: layout.inputStreams.indices.map { $0 == layout.tapStreamIndex })
-            Log.engine.info("Hardware input streams disabled for our IOProc (only the tap stream is on)")
-        } catch {
-            Log.engine.error("Could not restrict input stream usage: \(error.localizedDescription, privacy: .public)")
+        // Never read the device's hardware inputs (no microphone use).
+        let deviceInputs = (try? DeviceStreams.streams(of: deviceID, scope: kAudioObjectPropertyScopeInput))?.count ?? 0
+        if deviceInputs > 0 {
+            do {
+                try DeviceStreams.setInputStreamUsage(
+                    device: deviceID, ioProc: outputID, enabled: Array(repeating: false, count: deviceInputs))
+            } catch {
+                Log.engine.error("Could not disable device inputs: \(error.localizedDescription, privacy: .public)")
+            }
         }
 
-        registerListeners(deviceID: deviceID, statePointer: statePointer, queue: listenerQueue, signal: signal)
+        registerListeners(deviceID: deviceID, queue: listenerQueue, signal: signal)
 
+        // Start: capture first, then output (which stays silent while warming up).
         do {
-            try AudioObject.check(AudioDeviceStart(aggregate.objectID, procID), "Avvio dell'audio")
+            try AudioObject.check(AudioDeviceStart(aggregate.objectID, captureID), "Avvio della cattura")
+            captureStarted = true
+            try AudioObject.check(AudioDeviceStart(deviceID, outputID), "Avvio dell'uscita")
+            outputStarted = true
         } catch {
             throw AudioCapturePermissionError.classify(error, tapCreation: false)
         }
-        started = true
 
-        let info = makeInfo(range: range)
-        Log.engine.info(
-            "Session \(self.id) running: \(self.sampleRate) Hz, buffer \(info.bufferFrames), pair \(pair.description, privacy: .public)"
+        let delay = try warmUpAndFixDelay(link: link)
+        let info = makeInfo(range: low...high, delay: Int(delay))
+        Log.engine.notice(
+            "Session \(self.id) running on \(device.name, privacy: .public): \(self.sampleRate) Hz, buffer \(self.bufferFrames), pair \(pair.description, privacy: .public), delay \(delay) frames; latency \(info.latency.detail, privacy: .public) = \(info.latency.totalMilliseconds) ms"
         )
-        logLatencyDiagnostics(context: "at start")
         return info
     }
 
-    private func registerListeners(
-        deviceID: AudioObjectID, statePointer: UnsafeMutableRawPointer, queue: DispatchQueue,
-        signal: @escaping (SessionSignal) -> Void
-    ) {
-        guard let aggregate, let tap else { return }
+    /// Warm-up: the output IOProc is silent and measures how far ahead of the
+    /// written data it would read. Settle, measure, derive the timeline
+    /// offset from the first timestamps, fix the delay.
+    private func warmUpAndFixDelay(link: SplitLinkHandle) throws -> Int64 {
+        Thread.sleep(forTimeInterval: Self.warmupSettle)
+        link.resetWarmupMeasurement()
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(3)
+        Thread.sleep(forTimeInterval: Self.warmupMeasure)
+        var measurement = link.warmupMeasurement()
+        while (measurement.maxNeed == nil || measurement.samples < 10) && clock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.1)
+            measurement = link.warmupMeasurement()
+        }
+        let status = link.status()
+        guard let maxNeed = measurement.maxNeed, measurement.samples >= 10 else {
+            throw EngineError(
+                "Avvio non riuscito: la cattura non riceve dati dal tap "
+                    + "(cicli cattura \(status.captureCycles), non validi \(status.captureInvalidCycles), "
+                    + "cicli uscita \(status.outputCycles))")
+        }
+
+        var offset: Int64 = 0
+        if let stamps = link.firstTimestamps() {
+            offset = SplitTimeline.offset(
+                capture: stamps.capture, output: stamps.output, sampleRate: sampleRate,
+                ticksPerSecond: Self.ticksPerSecond)
+            Log.engine.notice(
+                "Timeline: first capture stamp \(stamps.capture.0)@\(stamps.capture.1), first output stamp \(stamps.output.0)@\(stamps.output.1) -> offset \(offset) frames (expected 0)"
+            )
+        } else {
+            Log.engine.error("Timeline: first timestamps unavailable, assuming offset 0")
+        }
+        let delay = SplitTimeline.delay(
+            maxNeed: maxNeed, offset: offset, margin: Self.delayMargin, minimum: Int64(bufferFrames),
+            maximum: link.maximumDelay)
+        Log.engine.notice(
+            "Delay: max read-ahead need \(maxNeed) frames over \(measurement.samples) cycles, offset \(offset), margin \(Self.delayMargin) -> delay \(delay) frames (\(Double(delay) * 1000 / self.sampleRate) ms)"
+        )
+        link.start(offset: offset, delay: delay)
+        return delay
+    }
+
+    /// Host ticks per second (mach timebase).
+    static let ticksPerSecond: Double = {
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        return 1_000_000_000 * Double(info.denom) / Double(info.numer)
+    }()
+
+    private func registerListeners(deviceID: AudioObjectID, queue: DispatchQueue, signal: @escaping (SessionSignal) -> Void) {
+        guard let aggregate, let tap, let renderState, let link else { return }
         let system = AudioObjectID(kAudioObjectSystemObject)
         let wildcard = kAudioObjectPropertyScopeWildcard
-        // Each listener is optional: if one can't be registered (e.g. an
-        // object doesn't support that property) we log it and carry on.
+        // Each listener is optional: if one can't be registered we log it.
         func listen(
             _ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
             _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal, handler: @escaping () -> Void
@@ -313,36 +445,31 @@ final class EngineSession {
                 Log.engine.error("Listener not installed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        let configurationChanged = { signal(.configurationMayHaveChanged) }
-        // Format.
-        listen(aggregate.objectID, kAudioDevicePropertyNominalSampleRate, handler: configurationChanged)
-        listen(deviceID, kAudioDevicePropertyNominalSampleRate, handler: configurationChanged)
-        listen(tap.objectID, kAudioTapPropertyFormat, handler: configurationChanged)
-        // Stream layout: if it changes, the render state's tables are stale
-        // (the kernel would only output silence) -> rebuild.
+        let changed = { signal(.configurationMayHaveChanged) }
+        listen(tap.objectID, kAudioTapPropertyFormat, handler: changed)
         for object in [aggregate.objectID, deviceID] {
-            listen(object, kAudioDevicePropertyStreamConfiguration, wildcard, handler: configurationChanged)
-            listen(object, kAudioDevicePropertyStreams, wildcard, handler: configurationChanged)
-            listen(object, kAudioDevicePropertyDeviceHasChanged, handler: configurationChanged)
+            listen(object, kAudioDevicePropertyNominalSampleRate, handler: changed)
+            listen(object, kAudioDevicePropertyStreamConfiguration, wildcard, handler: changed)
+            listen(object, kAudioDevicePropertyStreams, wildcard, handler: changed)
+            listen(object, kAudioDevicePropertyDeviceHasChanged, handler: changed)
+            listen(object, kAudioDevicePropertyIOStoppedAbnormally) { signal(.ioStoppedAbnormally) }
         }
-        // Device presence and IO health.
         listen(deviceID, kAudioDevicePropertyDeviceIsAlive) { signal(.deviceMayBeGone) }
         listen(system, kAudioHardwarePropertyDevices) { signal(.deviceMayBeGone) }
-        listen(aggregate.objectID, kAudioDevicePropertyIOStoppedAbnormally) { signal(.ioStoppedAbnormally) }
-        listen(aggregate.objectID, kAudioDevicePropertyBufferFrameSize) { signal(.bufferSizeChanged) }
         listen(system, kAudioHardwarePropertyProcessObjectList) { signal(.processListChanged) }
-        if configuration.tapMode == .device {
-            // The tap follows the system default output: rebuild if it moves.
-            listen(system, kAudioHardwarePropertyDefaultOutputDevice, handler: configurationChanged)
-        }
 
-        // Overloads arrive synchronously on the IO thread: C listener.
+        // Overloads arrive synchronously on the IO threads: C listeners.
+        let overload = AudioObject.address(kAudioDeviceProcessorOverload)
+        let outputProc = unsafeBitCast(outputOverloadListener as NullableListenerProc, to: AudioObjectPropertyListenerProc.self)
+        let captureProc = unsafeBitCast(captureOverloadListener as NullableListenerProc, to: AudioObjectPropertyListenerProc.self)
         do {
-            let proc = unsafeBitCast(roomEQOverloadListener as NullableListenerProc, to: AudioObjectPropertyListenerProc.self)
             realtimeListeners.append(
                 try RealtimeListener(
-                    object: aggregate.objectID, address: AudioObject.address(kAudioDeviceProcessorOverload),
-                    proc: proc, clientData: statePointer))
+                    object: deviceID, address: overload, proc: outputProc,
+                    clientData: UnsafeMutableRawPointer(renderState.pointer)))
+            realtimeListeners.append(
+                try RealtimeListener(
+                    object: aggregate.objectID, address: overload, proc: captureProc, clientData: link.rawPointer))
         } catch {
             Log.engine.error("Overload listener not installed: \(error.localizedDescription, privacy: .public)")
         }
@@ -350,190 +477,94 @@ final class EngineSession {
 
     // MARK: Running
 
-    private func makeInfo(range: ClosedRange<Int>) -> SessionInfo {
-        let (latency, frames) = currentLatency()
-        return SessionInfo(
+    private func makeInfo(range: ClosedRange<Int>, delay: Int) -> SessionInfo {
+        SessionInfo(
             sessionID: id,
             outputDevice: outputDevice!,
             sampleRate: sampleRate,
-            bufferFrames: frames,
+            bufferFrames: bufferFrames,
             bufferSizeOptions: BufferSize.options(minimum: range.lowerBound, maximum: range.upperBound),
             outputPair: renderState!.outputPair,
-            latency: latency,
+            latency: currentLatency(),
+            delayFrames: delay,
             renderState: renderState!,
-            tapMode: configuration.tapMode,
+            link: link!,
             tapFormatSummary: AudioFormatText.summary(
                 sampleRate: tapFormat.mSampleRate, channels: Int(tapFormat.mChannelsPerFrame)))
     }
 
-    /// Latency estimate at the current buffer size and output pair.
-    /// Input side = the tap path only: sub-tap extra latency + aggregate
-    /// input safety offset + tap stream latency (NOT the hardware inputs'
-    /// device latency). Output side = aggregate output device latency +
-    /// output safety offset + latency of the stream we write to.
-    func currentLatency() -> (LatencyBreakdown, bufferFrames: Int) {
-        guard let aggregate, let layout else {
-            return (LatencyBreakdown(components: LatencyComponents(), sampleRate: sampleRate), 0)
+    /// Latency estimate with the chosen delay (see LatencyComponents.split):
+    /// tap extra + tap stream latency + delay + output device latency +
+    /// output stream latency, with the delay broken down into capture safety
+    /// offset, both buffers, ring time and output safety offset.
+    func currentLatency() -> LatencyBreakdown {
+        guard let aggregate, let outputDevice, let link, let outputLayout else {
+            return LatencyBreakdown(components: LatencyComponents(), sampleRate: sampleRate)
         }
-        let frames: Int
-        do {
-            frames = try aggregate.bufferFrameSize()
-        } catch {
-            Log.engine.warning("Buffer size unreadable: \(error.localizedDescription, privacy: .public)")
-            frames = configuration.bufferFrames
-        }
+        if cachedTapExtraLatency == nil { cachedTapExtraLatency = aggregate.subTapExtraLatency() }
         let pair = renderState?.outputPair ?? .firstPair
-        let outputStreamIndex = layout.outputLayout.location(ofChannel: pair.left)?.stream ?? 0
-        let input = kAudioObjectPropertyScopeInput, output = kAudioObjectPropertyScopeOutput
-        let components = LatencyComponents(
-            inputTapExtraFrames: tapExtraLatency(aggregate),
-            inputSafetyOffsetFrames: aggregate.safetyOffset(scope: input),
-            inputStreamFrames: DeviceStreams.latency(ofStream: layout.tapStream.objectID),
-            bufferFrames: frames,
-            outputDeviceFrames: aggregate.deviceLatency(scope: output),
-            outputSafetyOffsetFrames: aggregate.safetyOffset(scope: output),
-            outputStreamFrames: DeviceStreams.latency(ofStream: layout.outputStreams[outputStreamIndex].objectID))
-        return (LatencyBreakdown(components: components, sampleRate: sampleRate), frames)
+        let streamIndex = outputLayout.location(ofChannel: pair.left)?.stream ?? 0
+        let output = kAudioObjectPropertyScopeOutput
+        let components = LatencyComponents.split(
+            delayFrames: Int(link.status().delayFrames),
+            tapExtraFrames: cachedTapExtraLatency ?? 0,
+            tapStreamFrames: tapStream.map { DeviceStreams.latency(ofStream: $0.objectID) } ?? 0,
+            captureSafetyOffsetFrames: DeviceIO.safetyOffset(aggregate.objectID, scope: kAudioObjectPropertyScopeInput),
+            bufferFrames: bufferFrames,
+            outputSafetyOffsetFrames: DeviceIO.safetyOffset(outputDevice.objectID, scope: output),
+            outputDeviceFrames: DeviceIO.latency(outputDevice.objectID, scope: output),
+            outputStreamFrames: outputStreams.indices.contains(streamIndex)
+                ? DeviceStreams.latency(ofStream: outputStreams[streamIndex].objectID) : 0)
+        return LatencyBreakdown(components: components, sampleRate: sampleRate)
     }
 
-    /// Which audio to capture. Device mode taps output stream 0 of the
-    /// SYSTEM DEFAULT output device (where apps play), even if RoomEQ plays
-    /// to another device; in that case the rates may differ and the
-    /// aggregate resamples (logged).
-    private func tapTarget(outputDevice: OutputDeviceInfo) -> TapTarget {
-        switch configuration.tapMode {
-        case .global:
-            tappedDeviceUID = nil
-            return .global
-        case .device:
-            let tapped = currentTapDeviceUID(fallback: outputDevice.uid) ?? outputDevice.uid
-            tappedDeviceUID = tapped
-            if tapped != outputDevice.uid {
-                let tappedRate = AudioDevices.deviceID(forUID: tapped).flatMap { try? AudioDevices.nominalSampleRate(of: $0) }
-                let outputRate = try? AudioDevices.nominalSampleRate(of: outputDevice.objectID)
-                Log.tap.notice(
-                    "Device tap on the system default output \(tapped, privacy: .public) (\(tappedRate ?? 0) Hz), playing to \(outputDevice.name, privacy: .public) (\(outputRate ?? 0) Hz)\(tappedRate != outputRate ? " — rates differ, the aggregate will resample" : "", privacy: .public)"
-                )
-            }
-            return .device(uid: tapped, stream: 0, mixdown: configuration.tapMixdown ?? true)
+    /// Called about once a second: if underruns happened since the last
+    /// call, increase the delay by one step (the output IOProc fades across
+    /// the change). Returns the new latency if the delay changed.
+    func adaptDelayIfNeeded() -> LatencyBreakdown? {
+        guard let link else { return nil }
+        let status = link.status()
+        defer { underrunsSeen = status.underrunCycles }
+        guard status.underrunCycles > underrunsSeen else { return nil }
+        let newUnderruns = status.underrunCycles - underrunsSeen
+        guard delayIncreases < Self.maxDelayIncreases else {
+            Log.engine.error("Underruns (+\(newUnderruns)) but the delay was already increased \(self.delayIncreases) times")
+            return nil
         }
-    }
-
-    /// Creates the tap. In device mode, unless `tapMixdown` is forced, tries
-    /// mixdown and then no mixdown, and for each also tries setting
-    /// kAudioTapPropertyFormat to the device rate if it is settable; keeps
-    /// the first tap whose rate equals the tapped device's rate (no
-    /// resampling in the aggregate), else the first one created.
-    private func createTap(outputDevice: OutputDeviceInfo) throws -> ProcessTap {
-        let target = tapTarget(outputDevice: outputDevice)
-        guard case .device(let uid, let stream, _) = target else {
-            return try ProcessTap.create(excludedBundleIDs: configuration.excludedBundleIDs, target: target)
-        }
-        let wantedRate = AudioDevices.deviceID(forUID: uid).flatMap { try? AudioDevices.nominalSampleRate(of: $0) }
-        let candidates: [Bool] = configuration.tapMixdown.map { [$0] } ?? [true, false]
-        var fallback: ProcessTap?
-        for mixdown in candidates {
-            let candidate: ProcessTap
-            do {
-                candidate = try ProcessTap.create(
-                    excludedBundleIDs: configuration.excludedBundleIDs,
-                    target: .device(uid: uid, stream: stream, mixdown: mixdown))
-            } catch {
-                if let fallback { return fallback }
-                throw error
-            }
-            let rate = (try? candidate.format())?.mSampleRate ?? 0
-            if let wantedRate, rate == wantedRate {
-                Log.tap.notice("Device tap (mixdown \(mixdown)) runs at the device rate \(rate) Hz: using it")
-                fallback?.destroy()
-                return candidate
-            }
-            if let wantedRate {
-                let attempt = candidate.trySetSampleRate(wantedRate)
-                if attempt.succeeded {
-                    Log.tap.notice("Device tap (mixdown \(mixdown)) set to \(wantedRate) Hz via kAudioTapPropertyFormat: using it")
-                    fallback?.destroy()
-                    return candidate
-                }
-                Log.tap.notice(
-                    "Device tap (mixdown \(mixdown)) at \(rate) Hz, device at \(wantedRate) Hz; format change: \(attempt.report, privacy: .public)"
-                )
-            }
-            if fallback == nil { fallback = candidate } else { candidate.destroy() }
-        }
-        Log.tap.notice("No device tap at the device rate; using the first candidate (the aggregate will resample)")
-        return fallback!
-    }
-
-    /// UID of the device a device-mode tap should follow: the system default
-    /// output (ignoring RoomEQ's own aggregate), else `fallback`.
-    private func currentTapDeviceUID(fallback: String) -> String? {
-        guard let uid = AudioDevices.defaultOutputDeviceUID(), !uid.hasPrefix(AudioDevices.ownAggregateUIDPrefix) else {
-            return fallback
-        }
-        return uid
-    }
-
-    private func tapExtraLatency(_ aggregate: AggregateDevice) -> Int {
-        if let cachedTapExtraLatency { return cachedTapExtraLatency }
-        let value = aggregate.subTapExtraLatency()
-        cachedTapExtraLatency = value
-        return value
-    }
-
-    /// Logs everything that goes into the latency estimate, plus the raw
-    /// aggregate values, tagged with the tap mode, so modes can be compared.
-    func logLatencyDiagnostics(context: String) {
-        guard let aggregate else { return }
-        let (latency, frames) = currentLatency()
-        let input = kAudioObjectPropertyScopeInput, output = kAudioObjectPropertyScopeOutput
+        let step = Int64(max(32, bufferFrames / 2))
+        let delay = min(status.delayFrames + step, link.maximumDelay)
+        guard delay > status.delayFrames else { return nil }
+        delayIncreases += 1
+        link.setDelay(delay)
         Log.engine.notice(
-            "Latency [\(context, privacy: .public)] mode=\(self.configuration.tapMode.rawValue, privacy: .public) drift=\(self.configuration.tapDriftCompensation) target=\(self.tap?.target.description ?? "?", privacy: .public) tap=\(self.tapFormat.mSampleRate) Hz/\(self.tapFormat.mChannelsPerFrame) ch device=\(self.sampleRate) Hz buffer=\(frames): safety in \(aggregate.safetyOffset(scope: input)) out \(aggregate.safetyOffset(scope: output)), device latency in \(aggregate.deviceLatency(scope: input)) (not counted) out \(aggregate.deviceLatency(scope: output)) -> \(latency.detail, privacy: .public) = \(latency.totalMilliseconds) ms"
-        )
-    }
-
-    /// Changes the IO buffer size while running.
-    func setBufferSize(_ requested: Int) throws -> (LatencyBreakdown, bufferFrames: Int) {
-        guard let aggregate else { throw EngineError("Motore non avviato") }
-        let range = try aggregate.bufferFrameSizeRange()
-        try aggregate.setBufferFrameSize(BufferSize.clamp(requested, minimum: range.lowerBound, maximum: range.upperBound))
+            "Underruns (+\(newUnderruns), missing \(status.missingFrames) frames total): delay \(status.delayFrames) -> \(delay) frames")
         return currentLatency()
     }
 
     /// Returns a reason if the sample rate, tap format or stream layout no
     /// longer match what the session was built for, nil otherwise.
     func configurationChangeReason() -> String? {
-        guard let aggregate, let tap, let outputDevice, let layout else { return nil }
-        if configuration.tapMode == .device, let tapped = tappedDeviceUID,
-            let current = currentTapDeviceUID(fallback: outputDevice.uid), current != tapped
-        {
-            return "uscita di sistema cambiata (tap su \(current))"
-        }
-        if let rate = try? aggregate.nominalSampleRate(), rate != sampleRate {
-            return "frequenza del dispositivo aggregato cambiata (\(sampleRate) -> \(rate) Hz)"
-        }
-        if let rate = try? AudioDevices.nominalSampleRate(of: outputDevice.objectID), rate != deviceSampleRate {
-            return "frequenza di \(outputDevice.name) cambiata (\(deviceSampleRate) -> \(rate) Hz)"
-        }
+        guard let aggregate, let tap, let outputDevice, let captureLayout, let outputLayout else { return nil }
         if let format = try? tap.format(),
             format.mSampleRate != tapFormat.mSampleRate || format.mChannelsPerFrame != tapFormat.mChannelsPerFrame
         {
             return "formato del tap cambiato (\(format.logDescription))"
         }
-        let inputCounts = try? AudioObject.bufferChannelCounts(aggregate.objectID, scope: kAudioObjectPropertyScopeInput)
-        let outputCounts = try? AudioObject.bufferChannelCounts(aggregate.objectID, scope: kAudioObjectPropertyScopeOutput)
-        if inputCounts != layout.inputLayout.bufferChannelCounts
-            || outputCounts != layout.outputLayout.bufferChannelCounts
-        {
-            return "disposizione degli stream cambiata (ingresso \(inputCounts ?? []), uscita \(outputCounts ?? []))"
+        if let rate = try? AudioDevices.nominalSampleRate(of: outputDevice.objectID), rate != deviceSampleRate {
+            return "frequenza di \(outputDevice.name) cambiata (\(deviceSampleRate) -> \(rate) Hz)"
         }
-        let inputIDs = (try? DeviceStreams.streams(of: aggregate.objectID, scope: kAudioObjectPropertyScopeInput))?
-            .map(\.objectID)
-        let outputIDs = (try? DeviceStreams.streams(of: aggregate.objectID, scope: kAudioObjectPropertyScopeOutput))?
-            .map(\.objectID)
-        if inputIDs != layout.inputStreams.map(\.objectID) || outputIDs != layout.outputStreams.map(\.objectID) {
-            return "stream del dispositivo aggregato sostituiti"
+        if let rate = try? aggregate.nominalSampleRate(), rate != captureSampleRate {
+            return "frequenza di cattura cambiata (\(captureSampleRate) -> \(rate) Hz)"
         }
+        let captureCounts = try? AudioObject.bufferChannelCounts(aggregate.objectID, scope: kAudioObjectPropertyScopeInput)
+        let outputCounts = try? AudioObject.bufferChannelCounts(outputDevice.objectID, scope: kAudioObjectPropertyScopeOutput)
+        if captureCounts != captureLayout.bufferChannelCounts || outputCounts != outputLayout.bufferChannelCounts {
+            return "disposizione degli stream cambiata (cattura \(captureCounts ?? []), uscita \(outputCounts ?? []))"
+        }
+        let outputIDs = (try? DeviceStreams.streams(of: outputDevice.objectID, scope: kAudioObjectPropertyScopeOutput))?
+            .map(\.objectID)
+        if outputIDs != outputStreams.map(\.objectID) { return "stream di uscita sostituiti" }
+        if !aggregate.activeSubDeviceIDs().isEmpty { return "l'aggregato di cattura ha acquisito un dispositivo" }
         return nil
     }
 
@@ -569,7 +600,6 @@ final class EngineSession {
             return
         }
         do {
-            // Keep only processes that still exist, plus the new ones.
             let stillAlive = tap.excludedProcesses.filter { alive.contains($0) }
             try tap.replaceExcludedProcesses(stillAlive + newcomers.map(\.object))
         } catch {
@@ -580,33 +610,47 @@ final class EngineSession {
     // MARK: Stop
 
     /// Stops and destroys everything, in the safe order: listeners (the
-    /// real-time one first), IO, IOProc (after this the render state is no
-    /// longer used by Core Audio), aggregate, tap.
-    /// Safe to call more than once and after a partial start.
+    /// real-time ones first), output IO, capture IO, both IOProcs (after this
+    /// Core Audio no longer touches the shared state), aggregate, tap, then
+    /// the shared state. Safe to call more than once and after a partial start.
     func teardown() {
         realtimeListeners.forEach { $0.remove() }
         realtimeListeners.removeAll()
         listeners.forEach { $0.remove() }
         listeners.removeAll()
-        if let aggregate, let procID = ioProcID {
-            if started {
-                let status = AudioDeviceStop(aggregate.objectID, procID)
-                if status != noErr {
-                    Log.engine.error("AudioDeviceStop: \(describeOSStatus(status), privacy: .public)")
-                }
-                started = false
-            }
-            let status = AudioDeviceDestroyIOProcID(aggregate.objectID, procID)
-            if status != noErr {
-                Log.engine.error("AudioDeviceDestroyIOProcID: \(describeOSStatus(status), privacy: .public)")
-            }
-            ioProcID = nil
+
+        let deviceID = outputDevice?.objectID
+        if let deviceID, let outputProcID, outputStarted {
+            report(AudioDeviceStop(deviceID, outputProcID), "AudioDeviceStop (output)")
+            outputStarted = false
+        }
+        if let aggregate, let captureProcID, captureStarted {
+            report(AudioDeviceStop(aggregate.objectID, captureProcID), "AudioDeviceStop (capture)")
+            captureStarted = false
+        }
+        if let deviceID, let outputProcID {
+            report(AudioDeviceDestroyIOProcID(deviceID, outputProcID), "AudioDeviceDestroyIOProcID (output)")
+            self.outputProcID = nil
+        }
+        if let aggregate, let captureProcID {
+            report(AudioDeviceDestroyIOProcID(aggregate.objectID, captureProcID), "AudioDeviceDestroyIOProcID (capture)")
+            self.captureProcID = nil
         }
         aggregate?.destroy()
         aggregate = nil
         tap?.destroy()
         tap = nil
+        if let outputContext {
+            outputContext.deinitialize(count: 1)
+            outputContext.deallocate()
+            self.outputContext = nil
+        }
         renderState = nil
+        link = nil
         Log.engine.info("Session \(self.id) torn down")
+    }
+
+    private func report(_ status: OSStatus, _ operation: String) {
+        if status != noErr { Log.engine.error("\(operation, privacy: .public): \(describeOSStatus(status), privacy: .public)") }
     }
 }

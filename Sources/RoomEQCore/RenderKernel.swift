@@ -6,8 +6,8 @@
 //
 // What one cycle does:
 //   1. silence every output buffer (all channels we don't write stay at 0);
-//   2. check the output and input buffer lists match the layout recorded at
-//      start (else stay silent and count an invalid cycle);
+//   2. check the output (and, for `render`, input) buffer lists match the
+//      layout recorded at start (else stay silent and count an invalid cycle);
 //   3. for each chunk: copy the tap's L/R into the dry and wet scratch
 //      buffers (input peak), run the DSP chain on the wet copy, crossfade
 //      dry/wet (bypass), apply the gain (fixed-time ramp), replace NaN/Inf
@@ -20,52 +20,19 @@ import Darwin
 import Synchronization
 
 public enum RenderKernel {
-    /// Renders one IO cycle. `input` / `output` are the buffer lists Core
-    /// Audio passes to the IOProc (treated as possibly NULL).
+    /// Renders one IO cycle reading the tap directly from `input` (input
+    /// and output in the same IO cycle). The split engine uses
+    /// `renderFromSource` instead; this entry point remains for the unit
+    /// tests of the processing chain.
     public static func render(
         state: UnsafeMutablePointer<RenderState>,
         input: UnsafePointer<AudioBufferList>?,
         output: UnsafeMutablePointer<AudioBufferList>?
     ) {
-        state.pointee.renderedCycles.wrappingAdd(1, ordering: .relaxed)
-        guard let output else {
-            state.pointee.invalidOutputCycles.wrappingAdd(1, ordering: .relaxed)
-            return
-        }
+        guard let destination = prepareOutput(state: state, output: output) else { return }
+
+        // Validate the input (tap) buffers.
         let buffersOffset = state.pointee.audioBuffersOffset
-        let outList = UnsafeMutableRawPointer(output)
-
-        // 1. Silence all outputs; find how many frames the output expects.
-        let outBufferCount = Int(outList.load(as: UInt32.self))
-        var outputFrames = Int.max
-        for index in 0..<outBufferCount {
-            let buffer = audioBuffer(outList, buffersOffset, index)
-            if let data = buffer.pointee.mData {
-                memset(data, 0, Int(buffer.pointee.mDataByteSize))
-            }
-            let channels = Int(buffer.pointee.mNumberChannels)
-            if channels > 0 {
-                outputFrames = min(outputFrames, Int(buffer.pointee.mDataByteSize) / (channels * floatSize))
-            }
-        }
-
-        // 2a. Validate the output against the layout recorded at start.
-        // The output pair may change at any time from the main thread.
-        let pair = OutputChannelPair.unpack(state.pointee.outputPair.load(ordering: .relaxed))
-        guard outputFrames != Int.max, outputFrames > 0,
-            outBufferCount == state.pointee.outputBufferCount,
-            pair.left < state.pointee.outputChannelCount,
-            pair.right < state.pointee.outputChannelCount,
-            let outL = destinationSamples(outList, buffersOffset, state.pointee.outputLocations[pair.left],
-                                          expectedChannels: state.pointee.outputBufferChannels),
-            let outR = destinationSamples(outList, buffersOffset, state.pointee.outputLocations[pair.right],
-                                          expectedChannels: state.pointee.outputBufferChannels)
-        else {
-            state.pointee.invalidOutputCycles.wrappingAdd(1, ordering: .relaxed)
-            return
-        }
-
-        // 2b. Validate the input (tap) buffers.
         guard let input,
             let tapL = sourceSamples(UnsafeRawPointer(input), buffersOffset, state.pointee.tapLeft,
                                      expectedBuffers: state.pointee.inputBufferCount),
@@ -75,10 +42,104 @@ public enum RenderKernel {
             state.pointee.invalidInputCycles.wrappingAdd(1, ordering: .relaxed)
             return
         }
-
         // Two-argument min only: the variadic min(a, b, c, ...) builds an
         // array (runtime calls on the real-time thread).
-        let frames = min(min(outputFrames, min(tapL.frames, tapR.frames)), min(outL.frames, outR.frames))
+        let frames = min(destination.frames, min(tapL.frames, tapR.frames))
+        process(
+            state: state, sourceLeft: UnsafePointer(tapL.samples), leftStride: tapL.stride,
+            sourceRight: UnsafePointer(tapR.samples), rightStride: tapR.stride, frames: frames,
+            outL: destination.left, outR: destination.right)
+    }
+
+    /// Renders one IO cycle from contiguous (de-interleaved) source samples,
+    /// e.g. read from the capture ring buffer. `frames` source frames.
+    public static func renderFromSource(
+        state: UnsafeMutablePointer<RenderState>,
+        sourceLeft: UnsafePointer<Float>,
+        sourceRight: UnsafePointer<Float>,
+        frames: Int,
+        output: UnsafeMutablePointer<AudioBufferList>?
+    ) {
+        guard let destination = prepareOutput(state: state, output: output) else { return }
+        process(
+            state: state, sourceLeft: sourceLeft, leftStride: 1, sourceRight: sourceRight, rightStride: 1,
+            frames: min(destination.frames, frames), outL: destination.left, outR: destination.right)
+    }
+
+    /// Frames requested by an output buffer list (0 if none/invalid).
+    @inline(__always)
+    public static func outputFrameCount(_ output: UnsafeMutablePointer<AudioBufferList>?, buffersOffset: Int) -> Int {
+        guard let output else { return 0 }
+        let list = UnsafeMutableRawPointer(output)
+        var frames = Int.max
+        for index in 0..<Int(list.load(as: UInt32.self)) {
+            let buffer = audioBuffer(list, buffersOffset, index)
+            let channels = Int(buffer.pointee.mNumberChannels)
+            if channels > 0 {
+                frames = min(frames, Int(buffer.pointee.mDataByteSize) / (channels * floatSize))
+            }
+        }
+        return frames == Int.max ? 0 : frames
+    }
+
+    /// Zeroes every buffer of `output`.
+    @inline(__always)
+    public static func silence(_ output: UnsafeMutablePointer<AudioBufferList>?, buffersOffset: Int) {
+        guard let output else { return }
+        let list = UnsafeMutableRawPointer(output)
+        for index in 0..<Int(list.load(as: UInt32.self)) {
+            let buffer = audioBuffer(list, buffersOffset, index)
+            if let data = buffer.pointee.mData { memset(data, 0, Int(buffer.pointee.mDataByteSize)) }
+        }
+    }
+
+    /// Steps 1-2 of a cycle: count it, silence all outputs, validate the
+    /// output against the layout recorded at start and locate the selected
+    /// pair. Nil (and an invalid-output count) if the layout doesn't match.
+    @inline(__always)
+    static func prepareOutput(
+        state: UnsafeMutablePointer<RenderState>, output: UnsafeMutablePointer<AudioBufferList>?
+    ) -> (left: ChannelSamples, right: ChannelSamples, frames: Int)? {
+        state.pointee.renderedCycles.wrappingAdd(1, ordering: .relaxed)
+        guard let output else {
+            state.pointee.invalidOutputCycles.wrappingAdd(1, ordering: .relaxed)
+            return nil
+        }
+        let buffersOffset = state.pointee.audioBuffersOffset
+        let outList = UnsafeMutableRawPointer(output)
+        let outBufferCount = Int(outList.load(as: UInt32.self))
+        silence(output, buffersOffset: buffersOffset)
+        let outputFrames = outputFrameCount(output, buffersOffset: buffersOffset)
+
+        // The output pair may change at any time from the main thread.
+        let pair = OutputChannelPair.unpack(state.pointee.outputPair.load(ordering: .relaxed))
+        guard outputFrames > 0,
+            outBufferCount == state.pointee.outputBufferCount,
+            pair.left < state.pointee.outputChannelCount,
+            pair.right < state.pointee.outputChannelCount,
+            let outL = destinationSamples(outList, buffersOffset, state.pointee.outputLocations[pair.left],
+                                          expectedChannels: state.pointee.outputBufferChannels),
+            let outR = destinationSamples(outList, buffersOffset, state.pointee.outputLocations[pair.right],
+                                          expectedChannels: state.pointee.outputBufferChannels)
+        else {
+            state.pointee.invalidOutputCycles.wrappingAdd(1, ordering: .relaxed)
+            return nil
+        }
+        return (outL, outR, min(outputFrames, min(outL.frames, outR.frames)))
+    }
+
+    /// Step 3-4: for each chunk, copy the source into the dry and wet
+    /// scratch buffers (input peak), run the DSP chain on the wet copy,
+    /// crossfade dry/wet (bypass), apply the gain (fixed-time ramp), replace
+    /// NaN/Inf with silence, count clipping, measure the output peak, clamp
+    /// to [-1, 1] and write L/R; then publish the meters.
+    @inline(__always)
+    static func process(
+        state: UnsafeMutablePointer<RenderState>,
+        sourceLeft: UnsafePointer<Float>, leftStride: Int,
+        sourceRight: UnsafePointer<Float>, rightStride: Int,
+        frames: Int, outL: ChannelSamples, outR: ChannelSamples
+    ) {
         let dryL = state.pointee.dryLeft, dryR = state.pointee.dryRight
         let wetL = state.pointee.wetLeft, wetR = state.pointee.wetRight
         let chunk = state.pointee.chunkFrames
@@ -94,15 +155,13 @@ public enum RenderKernel {
         var clipped: UInt64 = 0
         var nonFinite: UInt64 = 0
 
-        // 3. Process in chunks.
         var done = 0
         while done < frames {
             let count = min(chunk, frames - done)
 
-            // De-interleave the tap into the dry and wet scratch buffers.
             for frame in 0..<count {
-                let left = tapL.samples[(done + frame) * tapL.stride]
-                let right = tapR.samples[(done + frame) * tapR.stride]
+                let left = sourceLeft[(done + frame) * leftStride]
+                let right = sourceRight[(done + frame) * rightStride]
                 dryL[frame] = left
                 dryR[frame] = right
                 wetL[frame] = left
@@ -136,7 +195,6 @@ public enum RenderKernel {
         state.pointee.gainRamp = gainRamp
         state.pointee.wetMix = wetMix
 
-        // 4. Publish meters.
         state.pointee.inputPeakLeftBits.max(inPeakL.bitPattern, ordering: .relaxed)
         state.pointee.inputPeakRightBits.max(inPeakR.bitPattern, ordering: .relaxed)
         state.pointee.outputPeakLeftBits.max(outPeakL.bitPattern, ordering: .relaxed)

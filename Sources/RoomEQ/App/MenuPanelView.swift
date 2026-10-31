@@ -67,17 +67,9 @@ struct MenuPanelView: View {
 
     private var outputSection: some View {
         PanelSection(title: "Uscita") {
-            Picker(
-                "Dispositivo",
-                selection: Binding(
-                    get: { controller.selectedOutputDeviceUID },
-                    set: { controller.selectOutputDevice(uid: $0) })
-            ) {
-                Text("Automatico").tag(String?.none)
-                ForEach(controller.outputDevices) { device in
-                    Text(device.name).tag(String?.some(device.uid))
-                }
-            }
+            // Stage 4 will add a picker that changes the macOS default output.
+            Text("Uscita di macOS: \(controller.effectiveOutputDevice?.name ?? "—")")
+                .font(.callout)
             Picker(
                 "Canali",
                 selection: Binding(
@@ -192,77 +184,23 @@ struct MenuPanelView: View {
 
     private var diagnosticsSection: some View {
         let meters = controller.meters
+        let ring = controller.ringStatus
         return PanelSection(title: "Diagnostica") {
-            Picker(
-                "Cattura",
-                selection: Binding(get: { controller.tapMode }, set: { controller.setTapMode($0) })
-            ) {
-                ForEach(TapMode.allCases) { mode in
-                    Text(mode.displayName).tag(mode)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .controlSize(.small)
-            .disabled(controller.state == .stopping)
             Text("Formato tap: \(controller.tapFormatDescription ?? "—")")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            tapDiagnosticControls
             if controller.isRunning {
+                if let frames = controller.ringDelayFrames, let ms = controller.ringDelayMilliseconds {
+                    Text("Ritardo anello: \(frames) frame (\(Format.oneDecimal(ms)) ms)")
+                }
+                Text("Underrun: \(ring.underrunCycles) · sovraccarichi uscita \(meters.overloads) / cattura \(ring.captureOverloads)")
                 Text(
                     "Ingresso L \(Self.peakText(meters.inputPeakLeft)) · R \(Self.peakText(meters.inputPeakRight))\n"
                         + "Uscita L \(Self.peakText(meters.outputPeakLeft)) · R \(Self.peakText(meters.outputPeakRight))"
                 )
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .monospacedDigit()
             }
         }
-    }
-
-    @ViewBuilder
-    private var tapDiagnosticControls: some View {
-        HStack(spacing: 6) {
-            Button("Esegui diagnostica tap") { controller.runTapDiagnostic() }
-                .controlSize(.small)
-                .disabled(!controller.canRunTapDiagnostic)
-            if controller.isRunningTapDiagnostic { ProgressView().controlSize(.small) }
-        }
-        HStack(spacing: 6) {
-            Button("Esegui esperimento (opzione 1)") { controller.runSplitExperiment() }
-                .controlSize(.small)
-                .disabled(!controller.canRunSplitExperiment)
-            if controller.isRunningSplitExperiment { ProgressView().controlSize(.small) }
-        }
-        if let summary = controller.splitExperimentSummary {
-            Text(summary)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            if !controller.isRunningSplitExperiment {
-                Text("Rapporto completo: ~/Library/Logs/RoomEQ/split-experiment.txt")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        if !controller.canRunTapDiagnostic && !controller.isRunningTapDiagnostic && !controller.isRunningSplitExperiment {
-            Text("Ferma RoomEQ per eseguire la diagnostica")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        if let summary = controller.tapDiagnosticSummary {
-            Text(summary)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            if !controller.isRunningTapDiagnostic {
-                Text("Rapporto completo: ~/Library/Logs/RoomEQ/tap-diagnostic.txt")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 
     /// Linear peak as "-12,3 dB" (or "-∞ dB").

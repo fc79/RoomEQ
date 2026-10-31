@@ -5,7 +5,7 @@ public enum BufferSize {
     public static let preferredSizes = [64, 128, 256]
 
     /// Default buffer size in frames.
-    public static let defaultSize = 128
+    public static let defaultSize = 64
 
     /// The preferred sizes that the device accepts, given its
     /// `kAudioDevicePropertyBufferFrameSizeRange` (inclusive).

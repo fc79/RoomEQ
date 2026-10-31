@@ -53,13 +53,6 @@ enum AudioObject {
         return AudioObjectHasProperty(object, &address)
     }
 
-    /// `AudioObjectIsPropertySettable`; false if the call fails.
-    static func isSettable(_ object: AudioObjectID, _ address: AudioObjectPropertyAddress) -> Bool {
-        var address = address
-        var settable: DarwinBoolean = false
-        return AudioObjectIsPropertySettable(object, &address, &settable) == noErr && settable.boolValue
-    }
-
     /// Reads a fixed-size (plain C) value.
     static func read<T>(
         _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, initial: T, _ operation: String

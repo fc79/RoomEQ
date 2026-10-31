@@ -4,14 +4,12 @@
 //   - main thread: the controller; calls the public methods below, receives
 //     completions and events (always delivered on main);
 //   - engine queue (serial): ALL Core Audio setup/teardown. These calls can
-//     block for a while (creating aggregates, starting IO), so they never
-//     run on the main thread;
+//     block for a while (creating aggregates, starting IO, the ~0.7 s
+//     warm-up), so they never run on the main thread;
 //   - listener queue (serial): Core Audio property listeners. They never
-//     block: they only forward a signal to the engine queue. (Keeping them
-//     off the engine queue avoids any risk of deadlock when listeners are
-//     removed from the engine queue.)
-//   - HAL real-time IO thread: only the render kernel and the overload
-//     counter (see EngineSession / RoomEQCore).
+//     block: they only forward a signal to the engine queue;
+//   - HAL real-time IO threads (capture aggregate and output device): only
+//     the capture/output kernels and the overload counters (RoomEQCore).
 //
 // Deadlock rule: the engine queue never waits (sync) for the main thread.
 // The main thread may wait for the engine queue only in `stopSynchronously`
@@ -31,8 +29,9 @@ enum EngineEvent {
     /// The output device disappeared (e.g. USB unplugged); the session has
     /// already been stopped.
     case deviceLost(sessionID: Int, deviceName: String)
-    /// Buffer size changed (by us or by another app): new latency figures.
-    case latencyChanged(sessionID: Int, LatencyBreakdown, bufferFrames: Int)
+    /// New latency figures (delay increased after underruns, or values that
+    /// settled after start).
+    case latencyChanged(sessionID: Int, LatencyBreakdown)
 }
 
 /// `@unchecked Sendable`: mutable state is only touched on `queue`
@@ -65,7 +64,7 @@ final class AudioEngine: @unchecked Sendable {
                 self.session = session
                 session.lastEmittedLatency = info.latency
                 onMain { completion(.success(info)) }
-                scheduleDiagnostics(for: session)
+                scheduleMaintenance(for: session)
             } catch {
                 Log.engine.error("Start failed: \(error.localizedDescription, privacy: .public)")
                 session.teardown()
@@ -92,60 +91,11 @@ final class AudioEngine: @unchecked Sendable {
         queue.sync { stopSession() }
     }
 
-    /// Changes the buffer size of the running session (live).
-    func setBufferSize(
-        _ frames: Int, completion: @escaping @MainActor (Result<(LatencyBreakdown, bufferFrames: Int), Error>) -> Void
-    ) {
-        queue.async { [self] in
-            let result: Result<(LatencyBreakdown, bufferFrames: Int), Error>
-            if let session {
-                result = Result { try session.setBufferSize(frames) }
-            } else {
-                result = .failure(EngineError("Motore non avviato"))
-            }
-            onMain { completion(result) }
-        }
-    }
-
-    /// Runs the tap diagnostic matrix (see TapDiagnostics). Refused while a
-    /// session exists, so it never interferes with playback.
-    func runTapDiagnostics(
-        outputDevice: OutputDeviceInfo, excludedBundleIDs: [String],
-        completion: @escaping @MainActor (Result<String, Error>) -> Void
-    ) {
-        queue.async { [self] in
-            guard session == nil else {
-                onMain { completion(.failure(EngineError("Ferma RoomEQ per eseguire la diagnostica"))) }
-                return
-            }
-            let outcome = TapDiagnostics.run(outputDevice: outputDevice, excludedBundleIDs: excludedBundleIDs)
-            onMain { completion(.success(outcome.summary)) }
-        }
-    }
-
-    /// Runs the split-architecture experiment (see SplitExperiment). Refused
-    /// while a session exists. `progress` and `completion` run on main.
-    func runSplitExperiment(
-        excludedBundleIDs: [String], progress: @escaping @MainActor (String) -> Void,
-        completion: @escaping @MainActor (Result<String, Error>) -> Void
-    ) {
-        queue.async { [self] in
-            guard session == nil else {
-                onMain { completion(.failure(EngineError("Ferma RoomEQ per eseguire l'esperimento"))) }
-                return
-            }
-            let summary = SplitExperiment.run(excludedBundleIDs: excludedBundleIDs) { text in
-                self.onMain { progress(text) }
-            }
-            onMain { completion(.success(summary)) }
-        }
-    }
-
     /// Recomputes latency (e.g. after the output pair moved to another stream).
     func refreshLatency() {
         queue.async { [self] in
             guard let session else { return }
-            emitLatencyIfChanged(session, force: true)
+            emitLatencyIfChanged(session, latency: session.currentLatency(), force: true)
         }
     }
 
@@ -168,37 +118,39 @@ final class AudioEngine: @unchecked Sendable {
 
     /// Sends new latency figures to the controller, only if they changed
     /// (unless `force`).
-    private func emitLatencyIfChanged(_ session: EngineSession, force: Bool) {
+    private func emitLatencyIfChanged(_ session: EngineSession, latency: LatencyBreakdown, force: Bool) {
         dispatchPrecondition(condition: .onQueue(queue))
-        let (latency, frames) = session.currentLatency()
         guard force || latency != session.lastEmittedLatency else { return }
         session.lastEmittedLatency = latency
-        emit(.latencyChanged(sessionID: session.id, latency, bufferFrames: frames))
+        emit(.latencyChanged(sessionID: session.id, latency))
     }
 
-    /// Diagnostics for a new session (engine queue, never the RT thread):
-    /// - after 1 s, re-read and log the latency values with the aggregate
-    ///   fully running, and update the UI if they changed;
-    /// - once per second for the first 10 s, log tap input peak vs output
-    ///   peak (debug level) to compare levels between tap modes.
-    private func scheduleDiagnostics(for session: EngineSession) {
-        queue.asyncAfter(deadline: .now() + 1) { [self] in
-            guard self.session === session else { return }
-            session.logLatencyDiagnostics(context: "1 s after start")
-            emitLatencyIfChanged(session, force: false)
-        }
-        _ = session.renderState?.readDiagnosticPeaks()  // start a clean window
-        for second in 1...10 {
-            queue.asyncAfter(deadline: .now() + .seconds(second)) { [self] in
-                guard self.session === session, let state = session.renderState else { return }
-                let peaks = state.readDiagnosticPeaks()
-                let input = Decibels.decibels(fromLinear: Double(peaks.input))
-                let output = Decibels.decibels(fromLinear: Double(peaks.output))
-                Log.engine.debug(
-                    "Level [mode=\(session.configuration.tapMode.rawValue, privacy: .public) s=\(second)]: tap input peak \(String(format: "%.1f", input), privacy: .public) dBFS, output peak \(String(format: "%.1f", output), privacy: .public) dBFS"
-                )
+    /// Per-session background work on the engine queue (never on the RT
+    /// threads), while the session is current:
+    /// - every second: grow the delay if underruns happened;
+    /// - after 1 s: re-read latency values with everything running;
+    /// - first 10 s: log tap input peak vs output peak once per second (debug).
+    private func scheduleMaintenance(for session: EngineSession) {
+        func tick(_ second: Int) {
+            queue.asyncAfter(deadline: .now() + 1) { [self] in
+                guard self.session === session else { return }
+                if let latency = session.adaptDelayIfNeeded() {
+                    emitLatencyIfChanged(session, latency: latency, force: true)
+                } else if second == 1 {
+                    emitLatencyIfChanged(session, latency: session.currentLatency(), force: false)
+                }
+                if second <= 10, let state = session.renderState, let link = session.link {
+                    let peaks = state.readDiagnosticPeaks()
+                    let status = link.status()
+                    Log.engine.debug(
+                        "Level s=\(second): tap \(String(format: "%.1f", Decibels.decibels(fromLinear: Double(peaks.input))), privacy: .public) dBFS, output \(String(format: "%.1f", Decibels.decibels(fromLinear: Double(peaks.output))), privacy: .public) dBFS; delay \(status.delayFrames), underruns \(status.underrunCycles), discontinuities \(status.discontinuities)"
+                    )
+                }
+                tick(second + 1)
             }
         }
+        _ = session.renderState?.readDiagnosticPeaks()  // start a clean window
+        tick(1)
     }
 
     private func handle(_ signal: SessionSignal, sessionID: Int) {
@@ -234,10 +186,6 @@ final class AudioEngine: @unchecked Sendable {
             session.restartRequested = true
             Log.engine.error("IO stopped abnormally")
             emit(.restartNeeded(sessionID: sessionID, reason: "l'audio si è interrotto in modo anomalo"))
-
-        case .bufferSizeChanged:
-            Log.engine.debug("Buffer size notification (session \(sessionID))")
-            emitLatencyIfChanged(session, force: false)
 
         case .processListChanged:
             session.handleProcessListChanged()

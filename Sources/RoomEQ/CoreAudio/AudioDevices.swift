@@ -81,35 +81,6 @@ enum AudioDevices {
         return id
     }
 
-    /// `kAudioDevicePropertyTransportType` (e.g. built-in, USB, aggregate, virtual).
-    static func transportType(of device: AudioObjectID) -> UInt32 {
-        (try? AudioObject.read(
-            device, AudioObject.address(kAudioDevicePropertyTransportType), initial: UInt32(0), "Tipo trasporto")) ?? 0
-    }
-
-    /// Output-capable physical devices: no aggregates (ours or others), no
-    /// virtual devices.
-    static func physicalOutputDevices() -> [OutputDeviceInfo] {
-        outputDevices().filter {
-            let transport = transportType(of: $0.objectID)
-            return transport != kAudioDeviceTransportTypeAggregate
-                && transport != kAudioDeviceTransportTypeAutoAggregate
-                && transport != kAudioDeviceTransportTypeVirtual
-        }
-    }
-
-    /// `kAudioDevicePropertyActualSampleRate` (measured), 0 if unavailable.
-    static func actualSampleRate(of device: AudioObjectID) -> Double {
-        (try? AudioObject.read(
-            device, AudioObject.address(kAudioDevicePropertyActualSampleRate), initial: Float64(0),
-            "Frequenza effettiva")) ?? 0
-    }
-
-    /// UID of the system default output device (where apps play).
-    static func defaultOutputDeviceUID() -> String? {
-        defaultOutputDeviceID().flatMap(uid(of:))
-    }
-
     /// `kAudioDevicePropertyPreferredChannelsForStereo` (1-based channel
     /// numbers), or nil if the device doesn't report it.
     static func preferredStereoChannels(of device: AudioObjectID) -> (Int, Int)? {
@@ -121,18 +92,4 @@ enum AudioDevices {
         return (Int(pair.0), Int(pair.1))
     }
 
-    /// Automatic choice: the first device whose name contains "Quantum",
-    /// otherwise the system default output, otherwise the first device.
-    /// (Pure: pass `defaultOutputDeviceID()` read on a background queue.)
-    static func preferredOutputDevice(in devices: [OutputDeviceInfo], defaultOutputID: AudioObjectID?)
-        -> OutputDeviceInfo?
-    {
-        if let quantum = devices.first(where: { $0.name.localizedCaseInsensitiveContains("Quantum") }) {
-            return quantum
-        }
-        if let defaultOutputID, let device = devices.first(where: { $0.objectID == defaultOutputID }) {
-            return device
-        }
-        return devices.first
-    }
 }
