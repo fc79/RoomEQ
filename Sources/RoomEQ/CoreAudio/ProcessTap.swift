@@ -52,6 +52,25 @@ enum AudioProcesses {
     }
 }
 
+/// What a tap captures.
+enum TapTarget: Equatable, CustomStringConvertible {
+    /// Stereo mixdown of all processes (except the excluded ones), in a
+    /// format chosen by the system.
+    case global
+    /// Audio that processes (except the excluded ones) send to one output
+    /// stream of one device, in that stream's format. `mixdown` asks for a
+    /// stereo mix of the stream's channels; if the HAL ignores it the tap
+    /// has the stream's full channel count (handled by the session).
+    case device(uid: String, stream: UInt, mixdown: Bool)
+
+    var description: String {
+        switch self {
+        case .global: "global stereo mixdown"
+        case .device(let uid, let stream, let mixdown): "device \(uid) stream \(stream), mixdown \(mixdown)"
+        }
+    }
+}
+
 /// An owned process tap. Call `destroy()` when done.
 final class ProcessTap {
     static let tapName = "RoomEQ Tap"
@@ -59,6 +78,7 @@ final class ProcessTap {
     let objectID: AudioObjectID
     let uid: String
     let uuid: UUID
+    let target: TapTarget
     /// Bundle IDs excluded from the tap (including RoomEQ's own).
     let excludedBundleIDs: [String]
     /// Process objects currently in the tap's exclusion list.
@@ -66,10 +86,14 @@ final class ProcessTap {
 
     private var destroyed = false
 
-    private init(objectID: AudioObjectID, uid: String, uuid: UUID, bundleIDs: [String], processes: [AudioObjectID]) {
+    private init(
+        objectID: AudioObjectID, uid: String, uuid: UUID, target: TapTarget, bundleIDs: [String],
+        processes: [AudioObjectID]
+    ) {
         self.objectID = objectID
         self.uid = uid
         self.uuid = uuid
+        self.target = target
         self.excludedBundleIDs = bundleIDs
         self.excludedProcesses = processes
     }
@@ -98,9 +122,20 @@ final class ProcessTap {
     /// Builds the tap description. Kept in one place so creation and later
     /// updates (new excluded processes) produce identical settings.
     private static func makeDescription(
-        uuid: UUID, excludedProcesses: [AudioObjectID], excludedBundleIDs: [String]
+        uuid: UUID, target: TapTarget, excludedProcesses: [AudioObjectID], excludedBundleIDs: [String]
     ) -> CATapDescription {
-        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: excludedProcesses)
+        let description: CATapDescription
+        switch target {
+        case .global:
+            description = CATapDescription(stereoGlobalTapButExcludeProcesses: excludedProcesses)
+        case .device(let deviceUID, let stream, let mixdown):
+            // "Mix all process audio destined for the selected device stream
+            // except the given processes" (exclusive). Format = that stream's.
+            description = CATapDescription(excludingProcesses: excludedProcesses, deviceUID: deviceUID, stream: stream)
+            description.isExclusive = true
+            description.isMono = false
+            description.isMixdown = mixdown
+        }
         description.name = tapName
         description.uuid = uuid
         // Only visible to this process; Core Audio removes it when we exit.
@@ -121,7 +156,8 @@ final class ProcessTap {
     /// Creates the tap.
     /// - Parameters:
     ///   - excludedBundleIDs: bundle IDs to exclude (RoomEQ's own is added).
-    static func create(excludedBundleIDs userExcluded: [String]) throws -> ProcessTap {
+    ///   - target: global mixdown or a specific device stream.
+    static func create(excludedBundleIDs userExcluded: [String], target: TapTarget) throws -> ProcessTap {
         let ownBundleID = Bundle.main.bundleIdentifier ?? "com.federicociapi.RoomEQ"
         let bundleIDs = Array(Set(userExcluded + [ownBundleID])).sorted()
 
@@ -136,7 +172,8 @@ final class ProcessTap {
         }
 
         let uuid = UUID()
-        let description = makeDescription(uuid: uuid, excludedProcesses: processes, excludedBundleIDs: bundleIDs)
+        let description = makeDescription(
+            uuid: uuid, target: target, excludedProcesses: processes, excludedBundleIDs: bundleIDs)
         var tapID = AudioObjectID(kAudioObjectUnknown)
         try AudioObject.check(AudioHardwareCreateProcessTap(description, &tapID), "Creazione del tap audio")
 
@@ -148,9 +185,10 @@ final class ProcessTap {
             throw error
         }
         Log.tap.info(
-            "Tap created: id \(tapID), uid \(uid, privacy: .public), excluded bundle IDs \(bundleIDs, privacy: .public), processes \(processes, privacy: .public)"
+            "Tap created: id \(tapID), uid \(uid, privacy: .public), target \(target.description, privacy: .public), excluded bundle IDs \(bundleIDs, privacy: .public), processes \(processes, privacy: .public)"
         )
-        return ProcessTap(objectID: tapID, uid: uid, uuid: uuid, bundleIDs: bundleIDs, processes: processes)
+        return ProcessTap(
+            objectID: tapID, uid: uid, uuid: uuid, target: target, bundleIDs: bundleIDs, processes: processes)
     }
 
     /// The tap's audio format (`kAudioTapPropertyFormat`).
@@ -178,7 +216,7 @@ final class ProcessTap {
         )
 
         var description = Self.makeDescription(
-            uuid: uuid, excludedProcesses: list, excludedBundleIDs: excludedBundleIDs)
+            uuid: uuid, target: target, excludedProcesses: list, excludedBundleIDs: excludedBundleIDs)
         var address = AudioObject.address(kAudioTapPropertyDescription)
         let status = withUnsafeMutablePointer(to: &description) {
             AudioObjectSetPropertyData(

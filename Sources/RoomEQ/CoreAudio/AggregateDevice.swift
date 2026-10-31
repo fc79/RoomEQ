@@ -74,7 +74,9 @@ final class AggregateDevice {
         if !destroyed { Log.engine.fault("AggregateDevice released without destroy()") }
     }
 
-    static func create(mainDeviceUID: String, tapUID: String) throws -> AggregateDevice {
+    /// - Parameter driftCompensation: resample the tap to follow the main
+    ///   device's clock (diagnostic switch `TapDriftCompensation`, default on).
+    static func create(mainDeviceUID: String, tapUID: String, driftCompensation: Bool) throws -> AggregateDevice {
         let uid = "\(AudioDevices.ownAggregateUIDPrefix).\(UUID().uuidString)"
         let description: [String: Any] = [
             kAudioAggregateDeviceNameKey: deviceName,
@@ -93,14 +95,16 @@ final class AggregateDevice {
             kAudioAggregateDeviceTapListKey: [
                 [
                     kAudioSubTapUIDKey: tapUID,
-                    kAudioSubTapDriftCompensationKey: 1,
+                    kAudioSubTapDriftCompensationKey: driftCompensation ? 1 : 0,
                 ]
             ],
         ]
         var id = AudioObjectID(kAudioObjectUnknown)
         try AudioObject.check(
             AudioHardwareCreateAggregateDevice(description as CFDictionary, &id), "Creazione del dispositivo aggregato")
-        Log.engine.info("Aggregate created: id \(id), uid \(uid, privacy: .public), main \(mainDeviceUID, privacy: .public)")
+        Log.engine.info(
+            "Aggregate created: id \(id), uid \(uid, privacy: .public), main \(mainDeviceUID, privacy: .public), tap drift compensation \(driftCompensation)"
+        )
         return AggregateDevice(objectID: id, uid: uid)
     }
 
@@ -143,6 +147,9 @@ final class AggregateDevice {
     }
 
     /// Sum of `kAudioSubTapPropertyExtraLatency` (Float64 frames) of the sub-taps.
+    /// Read once per session (EngineSession caches it). A sub-tap that
+    /// doesn't implement the property returns '!obj': logged at debug level
+    /// only, since that is expected.
     func subTapExtraLatency() -> Int {
         var total = 0.0
         for subTap in subTapIDs() {
@@ -151,7 +158,7 @@ final class AggregateDevice {
                     subTap, AudioObject.address(kAudioSubTapPropertyExtraLatency), initial: Float64(0),
                     "Latenza extra sub-tap")
             } catch {
-                Log.engine.warning("Sub-tap \(subTap) extra latency unreadable, using 0: \(error.localizedDescription, privacy: .public)")
+                Log.engine.debug("Sub-tap \(subTap) extra latency unavailable, using 0: \(error.localizedDescription, privacy: .public)")
             }
         }
         return Int(total.rounded())

@@ -141,6 +141,8 @@ public enum RenderKernel {
         state.pointee.inputPeakRightBits.max(inPeakR.bitPattern, ordering: .relaxed)
         state.pointee.outputPeakLeftBits.max(outPeakL.bitPattern, ordering: .relaxed)
         state.pointee.outputPeakRightBits.max(outPeakR.bitPattern, ordering: .relaxed)
+        state.pointee.diagnosticInputPeakBits.max(max(inPeakL, inPeakR).bitPattern, ordering: .relaxed)
+        state.pointee.diagnosticOutputPeakBits.max(max(outPeakL, outPeakR).bitPattern, ordering: .relaxed)
         if clipped > 0 { state.pointee.clippedSamples.wrappingAdd(clipped, ordering: .relaxed) }
         if nonFinite > 0 { state.pointee.nonFiniteSamples.wrappingAdd(nonFinite, ordering: .relaxed) }
     }

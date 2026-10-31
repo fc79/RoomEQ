@@ -81,6 +81,10 @@ public struct RenderState: ~Copyable {
     public let inputPeakRightBits: Atomic<UInt32>
     public let outputPeakLeftBits: Atomic<UInt32>
     public let outputPeakRightBits: Atomic<UInt32>
+    /// Second set of peaks, read only by the engine's level diagnostics, so
+    /// that diagnostics don't steal peaks from the UI meters.
+    public let diagnosticInputPeakBits: Atomic<UInt32>
+    public let diagnosticOutputPeakBits: Atomic<UInt32>
     /// Total output samples whose magnitude exceeded 1.0 (then clamped).
     public let clippedSamples: Atomic<UInt64>
     /// Total samples that were NaN/Inf and were replaced by silence.
@@ -133,6 +137,8 @@ public struct RenderState: ~Copyable {
         inputPeakRightBits = Atomic(0)
         outputPeakLeftBits = Atomic(0)
         outputPeakRightBits = Atomic(0)
+        diagnosticInputPeakBits = Atomic(0)
+        diagnosticOutputPeakBits = Atomic(0)
         clippedSamples = Atomic(0)
         nonFiniteSamples = Atomic(0)
         invalidInputCycles = Atomic(0)
@@ -279,6 +285,16 @@ public final class RenderStateHandle: @unchecked Sendable {
     /// Counts one device overload (same as the real-time listener does).
     public func recordOverload() {
         RenderKernel.recordOverload(state: pointer)
+    }
+
+    /// Peak |sample| of the tap input and of the output (both channels)
+    /// since the previous call, for level diagnostics. Independent of
+    /// `readMeters()`.
+    public func readDiagnosticPeaks() -> (input: Float, output: Float) {
+        (
+            Float(bitPattern: pointer.pointee.diagnosticInputPeakBits.exchange(0, ordering: .relaxed)),
+            Float(bitPattern: pointer.pointee.diagnosticOutputPeakBits.exchange(0, ordering: .relaxed))
+        )
     }
 
     /// Reads the meters and resets the peak values.

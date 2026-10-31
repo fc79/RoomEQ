@@ -78,6 +78,14 @@ struct EngineConfiguration: Equatable {
     /// (see `handleProcessListChanged`). Can be turned off for testing with
     /// `defaults write com.federicociapi.RoomEQ DisableProcessExclusionFallback -bool YES`.
     var processListFallbackEnabled: Bool
+    /// Device tap (default) or global mixdown (diagnostic). UserDefaults `TapMode`.
+    var tapMode: TapMode
+    /// Drift compensation of the tap inside the aggregate. Diagnostic
+    /// UserDefaults `TapDriftCompensation` (default true).
+    var tapDriftCompensation: Bool
+    /// Device mode only: ask the HAL for a stereo mix of the device stream.
+    /// Diagnostic UserDefaults `TapMixdown` (default true).
+    var tapMixdown: Bool
 }
 
 /// What actually got set up.
@@ -90,7 +98,9 @@ struct SessionInfo {
     let outputPair: OutputChannelPair
     let latency: LatencyBreakdown
     let renderState: RenderStateHandle
-    let tapFormatDescription: String
+    let tapMode: TapMode
+    /// Short UI text, e.g. "44,1 kHz · 2 ch".
+    let tapFormatSummary: String
 }
 
 /// macOS refused audio capture (most likely the privacy permission).
@@ -140,6 +150,8 @@ final class EngineSession {
     var restartRequested = false
     /// A debounced configuration check is pending for this session.
     var configurationCheckScheduled = false
+    /// Last latency sent to the controller (to avoid duplicate events).
+    var lastEmittedLatency: LatencyBreakdown?
 
     private var tap: ProcessTap?
     private var aggregate: AggregateDevice?
@@ -151,6 +163,11 @@ final class EngineSession {
     private var started = false
     private var listeners: [PropertyListener] = []
     private var realtimeListeners: [RealtimeListener] = []
+    /// Device mode: UID of the device whose output stream is tapped (the
+    /// system default output at start).
+    private var tappedDeviceUID: String?
+    /// kAudioSubTapPropertyExtraLatency, read once per session.
+    private var cachedTapExtraLatency: Int?
 
     init(id: Int, configuration: EngineConfiguration) {
         self.id = id
@@ -174,24 +191,28 @@ final class EngineSession {
         )
 
         // Tap.
+        let target = tapTarget(outputDevice: device)
         let tap: ProcessTap
         do {
-            tap = try ProcessTap.create(excludedBundleIDs: configuration.excludedBundleIDs)
+            tap = try ProcessTap.create(excludedBundleIDs: configuration.excludedBundleIDs, target: target)
         } catch {
             throw AudioCapturePermissionError.classify(error, tapCreation: true)
         }
         self.tap = tap
         tapFormat = try tap.format()
-        Log.tap.info("Tap format: \(self.tapFormat.logDescription, privacy: .public)")
+        Log.tap.info(
+            "Tap format [mode \(self.configuration.tapMode.rawValue, privacy: .public)]: \(self.tapFormat.logDescription, privacy: .public); output device \(device.name, privacy: .public) at \((try? AudioDevices.nominalSampleRate(of: deviceID)) ?? 0) Hz"
+        )
         Log.tap.info("exclusion-check: description stored by the HAL: \(tap.currentDescriptionSummary(), privacy: .public)")
-        guard tapFormat.mChannelsPerFrame == 1 || tapFormat.mChannelsPerFrame == 2 else {
-            throw EngineError("Il tap ha \(tapFormat.mChannelsPerFrame) canali (attesi 1 o 2)")
+        guard tapFormat.mChannelsPerFrame >= 1 else {
+            throw EngineError("Il tap non ha canali")
         }
 
         // Aggregate, and where the tap ended up inside it (waits up to 3 s
         // for the HAL to finish building it; fails if the tap stream can't
         // be identified with certainty).
-        let aggregate = try AggregateDevice.create(mainDeviceUID: device.uid, tapUID: tap.uid)
+        let aggregate = try AggregateDevice.create(
+            mainDeviceUID: device.uid, tapUID: tap.uid, driftCompensation: configuration.tapDriftCompensation)
         self.aggregate = aggregate
         let layout = try AggregateLayout.waitForLayout(
             aggregate: aggregate, outputDevice: deviceID, tap: tap, tapFormat: tapFormat)
@@ -210,9 +231,20 @@ final class EngineSession {
         deviceSampleRate = (try? AudioDevices.nominalSampleRate(of: deviceID)) ?? sampleRate
 
         // Render state.
+        // Tap channels feeding L/R: 2-channel tap -> 0/1; a device tap that
+        // kept the device's full layout -> the device's preferred stereo pair.
         let tapChannels = layout.inputLayout.locations(ofStream: layout.tapStreamIndex)
-        guard let tapLeft = tapChannels.first else { throw EngineError("Lo stream del tap non ha canali") }
-        let tapRight = tapChannels.count > 1 ? tapChannels[1] : tapLeft
+        guard !tapChannels.isEmpty else { throw EngineError("Lo stream del tap non ha canali") }
+        var preferredStereo: (Int, Int)?
+        if tapChannels.count > 2 {
+            let tappedID = tappedDeviceUID.flatMap(AudioDevices.deviceID(forUID:)) ?? deviceID
+            preferredStereo = AudioDevices.preferredStereoChannels(of: tappedID)
+        }
+        let tapPair = TapChannelSelection.stereoPair(tapChannels: tapChannels.count, preferredStereo: preferredStereo)
+        let tapLeft = tapChannels[tapPair.left], tapRight = tapChannels[tapPair.right]
+        Log.tap.info(
+            "Tap stream has \(tapChannels.count) channel(s); using tap channels \(tapPair.left + 1)/\(tapPair.right + 1) as L/R (preferred stereo \(preferredStereo.map { "\($0.0)/\($0.1)" } ?? "n/a", privacy: .public))"
+        )
         let pair =
             configuration.outputPair.right < layout.outputLayout.channelCount ? configuration.outputPair : .firstPair
         let renderConfiguration = RenderConfiguration(
@@ -253,8 +285,9 @@ final class EngineSession {
 
         let info = makeInfo(range: range)
         Log.engine.info(
-            "Session \(self.id) running: \(self.sampleRate) Hz, buffer \(info.bufferFrames), pair \(pair.description, privacy: .public), latency estimate \(info.latency.detail, privacy: .public) (aggregate input-scope device latency \(aggregate.deviceLatency(scope: kAudioObjectPropertyScopeInput)) frames NOT counted: hardware inputs only)"
+            "Session \(self.id) running: \(self.sampleRate) Hz, buffer \(info.bufferFrames), pair \(pair.description, privacy: .public)"
         )
+        logLatencyDiagnostics(context: "at start")
         return info
     }
 
@@ -297,6 +330,10 @@ final class EngineSession {
         listen(aggregate.objectID, kAudioDevicePropertyIOStoppedAbnormally) { signal(.ioStoppedAbnormally) }
         listen(aggregate.objectID, kAudioDevicePropertyBufferFrameSize) { signal(.bufferSizeChanged) }
         listen(system, kAudioHardwarePropertyProcessObjectList) { signal(.processListChanged) }
+        if configuration.tapMode == .device {
+            // The tap follows the system default output: rebuild if it moves.
+            listen(system, kAudioHardwarePropertyDefaultOutputDevice, handler: configurationChanged)
+        }
 
         // Overloads arrive synchronously on the IO thread: C listener.
         do {
@@ -323,7 +360,9 @@ final class EngineSession {
             outputPair: renderState!.outputPair,
             latency: latency,
             renderState: renderState!,
-            tapFormatDescription: tapFormat.logDescription)
+            tapMode: configuration.tapMode,
+            tapFormatSummary: AudioFormatText.summary(
+                sampleRate: tapFormat.mSampleRate, channels: Int(tapFormat.mChannelsPerFrame)))
     }
 
     /// Latency estimate at the current buffer size and output pair.
@@ -346,7 +385,7 @@ final class EngineSession {
         let outputStreamIndex = layout.outputLayout.location(ofChannel: pair.left)?.stream ?? 0
         let input = kAudioObjectPropertyScopeInput, output = kAudioObjectPropertyScopeOutput
         let components = LatencyComponents(
-            inputTapExtraFrames: aggregate.subTapExtraLatency(),
+            inputTapExtraFrames: tapExtraLatency(aggregate),
             inputSafetyOffsetFrames: aggregate.safetyOffset(scope: input),
             inputStreamFrames: DeviceStreams.latency(ofStream: layout.tapStream.objectID),
             bufferFrames: frames,
@@ -354,6 +393,56 @@ final class EngineSession {
             outputSafetyOffsetFrames: aggregate.safetyOffset(scope: output),
             outputStreamFrames: DeviceStreams.latency(ofStream: layout.outputStreams[outputStreamIndex].objectID))
         return (LatencyBreakdown(components: components, sampleRate: sampleRate), frames)
+    }
+
+    /// Which audio to capture. Device mode taps output stream 0 of the
+    /// SYSTEM DEFAULT output device (where apps play), even if RoomEQ plays
+    /// to another device; in that case the rates may differ and the
+    /// aggregate resamples (logged).
+    private func tapTarget(outputDevice: OutputDeviceInfo) -> TapTarget {
+        switch configuration.tapMode {
+        case .global:
+            tappedDeviceUID = nil
+            return .global
+        case .device:
+            let tapped = currentTapDeviceUID(fallback: outputDevice.uid) ?? outputDevice.uid
+            tappedDeviceUID = tapped
+            if tapped != outputDevice.uid {
+                let tappedRate = AudioDevices.deviceID(forUID: tapped).flatMap { try? AudioDevices.nominalSampleRate(of: $0) }
+                let outputRate = try? AudioDevices.nominalSampleRate(of: outputDevice.objectID)
+                Log.tap.notice(
+                    "Device tap on the system default output \(tapped, privacy: .public) (\(tappedRate ?? 0) Hz), playing to \(outputDevice.name, privacy: .public) (\(outputRate ?? 0) Hz)\(tappedRate != outputRate ? " — rates differ, the aggregate will resample" : "", privacy: .public)"
+                )
+            }
+            return .device(uid: tapped, stream: 0, mixdown: configuration.tapMixdown)
+        }
+    }
+
+    /// UID of the device a device-mode tap should follow: the system default
+    /// output (ignoring RoomEQ's own aggregate), else `fallback`.
+    private func currentTapDeviceUID(fallback: String) -> String? {
+        guard let uid = AudioDevices.defaultOutputDeviceUID(), !uid.hasPrefix(AudioDevices.ownAggregateUIDPrefix) else {
+            return fallback
+        }
+        return uid
+    }
+
+    private func tapExtraLatency(_ aggregate: AggregateDevice) -> Int {
+        if let cachedTapExtraLatency { return cachedTapExtraLatency }
+        let value = aggregate.subTapExtraLatency()
+        cachedTapExtraLatency = value
+        return value
+    }
+
+    /// Logs everything that goes into the latency estimate, plus the raw
+    /// aggregate values, tagged with the tap mode, so modes can be compared.
+    func logLatencyDiagnostics(context: String) {
+        guard let aggregate else { return }
+        let (latency, frames) = currentLatency()
+        let input = kAudioObjectPropertyScopeInput, output = kAudioObjectPropertyScopeOutput
+        Log.engine.notice(
+            "Latency [\(context, privacy: .public)] mode=\(self.configuration.tapMode.rawValue, privacy: .public) drift=\(self.configuration.tapDriftCompensation) mixdown=\(self.configuration.tapMixdown) tap=\(self.tapFormat.mSampleRate) Hz/\(self.tapFormat.mChannelsPerFrame) ch device=\(self.sampleRate) Hz buffer=\(frames): safety in \(aggregate.safetyOffset(scope: input)) out \(aggregate.safetyOffset(scope: output)), device latency in \(aggregate.deviceLatency(scope: input)) (not counted) out \(aggregate.deviceLatency(scope: output)) -> \(latency.detail, privacy: .public) = \(latency.totalMilliseconds) ms"
+        )
     }
 
     /// Changes the IO buffer size while running.
@@ -368,6 +457,11 @@ final class EngineSession {
     /// longer match what the session was built for, nil otherwise.
     func configurationChangeReason() -> String? {
         guard let aggregate, let tap, let outputDevice, let layout else { return nil }
+        if configuration.tapMode == .device, let tapped = tappedDeviceUID,
+            let current = currentTapDeviceUID(fallback: outputDevice.uid), current != tapped
+        {
+            return "uscita di sistema cambiata (tap su \(current))"
+        }
         if let rate = try? aggregate.nominalSampleRate(), rate != sampleRate {
             return "frequenza del dispositivo aggregato cambiata (\(sampleRate) -> \(rate) Hz)"
         }

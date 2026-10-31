@@ -24,6 +24,8 @@ struct MenuPanelView: View {
             Divider()
             exclusionsSection
             Divider()
+            diagnosticsSection
+            Divider()
             footer
         }
         .padding(14)
@@ -184,6 +186,42 @@ struct MenuPanelView: View {
 
     private static func displayName(forBundleID bundleID: String) -> String {
         bundleID == "com.ableton.live" ? "Ableton Live" : Format.appName(forBundleID: bundleID)
+    }
+
+    // MARK: Diagnostica
+
+    private var diagnosticsSection: some View {
+        let meters = controller.meters
+        return PanelSection(title: "Diagnostica") {
+            Picker(
+                "Cattura",
+                selection: Binding(get: { controller.tapMode }, set: { controller.setTapMode($0) })
+            ) {
+                ForEach(TapMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .disabled(controller.state == .stopping)
+            Text("Formato tap: \(controller.tapFormatDescription ?? "—")")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if controller.isRunning {
+                Text(
+                    "Ingresso L \(Self.peakText(meters.inputPeakLeft)) · R \(Self.peakText(meters.inputPeakRight))\n"
+                        + "Uscita L \(Self.peakText(meters.outputPeakLeft)) · R \(Self.peakText(meters.outputPeakRight))"
+                )
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Linear peak as "-12,3 dB" (or "-∞ dB").
+    private static func peakText(_ peak: Float) -> String {
+        Format.decibels(peak > 0 ? 20 * log10(peak) : -.infinity)
     }
 
     // MARK: Footer

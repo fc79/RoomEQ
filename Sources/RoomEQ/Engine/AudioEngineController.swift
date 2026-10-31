@@ -90,6 +90,10 @@ final class AudioEngineController {
     private(set) var isBypassed = false
     /// Apps never captured (RoomEQ itself is always excluded in addition).
     private(set) var excludedBundleIDs = ["com.ableton.live"]
+    /// How system audio is captured: device tap (default) or global
+    /// mixdown (diagnostic). Persisted in UserDefaults `TapMode`.
+    private(set) var tapMode: TapMode =
+        UserDefaults.standard.string(forKey: TapMode.defaultsKey).flatMap(TapMode.init(rawValue:)) ?? .defaultMode
 
     // MARK: Readouts
 
@@ -100,7 +104,7 @@ final class AudioEngineController {
     /// Meters, refreshed ~25 times per second while running. Peaks are the
     /// maximum since the previous refresh; counters are cumulative per run.
     private(set) var meters = MeterSnapshot.silent
-    /// Tap format as reported by Core Audio (diagnostics).
+    /// Tap format of the running session, e.g. "44,1 kHz · 2 ch" (diagnostics).
     private(set) var tapFormatDescription: String?
 
     // MARK: Hooks
@@ -265,6 +269,14 @@ final class AudioEngineController {
         restartIfActive(reason: "cambio app escluse")
     }
 
+    /// Changes the capture mode (persisted). Restarts the engine if running.
+    func setTapMode(_ mode: TapMode) {
+        guard mode != tapMode else { return }
+        tapMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: TapMode.defaultsKey)
+        restartIfActive(reason: "modalità di cattura \(mode.displayName.lowercased())")
+    }
+
     /// Applied live, smoothly (15 ms ramp).
     func setGainDecibels(_ decibels: Double) {
         gainDecibels = min(max(decibels, Self.gainRange.lowerBound), Self.gainRange.upperBound)
@@ -320,7 +332,16 @@ final class AudioEngineController {
             excludedBundleIDs: excludedBundleIDs,
             gain: Float(Decibels.linear(fromDecibels: gainDecibels)),
             bypass: isBypassed,
-            processListFallbackEnabled: !UserDefaults.standard.bool(forKey: "DisableProcessExclusionFallback"))
+            processListFallbackEnabled: !UserDefaults.standard.bool(forKey: "DisableProcessExclusionFallback"),
+            tapMode: tapMode,
+            tapDriftCompensation: Self.diagnosticFlag("TapDriftCompensation", default: true),
+            tapMixdown: Self.diagnosticFlag("TapMixdown", default: true))
+    }
+
+    /// Boolean diagnostic switch from UserDefaults (set with
+    /// `defaults write com.federicociapi.RoomEQ <key> -bool YES|NO`).
+    private static func diagnosticFlag(_ key: String, default defaultValue: Bool) -> Bool {
+        UserDefaults.standard.object(forKey: key) == nil ? defaultValue : UserDefaults.standard.bool(forKey: key)
     }
 
     /// Makes every launch in flight unwanted; returns the new generation.
@@ -337,6 +358,7 @@ final class AudioEngineController {
         renderState = nil
         activeSessionID = nil
         activeOutputDevice = nil
+        tapFormatDescription = nil
     }
 
     private func launch(on device: OutputDeviceInfo, statusText: String) {
@@ -374,7 +396,7 @@ final class AudioEngineController {
             latency = info.latency
             bufferSize = info.bufferFrames
             bufferSizeOptions = info.bufferSizeOptions
-            tapFormatDescription = info.tapFormatDescription
+            tapFormatDescription = info.tapFormatSummary
             audioCapturePermissionLikelyDenied = false
             state = .running
             status = "In funzione su \(info.outputDevice.name) · \(Int(info.sampleRate)) Hz · buffer \(info.bufferFrames)"

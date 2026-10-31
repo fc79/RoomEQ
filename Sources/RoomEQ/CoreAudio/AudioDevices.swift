@@ -81,6 +81,22 @@ enum AudioDevices {
         return id
     }
 
+    /// UID of the system default output device (where apps play).
+    static func defaultOutputDeviceUID() -> String? {
+        defaultOutputDeviceID().flatMap(uid(of:))
+    }
+
+    /// `kAudioDevicePropertyPreferredChannelsForStereo` (1-based channel
+    /// numbers), or nil if the device doesn't report it.
+    static func preferredStereoChannels(of device: AudioObjectID) -> (Int, Int)? {
+        let pair: (UInt32, UInt32)? = try? AudioObject.read(
+            device,
+            AudioObject.address(kAudioDevicePropertyPreferredChannelsForStereo, kAudioObjectPropertyScopeOutput),
+            initial: (UInt32(0), UInt32(0)), "Canali stereo preferiti")
+        guard let pair, pair.0 > 0, pair.1 > 0 else { return nil }
+        return (Int(pair.0), Int(pair.1))
+    }
+
     /// Automatic choice: the first device whose name contains "Quantum",
     /// otherwise the system default output, otherwise the first device.
     /// (Pure: pass `defaultOutputDeviceID()` read on a background queue.)

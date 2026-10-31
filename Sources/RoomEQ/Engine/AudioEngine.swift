@@ -63,7 +63,9 @@ final class AudioEngine: @unchecked Sendable {
                     self?.queue.async { self?.handle(signal, sessionID: sessionID) }
                 }
                 self.session = session
+                session.lastEmittedLatency = info.latency
                 onMain { completion(.success(info)) }
+                scheduleDiagnostics(for: session)
             } catch {
                 Log.engine.error("Start failed: \(error.localizedDescription, privacy: .public)")
                 session.teardown()
@@ -109,8 +111,7 @@ final class AudioEngine: @unchecked Sendable {
     func refreshLatency() {
         queue.async { [self] in
             guard let session else { return }
-            let (latency, frames) = session.currentLatency()
-            emit(.latencyChanged(sessionID: session.id, latency, bufferFrames: frames))
+            emitLatencyIfChanged(session, force: true)
         }
     }
 
@@ -129,6 +130,41 @@ final class AudioEngine: @unchecked Sendable {
 
     private func emit(_ event: EngineEvent) {
         onMain { [weak self] in self?.eventHandler?(event) }
+    }
+
+    /// Sends new latency figures to the controller, only if they changed
+    /// (unless `force`).
+    private func emitLatencyIfChanged(_ session: EngineSession, force: Bool) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let (latency, frames) = session.currentLatency()
+        guard force || latency != session.lastEmittedLatency else { return }
+        session.lastEmittedLatency = latency
+        emit(.latencyChanged(sessionID: session.id, latency, bufferFrames: frames))
+    }
+
+    /// Diagnostics for a new session (engine queue, never the RT thread):
+    /// - after 1 s, re-read and log the latency values with the aggregate
+    ///   fully running, and update the UI if they changed;
+    /// - once per second for the first 10 s, log tap input peak vs output
+    ///   peak (debug level) to compare levels between tap modes.
+    private func scheduleDiagnostics(for session: EngineSession) {
+        queue.asyncAfter(deadline: .now() + 1) { [self] in
+            guard self.session === session else { return }
+            session.logLatencyDiagnostics(context: "1 s after start")
+            emitLatencyIfChanged(session, force: false)
+        }
+        _ = session.renderState?.readDiagnosticPeaks()  // start a clean window
+        for second in 1...10 {
+            queue.asyncAfter(deadline: .now() + .seconds(second)) { [self] in
+                guard self.session === session, let state = session.renderState else { return }
+                let peaks = state.readDiagnosticPeaks()
+                let input = Decibels.decibels(fromLinear: Double(peaks.input))
+                let output = Decibels.decibels(fromLinear: Double(peaks.output))
+                Log.engine.debug(
+                    "Level [mode=\(session.configuration.tapMode.rawValue, privacy: .public) s=\(second)]: tap input peak \(String(format: "%.1f", input), privacy: .public) dBFS, output peak \(String(format: "%.1f", output), privacy: .public) dBFS"
+                )
+            }
+        }
     }
 
     private func handle(_ signal: SessionSignal, sessionID: Int) {
@@ -166,8 +202,8 @@ final class AudioEngine: @unchecked Sendable {
             emit(.restartNeeded(sessionID: sessionID, reason: "l'audio si è interrotto in modo anomalo"))
 
         case .bufferSizeChanged:
-            let (latency, frames) = session.currentLatency()
-            emit(.latencyChanged(sessionID: sessionID, latency, bufferFrames: frames))
+            Log.engine.debug("Buffer size notification (session \(sessionID))")
+            emitLatencyIfChanged(session, force: false)
 
         case .processListChanged:
             session.handleProcessListChanged()
