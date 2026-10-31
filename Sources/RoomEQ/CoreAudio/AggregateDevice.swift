@@ -9,9 +9,13 @@
 // domain: input = [output device's own input streams..., tap stream],
 // output = [output device's output streams].
 //
-// The aggregate is private ("not persistent across launches" per the
-// header): only this process sees it, and the HAL removes it when the
-// process exits — including after a crash (see LeftoverCleanup.swift).
+// The aggregate (and the tap) are private ("not persistent across launches"
+// per the header): only this process can see them, and we rely on the HAL
+// (coreaudiod) destroying them when the process exits — including a crash or
+// kill -9, where none of our clean-up code runs. Because they are invisible
+// to other processes, a new RoomEQ instance could not find (or clean up)
+// leftovers anyway, so there is no start-up "leftover" check.
+// Verify in the live test: kill -9 RoomEQ while running -> apps audible again.
 
 import CoreAudio
 import Foundation
@@ -40,10 +44,16 @@ enum DeviceStreams {
         }
     }
 
+    /// `kAudioStreamPropertyLatency` in frames; 0 (with a warning) if unreadable.
     static func latency(ofStream stream: AudioStreamID) -> Int {
-        let frames: UInt32? = try? AudioObject.read(
-            stream, AudioObject.address(kAudioStreamPropertyLatency), initial: UInt32(0), "Latenza stream")
-        return Int(frames ?? 0)
+        do {
+            return Int(
+                try AudioObject.read(
+                    stream, AudioObject.address(kAudioStreamPropertyLatency), initial: UInt32(0), "Latenza stream"))
+        } catch {
+            Log.engine.warning("Latency of stream \(stream) unreadable, using 0: \(error.localizedDescription, privacy: .public)")
+            return 0
+        }
     }
 }
 
@@ -94,31 +104,6 @@ final class AggregateDevice {
         return AggregateDevice(objectID: id, uid: uid)
     }
 
-    /// The HAL may finish building the aggregate's streams asynchronously.
-    /// Waits (max `timeout` seconds, polling) until it has at least
-    /// `minimumInputStreams` input streams and one output stream.
-    /// Blocks the calling thread: only call on the engine queue.
-    func waitForStreams(minimumInputStreams: Int, timeout: TimeInterval = 2) {
-        let start = Date()
-        let deadline = start.addingTimeInterval(timeout)
-        var inputCount = 0, outputCount = 0
-        repeat {
-            inputCount = (try? DeviceStreams.streams(of: objectID, scope: kAudioObjectPropertyScopeInput).count) ?? 0
-            outputCount = (try? DeviceStreams.streams(of: objectID, scope: kAudioObjectPropertyScopeOutput).count) ?? 0
-            if inputCount >= minimumInputStreams && outputCount > 0 { return }
-            // If the HAL doesn't include the hardware inputs, fewer streams
-            // than expected is the final state: accept it after 0.5 s.
-            if inputCount >= 1 && outputCount > 0 && Date().timeIntervalSince(start) > 0.5 {
-                Log.engine.notice("Aggregate has \(inputCount) input stream(s), fewer than the \(minimumInputStreams) expected")
-                return
-            }
-            Thread.sleep(forTimeInterval: 0.02)
-        } while Date() < deadline
-        Log.engine.error(
-            "Aggregate streams not complete after \(timeout)s: \(inputCount) input, \(outputCount) output (expected >= \(minimumInputStreams) input)"
-        )
-    }
-
     // MARK: Properties
 
     func nominalSampleRate() throws -> Double { try AudioDevices.nominalSampleRate(of: objectID) }
@@ -147,17 +132,38 @@ final class AggregateDevice {
             "Impostazione dimensione buffer")
     }
 
+    /// `kAudioDevicePropertyLatency` in frames; 0 (with a warning) if unreadable.
     func deviceLatency(scope: AudioObjectPropertyScope) -> Int {
-        let frames: UInt32? = try? AudioObject.read(
-            objectID, AudioObject.address(kAudioDevicePropertyLatency, scope), initial: UInt32(0), "Latenza")
-        return Int(frames ?? 0)
+        readFrames(kAudioDevicePropertyLatency, scope, "device latency")
     }
 
+    /// `kAudioDevicePropertySafetyOffset` in frames; 0 (with a warning) if unreadable.
     func safetyOffset(scope: AudioObjectPropertyScope) -> Int {
-        let frames: UInt32? = try? AudioObject.read(
-            objectID, AudioObject.address(kAudioDevicePropertySafetyOffset, scope), initial: UInt32(0),
-            "Safety offset")
-        return Int(frames ?? 0)
+        readFrames(kAudioDevicePropertySafetyOffset, scope, "safety offset")
+    }
+
+    /// Sum of `kAudioSubTapPropertyExtraLatency` (Float64 frames) of the sub-taps.
+    func subTapExtraLatency() -> Int {
+        var total = 0.0
+        for subTap in subTapIDs() {
+            do {
+                total += try AudioObject.read(
+                    subTap, AudioObject.address(kAudioSubTapPropertyExtraLatency), initial: Float64(0),
+                    "Latenza extra sub-tap")
+            } catch {
+                Log.engine.warning("Sub-tap \(subTap) extra latency unreadable, using 0: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        return Int(total.rounded())
+    }
+
+    private func readFrames(_ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope, _ name: String) -> Int {
+        do {
+            return Int(try AudioObject.read(objectID, AudioObject.address(selector, scope), initial: UInt32(0), name))
+        } catch {
+            Log.engine.warning("Aggregate \(name, privacy: .public) unreadable, using 0: \(error.localizedDescription, privacy: .public)")
+            return 0
+        }
     }
 
     /// Object IDs of the aggregate's sub-taps.
@@ -235,24 +241,58 @@ struct AggregateLayout {
     ///     after. With H = number of input streams of the output device,
     ///     the tap is stream H, if the aggregate has exactly H + 1 input
     ///     streams and stream H has the tap's channel count.
-    ///  3. Fallback: the last input stream whose channel count equals the
-    ///     tap's (logged as a warning).
+    /// There is deliberately NO weaker fallback (such as "the last 2-channel
+    /// stream"): guessing wrong could route a hardware input (a microphone)
+    /// to the speakers. If neither method works, `waitForLayout` fails.
     /// The buffer list layout is then derived from the stream formats and
     /// cross-checked against kAudioDevicePropertyStreamConfiguration.
-    static func analyze(
-        aggregate: AggregateDevice, outputDevice: AudioObjectID, tap: ProcessTap, tapFormat: AudioStreamBasicDescription
+    ///
+    /// The HAL may finish building a new aggregate asynchronously, so this
+    /// retries for up to `timeout` (monotonic clock) before giving up.
+    /// Blocks the calling thread: only call on the engine queue.
+    static func waitForLayout(
+        aggregate: AggregateDevice, outputDevice: AudioObjectID, tap: ProcessTap,
+        tapFormat: AudioStreamBasicDescription, timeout: Duration = .seconds(3)
+    ) throws -> AggregateLayout {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        var attempts = 0
+        while true {
+            attempts += 1
+            do {
+                let layout = try analyze(
+                    aggregate: aggregate, outputDevice: outputDevice, tap: tap, tapFormat: tapFormat,
+                    logStreams: clock.now >= deadline)
+                Log.engine.info("Aggregate layout ready after \(attempts) attempt(s)")
+                return layout
+            } catch {
+                guard clock.now < deadline else {
+                    Log.engine.error("Aggregate layout not usable after \(timeout): \(error.localizedDescription, privacy: .public)")
+                    throw error
+                }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+    }
+
+    private static func analyze(
+        aggregate: AggregateDevice, outputDevice: AudioObjectID, tap: ProcessTap, tapFormat: AudioStreamBasicDescription,
+        logStreams: Bool
     ) throws -> AggregateLayout {
         let inputs = try DeviceStreams.streams(of: aggregate.objectID, scope: kAudioObjectPropertyScopeInput)
         let outputs = try DeviceStreams.streams(of: aggregate.objectID, scope: kAudioObjectPropertyScopeOutput)
         let hardwareInputs = (try? DeviceStreams.streams(of: outputDevice, scope: kAudioObjectPropertyScopeInput)) ?? []
         let tapChannels = Int(tapFormat.mChannelsPerFrame)
 
-        for (index, stream) in inputs.enumerated() {
-            Log.engine.info("Aggregate input stream \(index): id \(stream.objectID), \(stream.format.logDescription, privacy: .public)")
+        func logAllStreams() {
+            for (index, stream) in inputs.enumerated() {
+                Log.engine.info("Aggregate input stream \(index): id \(stream.objectID), \(stream.format.logDescription, privacy: .public)")
+            }
+            for (index, stream) in outputs.enumerated() {
+                Log.engine.info("Aggregate output stream \(index): id \(stream.objectID), \(stream.format.logDescription, privacy: .public)")
+            }
         }
-        for (index, stream) in outputs.enumerated() {
-            Log.engine.info("Aggregate output stream \(index): id \(stream.objectID), \(stream.format.logDescription, privacy: .public)")
-        }
+        if logStreams { logAllStreams() }
 
         // 1. Ownership.
         var byOwnership: Int?
@@ -272,8 +312,6 @@ struct AggregateLayout {
         if inputs.count == h + 1, Int(inputs[h].format.mChannelsPerFrame) == tapChannels {
             byPosition = h
         }
-        // 3. Fallback.
-        let byChannels = inputs.lastIndex { Int($0.format.mChannelsPerFrame) == tapChannels }
 
         let tapIndex: Int
         let method: String
@@ -283,13 +321,13 @@ struct AggregateLayout {
         } else if let byPosition {
             tapIndex = byPosition
             method = "position after \(h) hardware input stream(s)"
-        } else if let byChannels {
-            tapIndex = byChannels
-            method = "FALLBACK last \(tapChannels)-channel stream"
-            Log.engine.error("Tap stream identified only by channel count; check the stream list above")
         } else {
-            throw EngineError("Stream del tap non trovato nel dispositivo aggregato (\(inputs.count) stream di ingresso)")
+            throw EngineError(
+                "Impossibile identificare con certezza lo stream del tap nel dispositivo aggregato "
+                    + "(\(inputs.count) stream di ingresso, \(h) dell'interfaccia): avvio annullato per non "
+                    + "rischiare di mandare un ingresso (microfono) alle casse")
         }
+        if !logStreams { logAllStreams() }
         if let byOwnership, let byPosition, byOwnership != byPosition {
             Log.engine.error("Tap stream: ownership says \(byOwnership), position says \(byPosition); using ownership")
         }

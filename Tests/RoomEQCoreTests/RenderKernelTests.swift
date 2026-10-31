@@ -62,12 +62,15 @@ private func makeInput(frames: Int, left: (Int) -> Float, right: (Int) -> Float)
 }
 
 private func makeHandle(
-    output: BufferListLayout, gain: Float = 1, pair: OutputChannelPair = .firstPair, chunk: Int = 1024
+    output: BufferListLayout, gain: Float = 1, pair: OutputChannelPair = .firstPair, chunk: Int = 1024,
+    sampleRate: Double = 44100, gainRampSeconds: Double = 0.015, crossfadeSeconds: Double = 0.010,
+    bypass: Bool = false
 ) -> RenderStateHandle {
     let config = RenderConfiguration(
         inputLayout: inputLayout, tapLeft: tapLocations[0], tapRight: tapLocations[1],
-        outputLayout: output, sampleRate: 44100, chunkFrames: chunk)
-    return RenderStateHandle(configuration: config, gain: gain, bypass: false, outputPair: pair)
+        outputLayout: output, sampleRate: sampleRate, chunkFrames: chunk,
+        gainRampSeconds: gainRampSeconds, bypassCrossfadeSeconds: crossfadeSeconds)
+    return RenderStateHandle(configuration: config, gain: gain, bypass: bypass, outputPair: pair)
 }
 
 @Suite("Render kernel")
@@ -142,7 +145,7 @@ struct RenderKernelTests {
         #expect(handle.readMeters().invalidInputCycles == 2)
     }
 
-    @Test func gainAndRamp() {
+    @Test func steadyGain() {
         let frames = 64
         let input = makeInput(frames: frames, left: { _ in 1 }, right: { _ in 1 })
         let output = TestBufferList(channelCounts: [10], frames: frames)
@@ -150,20 +153,103 @@ struct RenderKernelTests {
 
         RenderKernel.render(state: handle.pointer, input: UnsafePointer(input.pointer), output: output.pointer)
         #expect(output.get(buffer: 0, channel: 0, frame: 10) == 0.5)
+    }
 
-        // Change gain: next cycle ramps smoothly from 0.5 to 1.0.
+    /// The gain ramp lasts a fixed TIME (here 16 ms = 16 samples at 1 kHz)
+    /// and continues across IO buffers smaller than the ramp.
+    @Test func gainRampIsFixedTimeAcrossSmallBuffers() {
+        let frames = 4
+        let input = makeInput(frames: frames, left: { _ in 1 }, right: { _ in 1 })
+        let output = TestBufferList(channelCounts: [10], frames: frames)
+        let handle = makeHandle(output: interleaved10, gain: 0, sampleRate: 1000, gainRampSeconds: 0.016)
+
         handle.setGain(linear: 1)
-        RenderKernel.render(state: handle.pointer, input: UnsafePointer(input.pointer), output: output.pointer)
-        let first = output.get(buffer: 0, channel: 0, frame: 0)
-        let middle = output.get(buffer: 0, channel: 0, frame: 31)
-        let last = output.get(buffer: 0, channel: 0, frame: frames - 1)
-        #expect(first > 0.5 && first < 0.52)
-        #expect(middle > first && middle < last)
-        #expect(abs(last - 1) < 1e-5)
+        var lastValues: [Float] = []
+        for _ in 0..<5 {
+            RenderKernel.render(state: handle.pointer, input: UnsafePointer(input.pointer), output: output.pointer)
+            lastValues.append(output.get(buffer: 0, channel: 0, frame: frames - 1))
+        }
+        // After 4, 8, 12, 16 samples: 1/4, 2/4, 3/4, exactly 1; then steady.
+        #expect(abs(lastValues[0] - 0.25) < 1e-6)
+        #expect(abs(lastValues[1] - 0.5) < 1e-6)
+        #expect(abs(lastValues[2] - 0.75) < 1e-6)
+        #expect(lastValues[3] == 1)
+        #expect(lastValues[4] == 1)
+    }
 
-        // Afterwards the gain is steady at 1.0.
+    /// Bypass crossfades over a fixed time (10 ms = 10 samples at 1 kHz)
+    /// across IO cycles; with the stage-2 passthrough DSP the output must not
+    /// change at all while crossfading.
+    @Test func bypassCrossfadesOverFixedTime() {
+        let frames = 4
+        let input = makeInput(frames: frames, left: { _ in 0.5 }, right: { _ in -0.5 })
+        let output = TestBufferList(channelCounts: [10], frames: frames)
+        let handle = makeHandle(output: interleaved10, sampleRate: 1000, crossfadeSeconds: 0.010)
+        #expect(handle.pointer.pointee.wetMix.value == 1)
+
+        handle.setBypass(true)
+        var mixes: [Float] = []
+        for _ in 0..<4 {
+            RenderKernel.render(state: handle.pointer, input: UnsafePointer(input.pointer), output: output.pointer)
+            mixes.append(handle.pointer.pointee.wetMix.value)
+            for frame in 0..<frames {
+                #expect(output.get(buffer: 0, channel: 0, frame: frame) == 0.5)
+                #expect(output.get(buffer: 0, channel: 1, frame: frame) == -0.5)
+            }
+        }
+        #expect(abs(mixes[0] - 0.6) < 1e-6)
+        #expect(abs(mixes[1] - 0.2) < 1e-6)
+        #expect(mixes[2] == 0)
+        #expect(mixes[3] == 0)
+
+        // And back: the DSP side fades in again.
+        handle.setBypass(false)
         RenderKernel.render(state: handle.pointer, input: UnsafePointer(input.pointer), output: output.pointer)
-        #expect(output.get(buffer: 0, channel: 0, frame: 0) == 1)
+        #expect(abs(handle.pointer.pointee.wetMix.value - 0.4) < 1e-6)
+    }
+
+    @Test func invalidOutputCyclesAreCountedAndSilent() {
+        let frames = 16
+        let input = makeInput(frames: frames, left: { _ in 0.3 }, right: { _ in 0.3 })
+        let handle = makeHandle(output: interleaved10)
+
+        // Device now delivers two 2-channel buffers instead of one 10-channel one.
+        let changed = TestBufferList(channelCounts: [2, 2], frames: frames, fill: 0.9)
+        RenderKernel.render(state: handle.pointer, input: UnsafePointer(input.pointer), output: changed.pointer)
+        #expect(changed.get(buffer: 0, channel: 0, frame: 3) == 0)
+        #expect(changed.get(buffer: 1, channel: 1, frame: 3) == 0)
+
+        // Same buffer count but different channel count.
+        let narrower = TestBufferList(channelCounts: [8], frames: frames, fill: 0.9)
+        RenderKernel.render(state: handle.pointer, input: UnsafePointer(input.pointer), output: narrower.pointer)
+        #expect(narrower.get(buffer: 0, channel: 0, frame: 0) == 0)
+
+        // No output list at all.
+        RenderKernel.render(state: handle.pointer, input: UnsafePointer(input.pointer), output: nil)
+
+        let meters = handle.readMeters()
+        #expect(meters.invalidOutputCycles == 3)
+        #expect(meters.invalidInputCycles == 0)
+        #expect(meters.renderedCycles == 3)
+        #expect(meters.invalidCycles == 3)
+    }
+
+    @Test func outputIsClampedToFullScale() {
+        let frames = 8
+        let input = makeInput(frames: frames, left: { _ in 1.5 }, right: { _ in -2 })
+        let output = TestBufferList(channelCounts: [10], frames: frames)
+        let handle = makeHandle(output: interleaved10)
+
+        RenderKernel.render(state: handle.pointer, input: UnsafePointer(input.pointer), output: output.pointer)
+        for frame in 0..<frames {
+            #expect(output.get(buffer: 0, channel: 0, frame: frame) == 1)
+            #expect(output.get(buffer: 0, channel: 1, frame: frame) == -1)
+        }
+        let meters = handle.readMeters()
+        #expect(meters.clippedSamples == UInt64(2 * frames))
+        // Peaks are measured before the clamp, so the overs are visible.
+        #expect(meters.outputPeakLeft == 1.5)
+        #expect(meters.outputPeakRight == 2)
     }
 
     @Test func clippingAndNonFiniteSamples() {
@@ -185,14 +271,14 @@ struct RenderKernelTests {
 
     @Test func buffersLargerThanChunkAreProcessedCompletely() {
         let frames = 100
-        let input = makeInput(frames: frames, left: { Float($0) }, right: { Float($0) * 2 })
+        let input = makeInput(frames: frames, left: { Float($0) / 256 }, right: { -Float($0) / 128 })
         let output = TestBufferList(channelCounts: [10], frames: frames)
         let handle = makeHandle(output: interleaved10, chunk: 16)
 
         RenderKernel.render(state: handle.pointer, input: UnsafePointer(input.pointer), output: output.pointer)
         for frame in [0, 15, 16, 17, 63, 99] {
-            #expect(output.get(buffer: 0, channel: 0, frame: frame) == Float(frame))
-            #expect(output.get(buffer: 0, channel: 1, frame: frame) == Float(frame) * 2)
+            #expect(output.get(buffer: 0, channel: 0, frame: frame) == Float(frame) / 256)
+            #expect(output.get(buffer: 0, channel: 1, frame: frame) == -Float(frame) / 128)
         }
     }
 

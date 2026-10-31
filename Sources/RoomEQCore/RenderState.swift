@@ -7,12 +7,12 @@
 //   through a plain pointer: no reference counting, no locks.
 // * "Control" values (gain, bypass, output pair) are written by the main
 //   thread and read by the real-time thread through atomics.
-// * "Meter" values are written by the real-time thread and read (and reset)
-//   by the main thread through atomics.
+// * "Meter" values are written by the real-time thread (and the overload
+//   listener) and read by the main thread through atomics.
 // * Layout tables are filled once in `init` and are read-only afterwards.
 // * Fields marked "RT-private" are touched ONLY by the real-time thread.
-// * The engine guarantees the IOProc is stopped and destroyed before the
-//   `RenderStateHandle` that owns this memory is released.
+// * The engine guarantees the IOProc and the overload listener are removed
+//   before the `RenderStateHandle` that owns this memory is released.
 
 import CoreAudio
 import Synchronization
@@ -32,6 +32,10 @@ public struct RenderConfiguration: Sendable {
     /// Size of the internal processing chunk. IO buffers larger than this
     /// are processed in several chunks, so any IO size works.
     public var chunkFrames: Int
+    /// Duration of a gain change (seconds), independent of buffer size.
+    public var gainRampSeconds: Double
+    /// Duration of the bypass crossfade (seconds).
+    public var bypassCrossfadeSeconds: Double
 
     public init(
         inputLayout: BufferListLayout,
@@ -39,7 +43,9 @@ public struct RenderConfiguration: Sendable {
         tapRight: ChannelLocation,
         outputLayout: BufferListLayout,
         sampleRate: Double,
-        chunkFrames: Int = 1024
+        chunkFrames: Int = 1024,
+        gainRampSeconds: Double = 0.015,
+        bypassCrossfadeSeconds: Double = 0.010
     ) {
         self.inputLayout = inputLayout
         self.tapLeft = tapLeft
@@ -47,6 +53,8 @@ public struct RenderConfiguration: Sendable {
         self.outputLayout = outputLayout
         self.sampleRate = sampleRate
         self.chunkFrames = chunkFrames
+        self.gainRampSeconds = gainRampSeconds
+        self.bypassCrossfadeSeconds = bypassCrossfadeSeconds
     }
 }
 
@@ -57,7 +65,8 @@ public struct RenderState: ~Copyable {
 
     /// Target linear gain. The real-time thread ramps towards it.
     public let targetGain: Atomic<Float>
-    /// When true the DSP chain is skipped (gain and routing still apply).
+    /// When true the output crossfades to the unprocessed (dry) signal.
+    /// The DSP chain keeps running so un-bypassing is click-free too.
     public let bypass: Atomic<Bool>
     /// Output channel pair, packed with `OutputChannelPair.packed`.
     public let outputPair: Atomic<UInt32>
@@ -66,22 +75,26 @@ public struct RenderState: ~Copyable {
 
     /// Peak |sample| since the last read, stored as Float bit patterns
     /// (for non-negative floats the bit pattern grows with the value, so an
-    /// integer atomic max is a float max).
+    /// integer atomic max is a float max). Output peaks are measured BEFORE
+    /// the final clamp, so overs above 0 dBFS remain visible.
     public let inputPeakLeftBits: Atomic<UInt32>
     public let inputPeakRightBits: Atomic<UInt32>
     public let outputPeakLeftBits: Atomic<UInt32>
     public let outputPeakRightBits: Atomic<UInt32>
-    /// Total output samples whose magnitude exceeded 1.0 (0 dBFS).
+    /// Total output samples whose magnitude exceeded 1.0 (then clamped).
     public let clippedSamples: Atomic<UInt64>
     /// Total samples that were NaN/Inf and were replaced by silence.
     public let nonFiniteSamples: Atomic<UInt64>
     /// IO cycles where the tap input was missing or had an unexpected
     /// layout (output was silenced for that cycle).
     public let invalidInputCycles: Atomic<UInt64>
+    /// IO cycles where the output buffer list didn't match the layout
+    /// recorded at start (output was silenced for that cycle).
+    public let invalidOutputCycles: Atomic<UInt64>
     /// IO cycles rendered so far.
     public let renderedCycles: Atomic<UInt64>
-    /// Overload ("xrun") notifications from the device. Incremented by the
-    /// engine's listener, not by the render code.
+    /// Overload ("xrun") notifications from the device, counted by the
+    /// engine's real-time-safe listener (`RenderKernel.recordOverload`).
     public let overloads: Atomic<UInt64>
 
     // MARK: Layout (read-only after init)
@@ -97,11 +110,16 @@ public struct RenderState: ~Copyable {
 
     // MARK: RT-private
 
-    /// Gain currently applied (ramps towards `targetGain`).
-    var currentGain: Float
-    /// Scratch buffers (one chunk per channel), preallocated.
-    let scratchLeft: UnsafeMutablePointer<Float>
-    let scratchRight: UnsafeMutablePointer<Float>
+    /// Output gain, ramped over a fixed time.
+    var gainRamp: LinearRamp
+    /// Wet (processed) share of the output: 1 = DSP on, 0 = bypassed.
+    var wetMix: LinearRamp
+    /// Scratch buffers (one chunk per channel), preallocated:
+    /// dry = tap signal, wet = after the DSP chain.
+    let dryLeft: UnsafeMutablePointer<Float>
+    let dryRight: UnsafeMutablePointer<Float>
+    let wetLeft: UnsafeMutablePointer<Float>
+    let wetRight: UnsafeMutablePointer<Float>
     let chunkFrames: Int
     /// The DSP chain (stage 3: EQ).
     var processor: DSPProcessor
@@ -118,6 +136,7 @@ public struct RenderState: ~Copyable {
         clippedSamples = Atomic(0)
         nonFiniteSamples = Atomic(0)
         invalidInputCycles = Atomic(0)
+        invalidOutputCycles = Atomic(0)
         renderedCycles = Atomic(0)
         overloads = Atomic(0)
 
@@ -139,20 +158,34 @@ public struct RenderState: ~Copyable {
             repeating: ChannelLocation(buffer: 0, offset: 0, stride: 1, stream: 0), count: max(1, outChannels.count))
         for (index, location) in outChannels.enumerated() { outputLocations[index] = location }
 
-        currentGain = gain
-        chunkFrames = max(16, configuration.chunkFrames)
-        scratchLeft = .allocate(capacity: chunkFrames)
-        scratchLeft.initialize(repeating: 0, count: chunkFrames)
-        scratchRight = .allocate(capacity: chunkFrames)
-        scratchRight.initialize(repeating: 0, count: chunkFrames)
-        processor = DSPProcessor(sampleRate: configuration.sampleRate)
+        let rate = configuration.sampleRate
+        gainRamp = LinearRamp(
+            value: gain, rampFrames: LinearRamp.frames(seconds: configuration.gainRampSeconds, sampleRate: rate))
+        wetMix = LinearRamp(
+            value: bypass ? 0 : 1,
+            rampFrames: LinearRamp.frames(seconds: configuration.bypassCrossfadeSeconds, sampleRate: rate))
+
+        let chunk = max(16, configuration.chunkFrames)
+        chunkFrames = chunk
+        func scratch() -> UnsafeMutablePointer<Float> {
+            let buffer = UnsafeMutablePointer<Float>.allocate(capacity: chunk)
+            buffer.initialize(repeating: 0, count: chunk)
+            return buffer
+        }
+        dryLeft = scratch()
+        dryRight = scratch()
+        wetLeft = scratch()
+        wetRight = scratch()
+        processor = DSPProcessor(sampleRate: rate)
     }
 
     deinit {
         outputBufferChannels.deallocate()
         outputLocations.deallocate()
-        scratchLeft.deallocate()
-        scratchRight.deallocate()
+        dryLeft.deallocate()
+        dryRight.deallocate()
+        wetLeft.deallocate()
+        wetRight.deallocate()
     }
 }
 
@@ -167,17 +200,22 @@ public struct MeterSnapshot: Sendable, Equatable {
     public var clippedSamples: UInt64
     public var nonFiniteSamples: UInt64
     public var invalidInputCycles: UInt64
+    public var invalidOutputCycles: UInt64
     public var renderedCycles: UInt64
     public var overloads: UInt64
 
+    /// Cycles silenced because of an input or output layout problem.
+    public var invalidCycles: UInt64 { invalidInputCycles &+ invalidOutputCycles }
+
     public static let silent = MeterSnapshot(
         inputPeakLeft: 0, inputPeakRight: 0, outputPeakLeft: 0, outputPeakRight: 0,
-        clippedSamples: 0, nonFiniteSamples: 0, invalidInputCycles: 0, renderedCycles: 0, overloads: 0)
+        clippedSamples: 0, nonFiniteSamples: 0, invalidInputCycles: 0, invalidOutputCycles: 0,
+        renderedCycles: 0, overloads: 0)
 
     public init(
         inputPeakLeft: Float, inputPeakRight: Float, outputPeakLeft: Float, outputPeakRight: Float,
         clippedSamples: UInt64, nonFiniteSamples: UInt64, invalidInputCycles: UInt64,
-        renderedCycles: UInt64, overloads: UInt64
+        invalidOutputCycles: UInt64, renderedCycles: UInt64, overloads: UInt64
     ) {
         self.inputPeakLeft = inputPeakLeft
         self.inputPeakRight = inputPeakRight
@@ -186,6 +224,7 @@ public struct MeterSnapshot: Sendable, Equatable {
         self.clippedSamples = clippedSamples
         self.nonFiniteSamples = nonFiniteSamples
         self.invalidInputCycles = invalidInputCycles
+        self.invalidOutputCycles = invalidOutputCycles
         self.renderedCycles = renderedCycles
         self.overloads = overloads
     }
@@ -237,9 +276,9 @@ public final class RenderStateHandle: @unchecked Sendable {
         OutputChannelPair(left: OutputChannelPair.unpack(pointer.pointee.outputPair.load(ordering: .relaxed)).left)
     }
 
-    /// Called by the engine when the device reports an overload.
+    /// Counts one device overload (same as the real-time listener does).
     public func recordOverload() {
-        pointer.pointee.overloads.wrappingAdd(1, ordering: .relaxed)
+        RenderKernel.recordOverload(state: pointer)
     }
 
     /// Reads the meters and resets the peak values.
@@ -256,6 +295,7 @@ public final class RenderStateHandle: @unchecked Sendable {
             clippedSamples: state.pointee.clippedSamples.load(ordering: .relaxed),
             nonFiniteSamples: state.pointee.nonFiniteSamples.load(ordering: .relaxed),
             invalidInputCycles: state.pointee.invalidInputCycles.load(ordering: .relaxed),
+            invalidOutputCycles: state.pointee.invalidOutputCycles.load(ordering: .relaxed),
             renderedCycles: state.pointee.renderedCycles.load(ordering: .relaxed),
             overloads: state.pointee.overloads.load(ordering: .relaxed)
         )

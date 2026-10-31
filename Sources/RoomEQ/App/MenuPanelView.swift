@@ -164,7 +164,7 @@ struct MenuPanelView: View {
         var lines: [String] = []
         if meters.overloads > 0 { lines.append("Sovraccarichi (xrun): \(meters.overloads)") }
         if meters.nonFiniteSamples > 0 { lines.append("Campioni NaN: \(meters.nonFiniteSamples)") }
-        if meters.invalidInputCycles > 0 { lines.append("Cicli non validi: \(meters.invalidInputCycles)") }
+        if meters.invalidCycles > 0 { lines.append("Cicli non validi: \(meters.invalidCycles)") }
         return lines
     }
 

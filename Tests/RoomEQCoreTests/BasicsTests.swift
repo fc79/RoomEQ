@@ -5,7 +5,7 @@ import Testing
 struct LatencyTests {
     @Test func breakdownAt44100() {
         let components = LatencyComponents(
-            inputDeviceFrames: 10, inputSafetyOffsetFrames: 20, inputStreamFrames: 14,
+            inputTapExtraFrames: 10, inputSafetyOffsetFrames: 20, inputStreamFrames: 14,
             bufferFrames: 128,
             outputDeviceFrames: 100, outputSafetyOffsetFrames: 32, outputStreamFrames: 9)
         let latency = LatencyBreakdown(components: components, sampleRate: 44100)
@@ -17,7 +17,7 @@ struct LatencyTests {
         // 441 frames at 44.1 kHz is exactly 10 ms.
         #expect(abs(latency.totalMilliseconds - 10.0) < 1e-9)
         #expect(abs(latency.bufferingMilliseconds - 256.0 / 44.1) < 1e-9)
-        #expect(latency.summary.hasPrefix("10.0 ms"))
+        #expect(latency.summary.hasPrefix("Stima 10.0 ms"))
     }
 
     @Test func unknownSampleRateGivesZero() {

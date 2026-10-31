@@ -4,14 +4,20 @@
 // -> aggregate output -> output device -> speakers. Core Audio reports each
 // contribution in frames; this file only does the arithmetic so it can be
 // unit-tested without hardware.
+//
+// It is an ESTIMATE: the tapped apps' own buffering is unknown, and the
+// tap path does not go through the output device's converters (ADC), so the
+// aggregate's input-scope *device* latency (the hardware input's latency) is
+// deliberately NOT counted; only what applies to the tap stream is.
 
 import Foundation
 
 /// Raw latency contributions in frames, as reported by Core Audio.
 public struct LatencyComponents: Sendable, Equatable {
-    /// `kAudioDevicePropertyLatency`, input scope, of the aggregate device.
-    public var inputDeviceFrames: Int
-    /// `kAudioDevicePropertySafetyOffset`, input scope.
+    /// `kAudioSubTapPropertyExtraLatency` of the aggregate's sub-tap.
+    public var inputTapExtraFrames: Int
+    /// `kAudioDevicePropertySafetyOffset`, input scope, of the aggregate
+    /// (applies to every input stream of the aggregate, tap included).
     public var inputSafetyOffsetFrames: Int
     /// `kAudioStreamPropertyLatency` of the tap's input stream.
     public var inputStreamFrames: Int
@@ -25,7 +31,7 @@ public struct LatencyComponents: Sendable, Equatable {
     public var outputStreamFrames: Int
 
     public init(
-        inputDeviceFrames: Int = 0,
+        inputTapExtraFrames: Int = 0,
         inputSafetyOffsetFrames: Int = 0,
         inputStreamFrames: Int = 0,
         bufferFrames: Int = 0,
@@ -33,7 +39,7 @@ public struct LatencyComponents: Sendable, Equatable {
         outputSafetyOffsetFrames: Int = 0,
         outputStreamFrames: Int = 0
     ) {
-        self.inputDeviceFrames = inputDeviceFrames
+        self.inputTapExtraFrames = inputTapExtraFrames
         self.inputSafetyOffsetFrames = inputSafetyOffsetFrames
         self.inputStreamFrames = inputStreamFrames
         self.bufferFrames = bufferFrames
@@ -54,9 +60,9 @@ public struct LatencyBreakdown: Sendable, Equatable {
         self.sampleRate = sampleRate
     }
 
-    /// Input side: device latency + safety offset + stream latency.
+    /// Input side (tap path): sub-tap extra latency + safety offset + tap stream latency.
     public var inputFrames: Int {
-        components.inputDeviceFrames + components.inputSafetyOffsetFrames + components.inputStreamFrames
+        components.inputTapExtraFrames + components.inputSafetyOffsetFrames + components.inputStreamFrames
     }
 
     /// Buffering: one buffer to receive the input, one to deliver the output.
@@ -80,10 +86,10 @@ public struct LatencyBreakdown: Sendable, Equatable {
     public var totalMilliseconds: Double { milliseconds(totalFrames) }
 
     /// One-line Italian summary for the UI, e.g.
-    /// "12.3 ms (ingresso 1.2 + buffer 5.8 + uscita 5.3) a 44100 Hz".
+    /// "Stima 12.3 ms (ingresso 1.2 + buffer 5.8 + uscita 5.3) a 44100 Hz".
     public var summary: String {
         String(
-            format: "%.1f ms (ingresso %.1f + buffer %.1f + uscita %.1f) a %.0f Hz",
+            format: "Stima %.1f ms (ingresso %.1f + buffer %.1f + uscita %.1f) a %.0f Hz",
             totalMilliseconds, inputMilliseconds, bufferingMilliseconds, outputMilliseconds, sampleRate
         )
     }
@@ -91,8 +97,8 @@ public struct LatencyBreakdown: Sendable, Equatable {
     /// Detailed breakdown in frames, for logs and diagnostics.
     public var detail: String {
         let c = components
-        return "input \(c.inputDeviceFrames)+\(c.inputSafetyOffsetFrames)+\(c.inputStreamFrames) "
-            + "(device+safety+stream), buffer 2x\(c.bufferFrames), "
+        return "input \(c.inputTapExtraFrames)+\(c.inputSafetyOffsetFrames)+\(c.inputStreamFrames) "
+            + "(tap extra+safety+tap stream), buffer 2x\(c.bufferFrames), "
             + "output \(c.outputDeviceFrames)+\(c.outputSafetyOffsetFrames)+\(c.outputStreamFrames) "
             + "(device+safety+stream) = \(totalFrames) frames"
     }

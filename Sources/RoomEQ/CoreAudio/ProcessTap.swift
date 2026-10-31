@@ -78,6 +78,23 @@ final class ProcessTap {
         if !destroyed { Log.tap.fault("ProcessTap released without destroy()") }
     }
 
+    /// RoomEQ's own Core Audio process object. Retries briefly (the HAL may
+    /// register us as a client with a small delay), then throws.
+    static func ownProcessObject(attempts: Int = 20) throws -> AudioObjectID {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        for attempt in 1...max(1, attempts) {
+            if let own = AudioProcesses.processObject(forPID: pid) {
+                if attempt > 1 { Log.tap.info("Own process object found after \(attempt) attempts") }
+                return own
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        Log.tap.error("Own process object (pid \(pid)) not found; refusing to create the tap")
+        throw EngineError(
+            "Core Audio non riconosce ancora RoomEQ come processo audio: avvio annullato per evitare che "
+                + "RoomEQ catturi il proprio suono (effetto eco/feedback). Riprova tra qualche secondo.")
+    }
+
     /// Builds the tap description. Kept in one place so creation and later
     /// updates (new excluded processes) produce identical settings.
     private static func makeDescription(
@@ -110,12 +127,9 @@ final class ProcessTap {
 
         // Process objects: ourselves (essential, or we would tap our own
         // output and create a feedback loop) + running excluded apps.
-        var processes: [AudioObjectID] = []
-        if let own = AudioProcesses.processObject(forPID: ProcessInfo.processInfo.processIdentifier) {
-            processes.append(own)
-        } else {
-            Log.tap.error("Own process object not found; relying on bundle ID exclusion for RoomEQ itself")
-        }
+        // Without our own process object we refuse to create the tap: the
+        // bundle-ID exclusion alone is not proven to work.
+        var processes = [try ownProcessObject()]
         for match in AudioProcesses.processObjects(matching: bundleIDs) where !processes.contains(match.object) {
             processes.append(match.object)
             Log.tap.info("Excluding running process \(match.bundleID, privacy: .public) (object \(match.object))")
@@ -150,13 +164,18 @@ final class ProcessTap {
     /// description (`kAudioTapPropertyDescription` is settable). Same UUID,
     /// name and options; only the process list changes. RoomEQ's own process
     /// object is always kept.
+    /// Throws (without touching the tap) if our own process object can't be
+    /// resolved, so the update can never drop RoomEQ's self-exclusion.
     func replaceExcludedProcesses(_ processes: [AudioObjectID]) throws {
-        var list: [AudioObjectID] = []
-        if let own = AudioProcesses.processObject(forPID: ProcessInfo.processInfo.processIdentifier) {
-            list.append(own)
-        }
+        var list = [try Self.ownProcessObject(attempts: 3)]
         for process in processes where !list.contains(process) { list.append(process) }
-        guard list != excludedProcesses else { return }
+        guard list != excludedProcesses else {
+            Log.tap.debug("Tap exclusion list unchanged (\(list, privacy: .public))")
+            return
+        }
+        Log.tap.info(
+            "Replacing tap description: excluded processes \(self.excludedProcesses, privacy: .public) -> \(list, privacy: .public)"
+        )
 
         var description = Self.makeDescription(
             uuid: uuid, excludedProcesses: list, excludedBundleIDs: excludedBundleIDs)

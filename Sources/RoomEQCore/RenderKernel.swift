@@ -6,11 +6,13 @@
 //
 // What one cycle does:
 //   1. silence every output buffer (all channels we don't write stay at 0);
-//   2. check the input buffer list looks like we expect (else stay silent);
-//   3. for each chunk: copy the tap's L/R into scratch buffers (input peak),
-//      run the DSP chain unless bypassed, apply the (ramped) gain, replace
-//      NaN/Inf with silence, count clipping, measure the output peak, and
-//      write L/R into the selected output channel pair;
+//   2. check the output and input buffer lists match the layout recorded at
+//      start (else stay silent and count an invalid cycle);
+//   3. for each chunk: copy the tap's L/R into the dry and wet scratch
+//      buffers (input peak), run the DSP chain on the wet copy, crossfade
+//      dry/wet (bypass), apply the gain (fixed-time ramp), replace NaN/Inf
+//      with silence, count clipping, measure the output peak, clamp to
+//      [-1, 1] and write L/R into the selected output channel pair;
 //   4. publish meters with atomics.
 
 import CoreAudio
@@ -19,13 +21,17 @@ import Synchronization
 
 public enum RenderKernel {
     /// Renders one IO cycle. `input` / `output` are the buffer lists Core
-    /// Audio passes to the IOProc.
+    /// Audio passes to the IOProc (treated as possibly NULL).
     public static func render(
         state: UnsafeMutablePointer<RenderState>,
         input: UnsafePointer<AudioBufferList>?,
         output: UnsafeMutablePointer<AudioBufferList>?
     ) {
-        guard let output else { return }
+        state.pointee.renderedCycles.wrappingAdd(1, ordering: .relaxed)
+        guard let output else {
+            state.pointee.invalidOutputCycles.wrappingAdd(1, ordering: .relaxed)
+            return
+        }
         let buffersOffset = state.pointee.audioBuffersOffset
         let outList = UnsafeMutableRawPointer(output)
 
@@ -42,10 +48,24 @@ public enum RenderKernel {
                 outputFrames = min(outputFrames, Int(buffer.pointee.mDataByteSize) / (channels * floatSize))
             }
         }
-        state.pointee.renderedCycles.wrappingAdd(1, ordering: .relaxed)
-        guard outputFrames != Int.max, outputFrames > 0 else { return }
 
-        // 2. Validate input (tap) buffers.
+        // 2a. Validate the output against the layout recorded at start.
+        // The output pair may change at any time from the main thread.
+        let pair = OutputChannelPair.unpack(state.pointee.outputPair.load(ordering: .relaxed))
+        guard outputFrames != Int.max, outputFrames > 0,
+            outBufferCount == state.pointee.outputBufferCount,
+            pair.left < state.pointee.outputChannelCount,
+            pair.right < state.pointee.outputChannelCount,
+            let outL = destinationSamples(outList, buffersOffset, state.pointee.outputLocations[pair.left],
+                                          expectedChannels: state.pointee.outputBufferChannels),
+            let outR = destinationSamples(outList, buffersOffset, state.pointee.outputLocations[pair.right],
+                                          expectedChannels: state.pointee.outputBufferChannels)
+        else {
+            state.pointee.invalidOutputCycles.wrappingAdd(1, ordering: .relaxed)
+            return
+        }
+
+        // 2b. Validate the input (tap) buffers.
         guard let input,
             let tapL = sourceSamples(UnsafeRawPointer(input), buffersOffset, state.pointee.tapLeft,
                                      expectedBuffers: state.pointee.inputBufferCount),
@@ -56,73 +76,65 @@ public enum RenderKernel {
             return
         }
 
-        // Output pair (may change at any time from the main thread).
-        let pair = OutputChannelPair.unpack(state.pointee.outputPair.load(ordering: .relaxed))
-        guard outBufferCount == state.pointee.outputBufferCount,
-            pair.left < state.pointee.outputChannelCount,
-            pair.right < state.pointee.outputChannelCount,
-            let outL = destinationSamples(outList, buffersOffset, state.pointee.outputLocations[pair.left],
-                                          expectedChannels: state.pointee.outputBufferChannels),
-            let outR = destinationSamples(outList, buffersOffset, state.pointee.outputLocations[pair.right],
-                                          expectedChannels: state.pointee.outputBufferChannels)
-        else { return }
-
         // Two-argument min only: the variadic min(a, b, c, ...) builds an
         // array (runtime calls on the real-time thread).
         let frames = min(min(outputFrames, min(tapL.frames, tapR.frames)), min(outL.frames, outR.frames))
-        let bypassed = state.pointee.bypass.load(ordering: .relaxed)
-        let targetGain = state.pointee.targetGain.load(ordering: .relaxed)
-        let scratchL = state.pointee.scratchLeft
-        let scratchR = state.pointee.scratchRight
+        let dryL = state.pointee.dryLeft, dryR = state.pointee.dryRight
+        let wetL = state.pointee.wetLeft, wetR = state.pointee.wetRight
         let chunk = state.pointee.chunkFrames
+
+        // Ramps: local copies for the loop, written back at the end, so the
+        // ramp continues seamlessly into the next IO cycle.
+        var gainRamp = state.pointee.gainRamp
+        var wetMix = state.pointee.wetMix
+        gainRamp.setTarget(state.pointee.targetGain.load(ordering: .relaxed))
+        wetMix.setTarget(state.pointee.bypass.load(ordering: .relaxed) ? 0 : 1)
 
         var inPeakL: Float = 0, inPeakR: Float = 0, outPeakL: Float = 0, outPeakR: Float = 0
         var clipped: UInt64 = 0
         var nonFinite: UInt64 = 0
-        var gain = state.pointee.currentGain
 
         // 3. Process in chunks.
         var done = 0
         while done < frames {
             let count = min(chunk, frames - done)
 
-            // De-interleave the tap into the scratch buffers.
+            // De-interleave the tap into the dry and wet scratch buffers.
             for frame in 0..<count {
                 let left = tapL.samples[(done + frame) * tapL.stride]
                 let right = tapR.samples[(done + frame) * tapR.stride]
-                scratchL[frame] = left
-                scratchR[frame] = right
+                dryL[frame] = left
+                dryR[frame] = right
+                wetL[frame] = left
+                wetR[frame] = right
                 let absL = left.magnitude, absR = right.magnitude
                 if absL > inPeakL { inPeakL = absL }
                 if absR > inPeakR { inPeakR = absR }
             }
 
-            if !bypassed {
-                state.pointee.processor.process(left: scratchL, right: scratchR, frameCount: count)
-            }
-
-            // Gain: linear ramp over the chunk to avoid zipper noise.
-            let gainStep = (targetGain - gain) / Float(count)
-            let ramping = abs(targetGain - gain) > 1e-6
+            // The DSP chain always runs (keeps its state warm while bypassed).
+            state.pointee.processor.process(left: wetL, right: wetR, frameCount: count)
 
             for frame in 0..<count {
-                if ramping { gain += gainStep }
-                var left = scratchL[frame] * gain
-                var right = scratchR[frame] * gain
+                let mix = wetMix.next()
+                let gain = gainRamp.next()
+                var left = (dryL[frame] + mix * (wetL[frame] - dryL[frame])) * gain
+                var right = (dryR[frame] + mix * (wetR[frame] - dryR[frame])) * gain
                 if !left.isFinite { left = 0; nonFinite &+= 1 }
                 if !right.isFinite { right = 0; nonFinite &+= 1 }
                 let absL = left.magnitude, absR = right.magnitude
-                if absL > 1 { clipped &+= 1 }
-                if absR > 1 { clipped &+= 1 }
                 if absL > outPeakL { outPeakL = absL }
                 if absR > outPeakR { outPeakR = absR }
+                // Count, then clamp: never send more than full scale.
+                if absL > 1 { clipped &+= 1; left = left > 0 ? 1 : -1 }
+                if absR > 1 { clipped &+= 1; right = right > 0 ? 1 : -1 }
                 outL.samples[(done + frame) * outL.stride] = left
                 outR.samples[(done + frame) * outR.stride] = right
             }
-            if ramping { gain = targetGain }
             done += count
         }
-        state.pointee.currentGain = gain
+        state.pointee.gainRamp = gainRamp
+        state.pointee.wetMix = wetMix
 
         // 4. Publish meters.
         state.pointee.inputPeakLeftBits.max(inPeakL.bitPattern, ordering: .relaxed)
@@ -131,6 +143,14 @@ public enum RenderKernel {
         state.pointee.outputPeakRightBits.max(outPeakR.bitPattern, ordering: .relaxed)
         if clipped > 0 { state.pointee.clippedSamples.wrappingAdd(clipped, ordering: .relaxed) }
         if nonFinite > 0 { state.pointee.nonFiniteSamples.wrappingAdd(nonFinite, ordering: .relaxed) }
+    }
+
+    /// Counts one device overload. Real-time safe (one atomic increment);
+    /// called from the overload listener, which Core Audio invokes on the
+    /// IO thread.
+    @inline(__always)
+    public static func recordOverload(state: UnsafeMutablePointer<RenderState>) {
+        state.pointee.overloads.wrappingAdd(1, ordering: .relaxed)
     }
 
     // MARK: - Helpers (all real-time safe)

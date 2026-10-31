@@ -83,11 +83,14 @@ enum AudioDevices {
 
     /// Automatic choice: the first device whose name contains "Quantum",
     /// otherwise the system default output, otherwise the first device.
-    static func preferredOutputDevice(in devices: [OutputDeviceInfo]) -> OutputDeviceInfo? {
+    /// (Pure: pass `defaultOutputDeviceID()` read on a background queue.)
+    static func preferredOutputDevice(in devices: [OutputDeviceInfo], defaultOutputID: AudioObjectID?)
+        -> OutputDeviceInfo?
+    {
         if let quantum = devices.first(where: { $0.name.localizedCaseInsensitiveContains("Quantum") }) {
             return quantum
         }
-        if let defaultID = defaultOutputDeviceID(), let device = devices.first(where: { $0.objectID == defaultID }) {
+        if let defaultOutputID, let device = devices.first(where: { $0.objectID == defaultOutputID }) {
             return device
         }
         return devices.first

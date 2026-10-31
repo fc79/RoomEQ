@@ -11,6 +11,9 @@
 //     `RenderState`, to avoid clicks;
 //   - recompute coefficients on sample-rate changes (the controller exposes
 //     `onSampleRateChange` for that).
+// The kernel calls `process` on every cycle, even when bypassed (bypass is
+// a dry/wet crossfade in RenderKernel), so the filter state stays warm and
+// switching the EQ on/off is click-free.
 // Everything here runs on the Core Audio real-time thread: no allocation,
 // no locks, no logging, no Swift arrays, no class references.
 
