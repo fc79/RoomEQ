@@ -79,6 +79,7 @@ final class ProcessTap {
     let uid: String
     let uuid: UUID
     let target: TapTarget
+    let muteBehavior: CATapMuteBehavior
     /// Bundle IDs excluded from the tap (including RoomEQ's own).
     let excludedBundleIDs: [String]
     /// Process objects currently in the tap's exclusion list.
@@ -87,9 +88,10 @@ final class ProcessTap {
     private var destroyed = false
 
     private init(
-        objectID: AudioObjectID, uid: String, uuid: UUID, target: TapTarget, bundleIDs: [String],
-        processes: [AudioObjectID]
+        objectID: AudioObjectID, uid: String, uuid: UUID, target: TapTarget, muteBehavior: CATapMuteBehavior,
+        bundleIDs: [String], processes: [AudioObjectID]
     ) {
+        self.muteBehavior = muteBehavior
         self.objectID = objectID
         self.uid = uid
         self.uuid = uuid
@@ -122,7 +124,8 @@ final class ProcessTap {
     /// Builds the tap description. Kept in one place so creation and later
     /// updates (new excluded processes) produce identical settings.
     private static func makeDescription(
-        uuid: UUID, target: TapTarget, excludedProcesses: [AudioObjectID], excludedBundleIDs: [String]
+        uuid: UUID, target: TapTarget, muteBehavior: CATapMuteBehavior, excludedProcesses: [AudioObjectID],
+        excludedBundleIDs: [String]
     ) -> CATapDescription {
         let description: CATapDescription
         switch target {
@@ -142,7 +145,8 @@ final class ProcessTap {
         description.isPrivate = true
         // Apps are silenced only while we read the tap: if RoomEQ stops or
         // crashes, their audio goes back to the speakers directly.
-        description.muteBehavior = .mutedWhenTapped
+        // (The tap diagnostic uses .unmuted so it can never silence anything.)
+        description.muteBehavior = muteBehavior
         if #available(macOS 26.0, *) {
             // Excluded by bundle ID, so apps launched later should be excluded
             // too. The process-list fallback in EngineSession covers the case
@@ -157,7 +161,11 @@ final class ProcessTap {
     /// - Parameters:
     ///   - excludedBundleIDs: bundle IDs to exclude (RoomEQ's own is added).
     ///   - target: global mixdown or a specific device stream.
-    static func create(excludedBundleIDs userExcluded: [String], target: TapTarget) throws -> ProcessTap {
+    ///   - muteBehavior: `.mutedWhenTapped` for playback, `.unmuted` for probes.
+    static func create(
+        excludedBundleIDs userExcluded: [String], target: TapTarget,
+        muteBehavior: CATapMuteBehavior = .mutedWhenTapped
+    ) throws -> ProcessTap {
         let ownBundleID = Bundle.main.bundleIdentifier ?? "com.federicociapi.RoomEQ"
         let bundleIDs = Array(Set(userExcluded + [ownBundleID])).sorted()
 
@@ -173,7 +181,8 @@ final class ProcessTap {
 
         let uuid = UUID()
         let description = makeDescription(
-            uuid: uuid, target: target, excludedProcesses: processes, excludedBundleIDs: bundleIDs)
+            uuid: uuid, target: target, muteBehavior: muteBehavior, excludedProcesses: processes,
+            excludedBundleIDs: bundleIDs)
         var tapID = AudioObjectID(kAudioObjectUnknown)
         try AudioObject.check(AudioHardwareCreateProcessTap(description, &tapID), "Creazione del tap audio")
 
@@ -188,7 +197,8 @@ final class ProcessTap {
             "Tap created: id \(tapID), uid \(uid, privacy: .public), target \(target.description, privacy: .public), excluded bundle IDs \(bundleIDs, privacy: .public), processes \(processes, privacy: .public)"
         )
         return ProcessTap(
-            objectID: tapID, uid: uid, uuid: uuid, target: target, bundleIDs: bundleIDs, processes: processes)
+            objectID: tapID, uid: uid, uuid: uuid, target: target, muteBehavior: muteBehavior, bundleIDs: bundleIDs,
+            processes: processes)
     }
 
     /// The tap's audio format (`kAudioTapPropertyFormat`).
@@ -216,7 +226,8 @@ final class ProcessTap {
         )
 
         var description = Self.makeDescription(
-            uuid: uuid, target: target, excludedProcesses: list, excludedBundleIDs: excludedBundleIDs)
+            uuid: uuid, target: target, muteBehavior: muteBehavior, excludedProcesses: list,
+            excludedBundleIDs: excludedBundleIDs)
         var address = AudioObject.address(kAudioTapPropertyDescription)
         let status = withUnsafeMutablePointer(to: &description) {
             AudioObjectSetPropertyData(
@@ -225,6 +236,32 @@ final class ProcessTap {
         try AudioObject.check(status, "Aggiornamento esclusioni del tap")
         excludedProcesses = list
         Log.tap.info("Tap description updated, excluded processes now \(self.excludedProcesses, privacy: .public)")
+    }
+
+    /// Whether `kAudioTapPropertyFormat` is settable on this tap.
+    func isFormatSettable() -> Bool {
+        AudioObject.isSettable(objectID, AudioObject.address(kAudioTapPropertyFormat))
+    }
+
+    /// Tries to change the tap's sample rate by setting kAudioTapPropertyFormat
+    /// (same channels and flags). Returns a short result text and whether the
+    /// re-read format now has `sampleRate`. Undocumented: the header only says
+    /// the property is "the current data format"; this is an experiment.
+    func trySetSampleRate(_ sampleRate: Double) -> (succeeded: Bool, report: String) {
+        guard isFormatSettable() else { return (false, "non impostabile") }
+        guard var format = try? self.format() else { return (false, "formato illeggibile") }
+        format.mSampleRate = sampleRate
+        do {
+            try AudioObject.write(objectID, AudioObject.address(kAudioTapPropertyFormat), value: format, "Formato tap")
+        } catch let error as CoreAudioError {
+            return (false, "impostazione rifiutata \(describeOSStatus(error.status))")
+        } catch {
+            return (false, "impostazione rifiutata")
+        }
+        let reread = (try? self.format())?.mSampleRate ?? 0
+        let ok = reread == sampleRate
+        Log.tap.notice("Tap \(self.objectID): set format to \(sampleRate) Hz -> re-read \(reread) Hz")
+        return (ok, "impostato, riletto \(reread) Hz")
     }
 
     /// Reads back the tap's current description, for diagnostics only.

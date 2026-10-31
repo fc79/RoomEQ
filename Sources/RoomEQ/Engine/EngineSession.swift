@@ -83,9 +83,11 @@ struct EngineConfiguration: Equatable {
     /// Drift compensation of the tap inside the aggregate. Diagnostic
     /// UserDefaults `TapDriftCompensation` (default true).
     var tapDriftCompensation: Bool
-    /// Device mode only: ask the HAL for a stereo mix of the device stream.
-    /// Diagnostic UserDefaults `TapMixdown` (default true).
-    var tapMixdown: Bool
+    /// Device mode only: stereo mix of the device stream (true), full
+    /// device layout (false), or nil = automatic: try mixdown, then no
+    /// mixdown, keeping the first tap whose rate equals the device's.
+    /// Diagnostic UserDefaults `TapMixdown` (unset = automatic).
+    var tapMixdown: Bool?
 }
 
 /// What actually got set up.
@@ -191,10 +193,9 @@ final class EngineSession {
         )
 
         // Tap.
-        let target = tapTarget(outputDevice: device)
         let tap: ProcessTap
         do {
-            tap = try ProcessTap.create(excludedBundleIDs: configuration.excludedBundleIDs, target: target)
+            tap = try createTap(outputDevice: device)
         } catch {
             throw AudioCapturePermissionError.classify(error, tapCreation: true)
         }
@@ -414,8 +415,54 @@ final class EngineSession {
                     "Device tap on the system default output \(tapped, privacy: .public) (\(tappedRate ?? 0) Hz), playing to \(outputDevice.name, privacy: .public) (\(outputRate ?? 0) Hz)\(tappedRate != outputRate ? " — rates differ, the aggregate will resample" : "", privacy: .public)"
                 )
             }
-            return .device(uid: tapped, stream: 0, mixdown: configuration.tapMixdown)
+            return .device(uid: tapped, stream: 0, mixdown: configuration.tapMixdown ?? true)
         }
+    }
+
+    /// Creates the tap. In device mode, unless `tapMixdown` is forced, tries
+    /// mixdown and then no mixdown, and for each also tries setting
+    /// kAudioTapPropertyFormat to the device rate if it is settable; keeps
+    /// the first tap whose rate equals the tapped device's rate (no
+    /// resampling in the aggregate), else the first one created.
+    private func createTap(outputDevice: OutputDeviceInfo) throws -> ProcessTap {
+        let target = tapTarget(outputDevice: outputDevice)
+        guard case .device(let uid, let stream, _) = target else {
+            return try ProcessTap.create(excludedBundleIDs: configuration.excludedBundleIDs, target: target)
+        }
+        let wantedRate = AudioDevices.deviceID(forUID: uid).flatMap { try? AudioDevices.nominalSampleRate(of: $0) }
+        let candidates: [Bool] = configuration.tapMixdown.map { [$0] } ?? [true, false]
+        var fallback: ProcessTap?
+        for mixdown in candidates {
+            let candidate: ProcessTap
+            do {
+                candidate = try ProcessTap.create(
+                    excludedBundleIDs: configuration.excludedBundleIDs,
+                    target: .device(uid: uid, stream: stream, mixdown: mixdown))
+            } catch {
+                if let fallback { return fallback }
+                throw error
+            }
+            let rate = (try? candidate.format())?.mSampleRate ?? 0
+            if let wantedRate, rate == wantedRate {
+                Log.tap.notice("Device tap (mixdown \(mixdown)) runs at the device rate \(rate) Hz: using it")
+                fallback?.destroy()
+                return candidate
+            }
+            if let wantedRate {
+                let attempt = candidate.trySetSampleRate(wantedRate)
+                if attempt.succeeded {
+                    Log.tap.notice("Device tap (mixdown \(mixdown)) set to \(wantedRate) Hz via kAudioTapPropertyFormat: using it")
+                    fallback?.destroy()
+                    return candidate
+                }
+                Log.tap.notice(
+                    "Device tap (mixdown \(mixdown)) at \(rate) Hz, device at \(wantedRate) Hz; format change: \(attempt.report, privacy: .public)"
+                )
+            }
+            if fallback == nil { fallback = candidate } else { candidate.destroy() }
+        }
+        Log.tap.notice("No device tap at the device rate; using the first candidate (the aggregate will resample)")
+        return fallback!
     }
 
     /// UID of the device a device-mode tap should follow: the system default
@@ -441,7 +488,7 @@ final class EngineSession {
         let (latency, frames) = currentLatency()
         let input = kAudioObjectPropertyScopeInput, output = kAudioObjectPropertyScopeOutput
         Log.engine.notice(
-            "Latency [\(context, privacy: .public)] mode=\(self.configuration.tapMode.rawValue, privacy: .public) drift=\(self.configuration.tapDriftCompensation) mixdown=\(self.configuration.tapMixdown) tap=\(self.tapFormat.mSampleRate) Hz/\(self.tapFormat.mChannelsPerFrame) ch device=\(self.sampleRate) Hz buffer=\(frames): safety in \(aggregate.safetyOffset(scope: input)) out \(aggregate.safetyOffset(scope: output)), device latency in \(aggregate.deviceLatency(scope: input)) (not counted) out \(aggregate.deviceLatency(scope: output)) -> \(latency.detail, privacy: .public) = \(latency.totalMilliseconds) ms"
+            "Latency [\(context, privacy: .public)] mode=\(self.configuration.tapMode.rawValue, privacy: .public) drift=\(self.configuration.tapDriftCompensation) target=\(self.tap?.target.description ?? "?", privacy: .public) tap=\(self.tapFormat.mSampleRate) Hz/\(self.tapFormat.mChannelsPerFrame) ch device=\(self.sampleRate) Hz buffer=\(frames): safety in \(aggregate.safetyOffset(scope: input)) out \(aggregate.safetyOffset(scope: output)), device latency in \(aggregate.deviceLatency(scope: input)) (not counted) out \(aggregate.deviceLatency(scope: output)) -> \(latency.detail, privacy: .public) = \(latency.totalMilliseconds) ms"
         )
     }
 

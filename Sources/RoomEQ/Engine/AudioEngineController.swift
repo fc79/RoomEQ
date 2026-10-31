@@ -107,6 +107,17 @@ final class AudioEngineController {
     /// Tap format of the running session, e.g. "44,1 kHz · 2 ch" (diagnostics).
     private(set) var tapFormatDescription: String?
 
+    // MARK: Tap diagnostic
+
+    /// True while the tap diagnostic matrix runs (a few seconds).
+    private(set) var isRunningTapDiagnostic = false
+    /// Compact result of the last diagnostic (one line per configuration).
+    private(set) var tapDiagnosticSummary: String?
+    /// The diagnostic only runs with the engine stopped.
+    var canRunTapDiagnostic: Bool { (state == .stopped || state == .failed) && !isRunningTapDiagnostic }
+    /// Where the full diagnostic report is written.
+    var tapDiagnosticReportPath: String { TapDiagnostics.reportURL.path }
+
     // MARK: Hooks
 
     /// Called after a (re)start whenever the sample rate differs from the
@@ -162,7 +173,7 @@ final class AudioEngineController {
     // MARK: Start / stop
 
     func start() {
-        guard state == .stopped || state == .failed else { return }
+        guard state == .stopped || state == .failed, !isRunningTapDiagnostic else { return }
         automaticRestarts.removeAll()
         audioCapturePermissionLikelyDenied = false
         lastError = nil
@@ -269,6 +280,31 @@ final class AudioEngineController {
         restartIfActive(reason: "cambio app escluse")
     }
 
+    /// Probes several tap configurations (formats, safety offsets) without
+    /// playing or muting anything. Only with the engine stopped.
+    func runTapDiagnostic() {
+        guard canRunTapDiagnostic else { return }
+        isRunningTapDiagnostic = true
+        tapDiagnosticSummary = "Diagnostica in corso…"
+        refreshDevices { [weak self] in
+            guard let self else { return }
+            guard let device = self.effectiveOutputDevice else {
+                self.isRunningTapDiagnostic = false
+                self.tapDiagnosticSummary = "Nessun dispositivo di uscita disponibile"
+                return
+            }
+            self.engine.runTapDiagnostics(outputDevice: device, excludedBundleIDs: self.excludedBundleIDs) {
+                [weak self] result in
+                guard let self else { return }
+                self.isRunningTapDiagnostic = false
+                switch result {
+                case .success(let summary): self.tapDiagnosticSummary = summary
+                case .failure(let error): self.tapDiagnosticSummary = error.localizedDescription
+                }
+            }
+        }
+    }
+
     /// Changes the capture mode (persisted). Restarts the engine if running.
     func setTapMode(_ mode: TapMode) {
         guard mode != tapMode else { return }
@@ -335,7 +371,8 @@ final class AudioEngineController {
             processListFallbackEnabled: !UserDefaults.standard.bool(forKey: "DisableProcessExclusionFallback"),
             tapMode: tapMode,
             tapDriftCompensation: Self.diagnosticFlag("TapDriftCompensation", default: true),
-            tapMixdown: Self.diagnosticFlag("TapMixdown", default: true))
+            tapMixdown: UserDefaults.standard.object(forKey: "TapMixdown") == nil
+                ? nil : UserDefaults.standard.bool(forKey: "TapMixdown"))
     }
 
     /// Boolean diagnostic switch from UserDefaults (set with

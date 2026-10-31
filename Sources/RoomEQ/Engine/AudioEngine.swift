@@ -107,6 +107,22 @@ final class AudioEngine: @unchecked Sendable {
         }
     }
 
+    /// Runs the tap diagnostic matrix (see TapDiagnostics). Refused while a
+    /// session exists, so it never interferes with playback.
+    func runTapDiagnostics(
+        outputDevice: OutputDeviceInfo, excludedBundleIDs: [String],
+        completion: @escaping @MainActor (Result<String, Error>) -> Void
+    ) {
+        queue.async { [self] in
+            guard session == nil else {
+                onMain { completion(.failure(EngineError("Ferma RoomEQ per eseguire la diagnostica"))) }
+                return
+            }
+            let outcome = TapDiagnostics.run(outputDevice: outputDevice, excludedBundleIDs: excludedBundleIDs)
+            onMain { completion(.success(outcome.summary)) }
+        }
+    }
+
     /// Recomputes latency (e.g. after the output pair moved to another stream).
     func refreshLatency() {
         queue.async { [self] in

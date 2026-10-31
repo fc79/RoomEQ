@@ -208,6 +208,7 @@ struct MenuPanelView: View {
             Text("Formato tap: \(controller.tapFormatDescription ?? "—")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            tapDiagnosticControls
             if controller.isRunning {
                 Text(
                     "Ingresso L \(Self.peakText(meters.inputPeakLeft)) · R \(Self.peakText(meters.inputPeakRight))\n"
@@ -215,6 +216,33 @@ struct MenuPanelView: View {
                 )
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tapDiagnosticControls: some View {
+        HStack(spacing: 6) {
+            Button("Esegui diagnostica tap") { controller.runTapDiagnostic() }
+                .controlSize(.small)
+                .disabled(!controller.canRunTapDiagnostic)
+            if controller.isRunningTapDiagnostic { ProgressView().controlSize(.small) }
+        }
+        if !controller.canRunTapDiagnostic && !controller.isRunningTapDiagnostic {
+            Text("Ferma RoomEQ per eseguire la diagnostica")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        if let summary = controller.tapDiagnosticSummary {
+            Text(summary)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if !controller.isRunningTapDiagnostic {
+                Text("Rapporto completo: ~/Library/Logs/RoomEQ/tap-diagnostic.txt")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
     }
