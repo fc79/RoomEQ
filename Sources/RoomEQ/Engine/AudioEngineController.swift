@@ -108,7 +108,17 @@ final class AudioEngineController {
     var latencySummary: String { latency?.summary ?? "—" }
     /// Meters, refreshed ~25 times per second while running. Peaks are the
     /// maximum since the previous refresh; counters are cumulative per run.
+    /// (For the CLIP badge use `clipStatus`, which can be reset.)
     private(set) var meters = MeterSnapshot.silent
+    /// Clipping since the last `resetClipIndicators()` (or session start, or
+    /// preamp change), refreshed with the meters: input overs (the source is
+    /// already over 0 dBFS), output overs (clamped before the device), how
+    /// many were caused by the EQ, and the max levels in dB over full scale.
+    private(set) var clipStatus = ClipStatus.none
+    /// Preamp that would have avoided the EQ-caused clipping measured since
+    /// the last reset (current preamp - max over, rounded down to 0,1 dB,
+    /// >= -24 dB); nil unless the EQ caused it. Only a suggestion.
+    var suggestedPreampForClipping: Double? { clipStatus.suggestedPreamp(currentPreamp: preampDecibels) }
     /// Ring buffer status (delay, underruns, capture overloads…), refreshed
     /// with the meters.
     private(set) var ringStatus = SplitLinkStatus.empty
@@ -219,6 +229,8 @@ final class AudioEngineController {
     @ObservationIgnored private var autoStartDeadline: Date?
     @ObservationIgnored private var automaticNoteClear: DispatchWorkItem?
     @ObservationIgnored private var iconCache: [String: NSImage] = [:]
+    /// Cumulative clip counters at the last reset (see `clipStatus`).
+    @ObservationIgnored private var clipBaseline = ClipCounters.zero
     /// Nominal-rate listener on the current macOS default output.
     @ObservationIgnored private var rateListener: PropertyListener?
     @ObservationIgnored private var rateListenerGeneration = 0
@@ -428,12 +440,21 @@ final class AudioEngineController {
 
     // MARK: EQ settings (all applied live and saved)
 
-    /// Preamp in dB, clamped to -24…0 (NaN ignored). Applied smoothly (15 ms ramp).
+    /// Preamp in dB, clamped to -24…0 (NaN ignored). Applied smoothly (15 ms
+    /// ramp). Also resets the clip indicators: what was measured at the old
+    /// preamp (and `suggestedPreampForClipping`) no longer applies.
     func setPreamp(_ decibels: Double) {
         guard let value = Preamp.clamp(decibels), value != preampDecibels else { return }
         settings.preampDecibels = value
         renderState?.setPreamp(decibels: value)
+        resetClipIndicators()
         saveSettings()
+    }
+
+    /// Clears the CLIP indicator: counts and max levels start again from now.
+    func resetClipIndicators() {
+        clipBaseline = renderState?.resetClipMaxima() ?? .zero
+        if clipStatus != .none { clipStatus = .none }
     }
 
     /// EQ on/off (10 ms crossfade to/from the original signal).
@@ -629,6 +650,8 @@ final class AudioEngineController {
         activeOutputDevice = nil
         tapFormatDescription = nil
         ringStatus = .empty
+        clipBaseline = .zero  // a new session starts with fresh counters
+        if clipStatus != .none { clipStatus = .none }
         updateEQ()  // back to the idle sample rate
     }
 
@@ -927,6 +950,8 @@ final class AudioEngineController {
         guard let renderState, let link else { return }
         meters = renderState.readMeters()
         ringStatus = link.status()
+        let clips = ClipStatus(counters: renderState.readClipCounters(), baseline: clipBaseline)
+        if clips != clipStatus { clipStatus = clips }
     }
 }
 

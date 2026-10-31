@@ -114,6 +114,17 @@ public struct RenderState: ~Copyable {
     public let diagnosticOutputPeakBits: Atomic<UInt32>
     /// Total output samples whose magnitude exceeded 1.0 (then clamped).
     public let clippedSamples: Atomic<UInt64>
+    /// Clip analysis (see ClipStatus.swift). Counts are cumulative for the
+    /// session (the main thread never writes them); the max levels (Float
+    /// bit patterns, atomic max) are reset by the main thread with one
+    /// atomic store, like the meter peaks' exchange: lock-free on both sides.
+    /// Tap samples with |x| > 1.
+    public let inputOverSamples: Atomic<UInt64>
+    /// Output overs whose input sample was within full scale.
+    public let processingOverSamples: Atomic<UInt64>
+    public let maxInputLevelBits: Atomic<UInt32>
+    public let maxOutputLevelBits: Atomic<UInt32>
+    public let maxProcessingOverLevelBits: Atomic<UInt32>
     /// Total samples that were NaN/Inf and were replaced by silence.
     public let nonFiniteSamples: Atomic<UInt64>
     /// IO cycles where the tap input was missing or had an unexpected
@@ -192,6 +203,11 @@ public struct RenderState: ~Copyable {
         diagnosticInputPeakBits = Atomic(0)
         diagnosticOutputPeakBits = Atomic(0)
         clippedSamples = Atomic(0)
+        inputOverSamples = Atomic(0)
+        processingOverSamples = Atomic(0)
+        maxInputLevelBits = Atomic(0)
+        maxOutputLevelBits = Atomic(0)
+        maxProcessingOverLevelBits = Atomic(0)
         nonFiniteSamples = Atomic(0)
         invalidInputCycles = Atomic(0)
         invalidOutputCycles = Atomic(0)
@@ -419,6 +435,34 @@ public final class RenderStateHandle: @unchecked Sendable {
             Float(bitPattern: pointer.pointee.diagnosticInputPeakBits.exchange(0, ordering: .relaxed)),
             Float(bitPattern: pointer.pointee.diagnosticOutputPeakBits.exchange(0, ordering: .relaxed))
         )
+    }
+
+    /// Cumulative clip counters and the max levels since the last
+    /// `resetClipMaxima` (or session start). Does not reset anything.
+    public func readClipCounters() -> ClipCounters {
+        let state = pointer
+        return ClipCounters(
+            inputOvers: state.pointee.inputOverSamples.load(ordering: .relaxed),
+            outputOvers: state.pointee.clippedSamples.load(ordering: .relaxed),
+            processingOvers: state.pointee.processingOverSamples.load(ordering: .relaxed),
+            maxInputLevel: Float(bitPattern: state.pointee.maxInputLevelBits.load(ordering: .relaxed)),
+            maxOutputLevel: Float(bitPattern: state.pointee.maxOutputLevelBits.load(ordering: .relaxed)),
+            maxProcessingOverLevel: Float(bitPattern: state.pointee.maxProcessingOverLevelBits.load(ordering: .relaxed)))
+    }
+
+    /// Restarts the max levels from 0 (one atomic store each; the RT thread
+    /// keeps doing its atomic max, nothing waits or locks) and returns the
+    /// counters to use as the new baseline (counts are never written here).
+    public func resetClipMaxima() -> ClipCounters {
+        let state = pointer
+        state.pointee.maxInputLevelBits.store(0, ordering: .relaxed)
+        state.pointee.maxOutputLevelBits.store(0, ordering: .relaxed)
+        state.pointee.maxProcessingOverLevelBits.store(0, ordering: .relaxed)
+        var baseline = readClipCounters()
+        baseline.maxInputLevel = 0
+        baseline.maxOutputLevel = 0
+        baseline.maxProcessingOverLevel = 0
+        return baseline
     }
 
     /// Reads the meters and resets the peak values.

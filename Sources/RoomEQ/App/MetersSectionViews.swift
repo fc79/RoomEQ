@@ -39,7 +39,12 @@ struct LatencyLevelsSectionView: View {
                     LevelMeterRow(channel: "L", peak: meters.outputPeakLeft)
                     LevelMeterRow(channel: "R", peak: meters.outputPeakRight)
                 }
-                if meters.clippedSamples > 0 { ClipBadge() }
+                if controller.clipStatus.isClipping {
+                    // Tap to reset (the UI step will redo this badge).
+                    Button { controller.resetClipIndicators() } label: { ClipBadge() }
+                        .buttonStyle(.plain)
+                        .help("Azzera l'indicatore di saturazione")
+                }
             }
             ForEach(counters, id: \.self) { line in
                 Text(line)

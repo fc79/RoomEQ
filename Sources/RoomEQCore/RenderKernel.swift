@@ -155,6 +155,9 @@ public enum RenderKernel {
 
         var inPeakL: Float = 0, inPeakR: Float = 0, outPeakL: Float = 0, outPeakR: Float = 0
         var clipped: UInt64 = 0
+        var inputOvers: UInt64 = 0
+        var processingOvers: UInt64 = 0
+        var processingOverPeak: Float = 0
         var nonFinite: UInt64 = 0
 
         var done = 0
@@ -169,6 +172,9 @@ public enum RenderKernel {
                 let absL = left.magnitude, absR = right.magnitude
                 if absL > inPeakL { inPeakL = absL }
                 if absR > inPeakR { inPeakR = absR }
+                // The source itself over full scale.
+                if absL > 1 { inputOvers &+= 1 }
+                if absR > 1 { inputOvers &+= 1 }
             }
 
             // The EQ always runs (keeps its state warm while bypassed).
@@ -189,9 +195,25 @@ public enum RenderKernel {
                 let absL = left.magnitude, absR = right.magnitude
                 if absL > outPeakL { outPeakL = absL }
                 if absR > outPeakR { outPeakR = absR }
-                // Count, then clamp: never send more than full scale.
-                if absL > 1 { clipped &+= 1; left = left > 0 ? 1 : -1 }
-                if absR > 1 { clipped &+= 1; right = right > 0 ? 1 : -1 }
+                // Count, then clamp: never send more than full scale. An over
+                // whose input sample was within full scale was caused by the
+                // processing (EQ); the preamp never boosts.
+                if absL > 1 {
+                    clipped &+= 1
+                    if dryL[frame].magnitude <= 1 {
+                        processingOvers &+= 1
+                        if absL > processingOverPeak { processingOverPeak = absL }
+                    }
+                    left = left > 0 ? 1 : -1
+                }
+                if absR > 1 {
+                    clipped &+= 1
+                    if dryR[frame].magnitude <= 1 {
+                        processingOvers &+= 1
+                        if absR > processingOverPeak { processingOverPeak = absR }
+                    }
+                    right = right > 0 ? 1 : -1
+                }
                 outL.samples[(done + frame) * outL.stride] = left
                 outR.samples[(done + frame) * outR.stride] = right
             }
@@ -207,6 +229,15 @@ public enum RenderKernel {
         state.pointee.diagnosticInputPeakBits.max(max(inPeakL, inPeakR).bitPattern, ordering: .relaxed)
         state.pointee.diagnosticOutputPeakBits.max(max(outPeakL, outPeakR).bitPattern, ordering: .relaxed)
         if clipped > 0 { state.pointee.clippedSamples.wrappingAdd(clipped, ordering: .relaxed) }
+        if inputOvers > 0 { state.pointee.inputOverSamples.wrappingAdd(inputOvers, ordering: .relaxed) }
+        if processingOvers > 0 {
+            state.pointee.processingOverSamples.wrappingAdd(processingOvers, ordering: .relaxed)
+            state.pointee.maxProcessingOverLevelBits.max(processingOverPeak.bitPattern, ordering: .relaxed)
+        }
+        // Max levels for the clip indicator (separate from the meter peaks,
+        // which the UI resets 25 times per second).
+        state.pointee.maxInputLevelBits.max(max(inPeakL, inPeakR).bitPattern, ordering: .relaxed)
+        state.pointee.maxOutputLevelBits.max(max(outPeakL, outPeakR).bitPattern, ordering: .relaxed)
         if nonFinite > 0 { state.pointee.nonFiniteSamples.wrappingAdd(nonFinite, ordering: .relaxed) }
     }
 
