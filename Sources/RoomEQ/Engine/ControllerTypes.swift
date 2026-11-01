@@ -57,12 +57,19 @@ struct KnownOutput: Identifiable, Hashable, Sendable {
     let uid: String
     let name: String
     let isConnected: Bool
-    /// Assigned preset (nil = none, or the preset no longer exists).
+    /// Assigned preset (nil = none, "no correction", or the preset no
+    /// longer exists).
     let assignedPresetID: UUID?
+    /// Set to "Nessuna correzione" (never together with a preset).
+    let isNoCorrection: Bool
     /// Unsaved edits are remembered for this output.
     let hasRememberedEdits: Bool
 
     var id: String { uid }
+    /// The rule as one value (nil = "Nessuna regola"), e.g. for a picker.
+    var assignment: OutputAssignment? {
+        isNoCorrection ? .noCorrection : assignedPresetID.map { .preset($0) }
+    }
 }
 
 /// "Open at login" status (SMAppService.mainApp).
@@ -87,4 +94,7 @@ enum MenuBarState: Equatable, Sendable {
     case bypassed
     /// Stopped because of an error (`lastError`).
     case failed
+    /// Switched on, paused: the current output has "no correction"
+    /// (`pausedOutputName`); audio goes straight to the device.
+    case paused
 }

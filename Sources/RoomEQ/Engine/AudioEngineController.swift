@@ -31,6 +31,21 @@
 // band ramps to its new parameters in 30 ms. Every session start recomputes
 // them for the actual rate.
 //
+// Automatic pause ("Nessuna correzione", see OutputAssignment.swift in
+// RoomEQCore): with per-output presets on and the macOS default output set
+// to "no correction", the engine is stopped completely (`.paused`: no tap,
+// no aggregate, no IOProc) while the main switch stays on; RoomEQ resumes
+// on its own when the default output has correction again. Pausing and
+// resuming are neither errors nor automatic restarts. The default-output
+// listener lives here (`prepare`), not in the session, so it works while
+// paused. Every launch goes through `launch(on:)`, which pauses instead
+// when the rules say so; `applyOutputMode` handles the other direction.
+// The user's intention (`isSwitchedOn`) is kept apart from `state`: it
+// survives errors, so after a failed start a change of the macOS output
+// still pauses (no correction) or tries again (correction); only the
+// switch (`stop()`) turns it off. A resume that fails is retried for up to
+// 30 s, like the auto-start at login (`startRetryDeadline`).
+//
 // Invariant: there is never a running engine session the controller does
 // not know about. A session becomes "active" only when its start completes
 // while that launch is still wanted; any other completed start is stopped
@@ -53,6 +68,9 @@ enum EngineState: Equatable {
     case stopping
     /// Stopped because of an error (see `lastError`).
     case failed
+    /// Switched on, but nothing runs: the macOS default output is set to
+    /// "no correction" (`pausedOutputName`). Resumes by itself.
+    case paused
 }
 
 @MainActor
@@ -71,6 +89,14 @@ final class AudioEngineController {
     private(set) var audioCapturePermissionLikelyDenied = false
 
     var isRunning: Bool { state == .running }
+    /// The main switch: the user's intention, set by `start()` (also the
+    /// auto-start) and cleared only by `stop()` / quitting. Stays on while
+    /// paused and after an error (`.failed`, `lastError` explains it): the
+    /// switch shows "on" until the user turns it off. Use this (not
+    /// `isRunning`) for the on/off toggle.
+    private(set) var isSwitchedOn = false
+    /// Name of the output RoomEQ is paused for (nil unless `.paused`).
+    var pausedOutputName: String? { state == .paused ? pausedDeviceName : nil }
 
     // MARK: Devices and routing
 
@@ -225,8 +251,9 @@ final class AudioEngineController {
     @ObservationIgnored private var rateChangeRetryAvailable = false
     /// "non è passato a…" message, cleared if the device reaches the rate later.
     @ObservationIgnored private var pendingRateMessage: (message: String, rate: Double, uid: String)?
-    /// Auto-start at launch keeps retrying until this time (device/HAL not ready yet).
-    @ObservationIgnored private var autoStartDeadline: Date?
+    /// Auto-start at launch and automatic resume keep retrying a failed
+    /// start until this time (device/HAL not ready yet).
+    @ObservationIgnored private var startRetryDeadline: Date?
     @ObservationIgnored private var automaticNoteClear: DispatchWorkItem?
     @ObservationIgnored private var iconCache: [String: NSImage] = [:]
     /// Cumulative clip counters at the last reset (see `clipStatus`).
@@ -234,6 +261,8 @@ final class AudioEngineController {
     /// Nominal-rate listener on the current macOS default output.
     @ObservationIgnored private var rateListener: PropertyListener?
     @ObservationIgnored private var rateListenerGeneration = 0
+    /// Output of the last automatic pause (read via `pausedOutputName`).
+    private var pausedDeviceName: String?
     /// RoomEQ's bundle ID (always excluded, never listed).
     static let ownBundleID = Bundle.main.bundleIdentifier ?? "com.federicociapi.RoomEQ"
     /// Incremented whenever pending launches become unwanted (new launch,
@@ -297,9 +326,9 @@ final class AudioEngineController {
         if settings.autoStartEngineOnLaunch {
             // At login the HAL / the output device may not be ready yet:
             // keep trying for up to 30 s.
-            autoStartDeadline = Date().addingTimeInterval(30)
+            startRetryDeadline = Date().addingTimeInterval(30)
         }
-        refreshDevices { [weak self] in self?.attemptAutoStart() }
+        refreshDevices { [weak self] in self?.attemptStartRetry() }
         // HAL listener registration can block briefly: done off the main
         // thread; the handlers run on main.
         deviceQueue.async { [weak self] in
@@ -322,24 +351,25 @@ final class AudioEngineController {
         }
     }
 
-    /// Auto-start at launch: starts if a default output exists; otherwise
-    /// (or after a failed start, see `didStart`) tries again every few
-    /// seconds until `autoStartDeadline`.
-    private func attemptAutoStart() {
-        guard let deadline = autoStartDeadline else { return }
+    /// Auto-start at launch and retries of a failed automatic resume:
+    /// starts if a default output exists; otherwise (or after a failed
+    /// start, see `didStart`) tries again every few seconds until
+    /// `startRetryDeadline`. Never counted as automatic restarts.
+    private func attemptStartRetry() {
+        guard let deadline = startRetryDeadline else { return }
         guard Date() < deadline else {
-            autoStartDeadline = nil
-            Log.app.error("Auto-start gave up after 30 s")
+            startRetryDeadline = nil
+            Log.app.error("Start retries gave up after 30 s")
             return
         }
         guard state == .stopped || state == .failed else { return }
         guard systemOutputDevice != nil else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                self?.refreshDevices { [weak self] in self?.attemptAutoStart() }
+                self?.refreshDevices { [weak self] in self?.attemptStartRetry() }
             }
             return
         }
-        Log.app.info("Auto-start at launch")
+        Log.app.info("Automatic start (launch or resume)")
         start()
     }
 
@@ -347,6 +377,7 @@ final class AudioEngineController {
 
     func start() {
         guard state == .stopped || state == .failed else { return }
+        isSwitchedOn = true
         automaticRestarts.removeAll()
         audioCapturePermissionLikelyDenied = false
         lastError = nil
@@ -363,10 +394,12 @@ final class AudioEngineController {
         }
     }
 
-    /// Stops the engine. Also works from `.failed` (makes sure nothing is left).
+    /// Stops the engine. Also works from `.failed` (makes sure nothing is
+    /// left) and `.paused` (switches off).
     func stop() {
-        guard state == .running || state == .starting || state == .failed else { return }
-        autoStartDeadline = nil
+        guard state == .running || state == .starting || state == .failed || state == .paused else { return }
+        isSwitchedOn = false
+        startRetryDeadline = nil
         rateChangeRetryAvailable = false
         invalidatePendingLaunches()
         clearActiveSession()
@@ -381,7 +414,7 @@ final class AudioEngineController {
     }
 
     func toggle() {
-        isRunning || state == .starting ? stop() : start()
+        isSwitchedOn ? stop() : start()
     }
 
     /// Synchronous shutdown for app termination and SIGINT/SIGTERM: returns
@@ -395,6 +428,7 @@ final class AudioEngineController {
         invalidatePendingLaunches()
         clearActiveSession()
         engine.stopSynchronously()
+        isSwitchedOn = false
         state = .stopped
         status = "Fermo"
         Log.app.info("Engine shut down")
@@ -572,8 +606,9 @@ final class AudioEngineController {
         clearStaleRateMessage()
         // Per-output presets BEFORE following the output, so the new
         // session starts with the new output's preset.
-        applyPresetForOutput(systemOutput, previous: previousOutput)
+        applyPresetForOutput(systemOutput)
         rememberDeviceNames(devices + [previousOutput].compactMap { $0 })
+        applyOutputMode(outputChanged: systemOutput?.uid != previousOutput?.uid)
         followSystemOutputIfNeeded()
     }
 
@@ -610,6 +645,54 @@ final class AudioEngineController {
                 }
             }
         }
+    }
+
+    /// Pauses or resumes according to the switch and the per-output rule of
+    /// the macOS default output (`AppSettings.engineMode`). Paused: resumes
+    /// on an output with correction. Failed (switch still on): pauses on a
+    /// "no correction" output, and tries again only when the default output
+    /// itself changed (`outputChanged`: never on mere device-list refreshes,
+    /// which a failing start causes itself). With no default output a pause
+    /// just waits.
+    private func applyOutputMode(outputChanged: Bool) {
+        guard let output = systemOutputDevice else { return }
+        switch settings.engineMode(userWantsOn: isSwitchedOn, outputUID: output.uid) {
+        case .off:
+            return
+        case .paused:
+            pause(on: output)
+        case .active:
+            guard state == .paused || (state == .failed && outputChanged) else { return }
+            Log.app.info("Resuming on \(output.uid, privacy: .public) (has correction)")
+            // A fresh start, retried like the auto-start; not an automatic restart.
+            startRetryDeadline = Date().addingTimeInterval(30)
+            automaticRestarts.removeAll()
+            audioCapturePermissionLikelyDenied = false
+            launch(on: output, statusText: "Riprendo su \(output.name)…")
+        }
+    }
+
+    /// Automatic pause for `device` ("no correction"): the session is torn
+    /// down as by `stop()` (tap, aggregate, IOProcs released on the engine
+    /// queue, apps heard directly), but the state goes to `.paused` at once
+    /// and the switch stays on. Not counted as an error or an automatic
+    /// restart. Already paused: only the output name changes.
+    private func pause(on device: OutputDeviceInfo) {
+        if pausedDeviceName != device.name { pausedDeviceName = device.name }
+        let text = "In pausa: nessuna correzione per \(device.name)"
+        if status != text { status = text }
+        guard state != .paused else { return }
+        Log.app.info("Pausing: no correction for \(device.uid, privacy: .public)")
+        startRetryDeadline = nil  // the start request is satisfied (or no longer wanted)
+        rateChangeRetryAvailable = false
+        replacedSessionID = nil  // a late failure of it must not count now
+        replacedSessionDate = nil
+        invalidatePendingLaunches()
+        clearActiveSession()
+        // Queued on the engine queue: a later start always runs after it.
+        engine.stop()
+        state = .paused
+        lastError = nil
     }
 
     /// When the macOS default output changes while running, move RoomEQ to it.
@@ -655,7 +738,14 @@ final class AudioEngineController {
         updateEQ()  // back to the idle sample rate
     }
 
+    /// Starts a session on `device` (the macOS default output), replacing
+    /// the current one; pauses instead when `device` is set to "no
+    /// correction" (every start and restart goes through here).
     private func launch(on device: OutputDeviceInfo, statusText: String) {
+        if settings.engineMode(userWantsOn: true, outputUID: device.uid) == .paused {
+            pause(on: device)
+            return
+        }
         if let activeSessionID {
             // A fatal error this session reports in the next seconds must
             // not be masked by the restart (see `handle(.fatal)`).
@@ -701,7 +791,7 @@ final class AudioEngineController {
             tapFormatDescription = info.tapFormatSummary
             ringStatus = info.link.status()
             audioCapturePermissionLikelyDenied = false
-            autoStartDeadline = nil
+            startRetryDeadline = nil
             rateChangeRetryAvailable = false
             state = .running
             status = "In funzione su \(info.outputDevice.name) · \(AudioFormatText.kilohertz(info.sampleRate)) · buffer \(info.bufferFrames)"
@@ -716,12 +806,13 @@ final class AudioEngineController {
             if retryAfterSampleRateChange(error) { return }
             if error is AudioCapturePermissionError {
                 audioCapturePermissionLikelyDenied = true
-                autoStartDeadline = nil  // retrying won't help
+                startRetryDeadline = nil  // retrying won't help
             }
             fail(error.localizedDescription)
-            if autoStartDeadline != nil {
-                // Auto-start at login: the HAL may not be ready yet.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.attemptAutoStart() }
+            if startRetryDeadline != nil {
+                // Auto-start at login or automatic resume: the HAL / the
+                // device may not be ready yet.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.attemptStartRetry() }
             }
         }
     }
@@ -773,7 +864,7 @@ final class AudioEngineController {
                     return
                 }
                 self.launch(on: device, statusText: "Avvio su \(device.name)…")
-                self.lastError = "\(name) è stato scollegato: audio su \(device.name)"
+                if self.state == .starting { self.lastError = "\(name) è stato scollegato: audio su \(device.name)" }
             }
 
         case .latencyChanged(let sessionID, let latency):
@@ -1051,40 +1142,76 @@ extension AudioEngineController {
     /// Option (default off): when the macOS output changes to a device with
     /// an assigned preset, apply it automatically (see `outputDidChange` in
     /// RoomEQCore: unsaved edits are remembered per output and restored when
-    /// coming back). Takes effect at the next output change.
+    /// coming back). Takes effect at the next output change; "no correction"
+    /// (pause) takes effect at once.
     var isPresetPerOutputEnabled: Bool { settings.isPresetPerOutputEnabled }
     /// Device UID -> preset ID.
     var presetAssignments: [String: UUID] { settings.presetAssignments }
+    /// Device UIDs set to "no correction".
+    var noCorrectionOutputs: Set<String> { settings.noCorrectionOutputs }
 
+    /// On: pauses at once if the current output has "no correction"; off:
+    /// resumes if paused.
     func setPresetPerOutputEnabled(_ enabled: Bool) {
         guard enabled != settings.isPresetPerOutputEnabled else { return }
         settings.isPresetPerOutputEnabled = enabled
         // Start tracking from the current output.
-        settings.lastOutputDeviceUID = systemOutputDevice?.uid ?? settings.lastOutputDeviceUID
+        settings.startTrackingOutput(systemOutputDevice?.uid)
         saveSettings()
+        applyOutputMode(outputChanged: false)
     }
 
+    /// Replaces any rule of that output. If it is the current output and
+    /// it had "no correction" (option on), the preset is applied at once,
+    /// always (unsaved changes are remembered per output, never lost) and
+    /// RoomEQ resumes if it was paused; otherwise, as before, it takes
+    /// effect at the next output change.
     func assignPreset(id: UUID, toDeviceUID uid: String) throws {
+        let wasNoCorrection = settings.noCorrectionOutputs.contains(uid)
         try settings.assignPreset(id: id, toDeviceUID: uid)
-        if let device = outputDevices.first(where: { $0.uid == uid }) { settings.deviceNames[uid] = device.name }
-        saveSettings()
+        outputRuleChanged(deviceUID: uid, leftNoCorrection: wasNoCorrection)
     }
 
+    /// "Nessuna correzione" for that output (replaces its preset). If it is
+    /// the current output (and the option is on), RoomEQ pauses at once.
+    func assignNoCorrection(toDeviceUID uid: String) {
+        guard !uid.isEmpty, !settings.noCorrectionOutputs.contains(uid) else { return }
+        settings.assignNoCorrection(toDeviceUID: uid)
+        outputRuleChanged(deviceUID: uid, leftNoCorrection: false)
+    }
+
+    /// No rule for that output (neither a preset nor "no correction"). If
+    /// RoomEQ was paused for it, it resumes.
     func clearAssignment(deviceUID uid: String) {
-        guard settings.presetAssignments[uid] != nil else { return }
+        let wasNoCorrection = settings.noCorrectionOutputs.contains(uid)
+        guard settings.presetAssignments[uid] != nil || wasNoCorrection else { return }
         settings.clearAssignment(deviceUID: uid)
+        outputRuleChanged(deviceUID: uid, leftNoCorrection: wasNoCorrection)
+    }
+
+    /// After a rule change: remember the name, save, and apply it at once
+    /// when it concerns the current output. Leaving "no correction" there
+    /// applies its preset now (`noCorrectionLifted` in RoomEQCore), then
+    /// pauses/resumes as the new rule says.
+    private func outputRuleChanged(deviceUID uid: String, leftNoCorrection: Bool) {
+        if let device = outputDevices.first(where: { $0.uid == uid }), settings.outputsWithRules.contains(uid) {
+            settings.deviceNames[uid] = device.name
+        }
         saveSettings()
+        guard let output = systemOutputDevice, output.uid == uid else { return }
+        if leftNoCorrection { showOutputSwitch(settings.noCorrectionLifted(onCurrentOutput: uid), on: output) }
+        applyOutputMode(outputChanged: false)
     }
 
     /// Outputs to show in the assignment list: every connected output, plus
-    /// remembered ones (with an assignment or remembered edits) that are not
-    /// connected. Stable order: by name, then UID.
+    /// remembered ones (with a preset, "no correction" or remembered edits)
+    /// that are not connected. Stable order: by name, then UID.
     /// Limitation: outputs are identified by their Core Audio UID; a device
     /// whose UID changes appears as a new output (assign it again).
     var knownOutputs: [KnownOutput] {
         let connected = Set(outputDevices.map(\.uid))
         var uids = outputDevices.map(\.uid)
-        for uid in Set(settings.presetAssignments.keys).union(settings.editsByDevice.keys) where !connected.contains(uid) {
+        for uid in settings.outputsWithRules where !connected.contains(uid) {
             uids.append(uid)
         }
         let existing = Set(settings.presets.map(\.id))
@@ -1094,16 +1221,17 @@ extension AudioEngineController {
                 name: outputDevices.first { $0.uid == uid }?.name ?? settings.deviceNames[uid] ?? uid,
                 isConnected: connected.contains(uid),
                 assignedPresetID: settings.presetAssignments[uid].flatMap { existing.contains($0) ? $0 : nil },
+                isNoCorrection: settings.noCorrectionOutputs.contains(uid),
                 hasRememberedEdits: settings.editsByDevice[uid] != nil)
         }
         .sorted { ($0.name.lowercased(), $0.uid) < ($1.name.lowercased(), $1.uid) }
     }
 
-    /// Keeps names only for outputs that need one when unplugged (an
-    /// assignment or remembered edits), and drops the others.
+    /// Keeps names only for outputs that need one when unplugged (a rule or
+    /// remembered edits), and drops the others.
     private func rememberDeviceNames(_ devices: [OutputDeviceInfo]) {
         let before = settings.deviceNames
-        let needed = Set(settings.presetAssignments.keys).union(settings.editsByDevice.keys)
+        let needed = settings.outputsWithRules
         for device in devices where needed.contains(device.uid) { settings.deviceNames[device.uid] = device.name }
         settings.pruneDeviceNames()
         if settings.deviceNames != before { saveSettings() }
@@ -1111,10 +1239,15 @@ extension AudioEngineController {
 
     /// The macOS default output may have changed (also at launch): applies
     /// the per-output rules before the engine follows the new output.
-    private func applyPresetForOutput(_ output: OutputDeviceInfo?, previous: OutputDeviceInfo?) {
+    private func applyPresetForOutput(_ output: OutputDeviceInfo?) {
+        // Same output: nothing to do (and nothing to save on every refresh).
         guard let output, output.uid != settings.lastOutputDeviceUID else { return }
+        showOutputSwitch(settings.outputDidChange(to: output.uid), on: output)
+    }
+
+    /// Applies and announces what a per-output switch did to the working state.
+    private func showOutputSwitch(_ outcome: AppSettings.OutputSwitch, on output: OutputDeviceInfo) {
         func presetName(_ id: UUID?) -> String? { id.flatMap { id in settings.presets.first { $0.id == id }?.name } }
-        let outcome = settings.outputDidChange(to: output.uid)
         switch outcome {
         case .unchanged:
             showAutomaticNote(nil)
@@ -1130,8 +1263,9 @@ extension AudioEngineController {
             showAutomaticNote(note)
             Log.app.info("Per-output edits restored for \(output.uid, privacy: .public)")
             workingStateChanged()
+        case .noCorrection:
+            showAutomaticNote(nil)  // nothing recorded, nothing to save; the pause follows
         }
-        _ = previous  // its name is recorded by rememberDeviceNames (caller)
     }
 
     /// Shows the automatic-switch note for 20 s (nil clears it now).
@@ -1216,7 +1350,7 @@ extension AudioEngineController {
         case .stopping:
             lastSettingsError = "Attendi che RoomEQ finisca di fermarsi"
             return
-        case .running, .stopped, .failed:
+        case .running, .stopped, .failed, .paused:
             break
         }
         guard SampleRates.contains(availableSampleRates, rate) else {
@@ -1425,7 +1559,7 @@ extension AudioEngineController {
                 guard let self, error != nil, self.activeSessionID == sessionID else { return }
                 self.restartIfActive(reason: "app escluse")
             }
-        case .stopped, .stopping, .failed:
+        case .stopped, .stopping, .failed, .paused:
             break
         }
     }
@@ -1467,12 +1601,14 @@ extension AudioEngineController {
     /// EQ on <-> off (click-free crossfade), for the menu bar.
     func toggleEQ() { setEQEnabled(!isEQEnabled) }
 
-    /// State for a 3-state menu-bar icon (off / EQ on / EQ off) plus starting and error.
+    /// State for a 3-state menu-bar icon (off / EQ on / EQ off) plus
+    /// starting, error and automatic pause.
     var menuBarState: MenuBarState {
         switch state {
         case .stopped, .stopping: return .stopped
         case .starting: return .starting
         case .failed: return .failed
+        case .paused: return .paused
         case .running: return isEQEnabled ? .active : .bypassed
         }
     }

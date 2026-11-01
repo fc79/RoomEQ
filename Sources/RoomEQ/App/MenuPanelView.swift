@@ -4,7 +4,7 @@
 // properties and calls the controller's methods. Layout (top to bottom):
 //   fixed:      header (RoomEQ on/off, status, errors)
 //               quick row (Correzione EQ on/off + preset switcher)
-//   scrollable: EQ, Uscita, Preset per uscita, App escluse, Impostazioni,
+//   scrollable: EQ, Uscita, Impostazioni per uscita, App escluse, Impostazioni,
 //               Latenza e livelli, Diagnostica
 //   fixed:      footer (Esci)
 //   over all:   the inline confirmation card (see InlineConfirmation)
@@ -98,8 +98,6 @@ struct MenuPanelView: View {
 
     // MARK: Header: title, on/off, status, errors
 
-    private var isActive: Bool { controller.isRunning || controller.state == .starting }
-
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -107,22 +105,28 @@ struct MenuPanelView: View {
                 Spacer()
                 Toggle(
                     "Attiva RoomEQ",
-                    isOn: Binding(get: { isActive }, set: { _ in controller.toggle() })
+                    isOn: Binding(get: { controller.isSwitchedOn }, set: { _ in controller.toggle() })
                 )
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.large)
                 .disabled(controller.state == .stopping)
             }
+            // While paused ("no correction" output) the status names the output.
             Text(controller.status)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.caption.weight(controller.state == .paused ? .semibold : .regular))
+                .foregroundStyle(controller.state == .paused ? .primary : .secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let error = controller.lastError {
                 Text(error)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            // The switch stays on after an error: retry without toggling it.
+            if controller.state == .failed {
+                Button("Riprova") { controller.start() }
+                    .controlSize(.small)
             }
             if let error = controller.lastSettingsError {
                 DismissibleMessage(text: error) { controller.clearSettingsError() }

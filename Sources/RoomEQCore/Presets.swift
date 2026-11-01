@@ -168,15 +168,47 @@ extension AppSettings {
 
     // MARK: Per-output presets
 
+    /// Replaces any rule of that output ("no correction" included).
     public mutating func assignPreset(id: UUID, toDeviceUID uid: String) throws {
         guard presets.contains(where: { $0.id == id }) else { throw PresetError.notFound }
         guard !uid.isEmpty else { return }
         presetAssignments[uid] = id
+        noCorrectionOutputs.remove(uid)
     }
 
+    /// "No correction" for that output (replaces its preset assignment).
+    public mutating func assignNoCorrection(toDeviceUID uid: String) {
+        guard !uid.isEmpty else { return }
+        presetAssignments[uid] = nil
+        noCorrectionOutputs.insert(uid)
+    }
+
+    /// No rule for that output (neither a preset nor "no correction").
     public mutating func clearAssignment(deviceUID uid: String) {
         presetAssignments[uid] = nil
+        noCorrectionOutputs.remove(uid)
         pruneDeviceNames()
+    }
+
+    /// The output's rule (nil = none, or its preset no longer exists).
+    public func outputAssignment(forDeviceUID uid: String) -> OutputAssignment? {
+        if noCorrectionOutputs.contains(uid) { return .noCorrection }
+        return presetAssignments[uid].flatMap { id in presets.contains { $0.id == id } ? .preset(id) : nil }
+    }
+
+    /// Whether RoomEQ should run, pause or stay off on output `uid`.
+    public func engineMode(userWantsOn: Bool, outputUID uid: String?) -> EngineMode {
+        EngineMode.desired(
+            userWantsOn: userWantsOn, perOutputEnabled: isPresetPerOutputEnabled,
+            assignment: uid.flatMap { outputAssignment(forDeviceUID: $0) })
+    }
+
+    /// The per-output option was switched: changes are detected from `uid`
+    /// (the current output) from now on. An output with "no correction" is
+    /// not recorded while the option is on (see `outputDidChange`).
+    public mutating func startTrackingOutput(_ uid: String?) {
+        guard let uid, !(isPresetPerOutputEnabled && noCorrectionOutputs.contains(uid)) else { return }
+        lastOutputDeviceUID = uid
     }
 
     /// What `outputDidChange` did to the working state.
@@ -190,6 +222,12 @@ extension AppSettings {
         /// output's assignment when it differs from that base (the user may
         /// want to apply it), else nil.
         case restoredEdits(presetID: UUID?, assignedPresetID: UUID?)
+        /// The output is set to "no correction" (RoomEQ pauses there),
+        /// also when it is the recorded one: working state untouched and
+        /// the output NOT recorded, so coming back to the previous output
+        /// changes nothing, and going on to another output remembers the
+        /// edits for the previous one (whose sound they are), not for this.
+        case noCorrection
     }
 
     /// Call whenever the macOS default output may have changed (also at
@@ -202,10 +240,19 @@ extension AppSettings {
     ///     another preset than the one assigned now;
     ///   * whenever the working state is replaced and has unsaved changes,
     ///     they are remembered for the output being left and restored when
-    ///     that output comes back: an automatic switch never loses work.
+    ///     that output comes back: an automatic switch never loses work
+    ///     (edits already remembered for it are kept when there is nothing
+    ///     new to remember);
+    ///   * an output set to "no correction" is transparent (`.noCorrection`).
+    /// The recorded output can itself be set to "no correction" (rule set
+    /// while in use, or with the option off): edits are then remembered for
+    /// it, as the output they were made on, and restored when it comes back
+    /// with correction (or see `noCorrectionLifted`).
     public mutating func outputDidChange(to uid: String?) -> OutputSwitch {
         let previous = lastOutputDeviceUID
-        guard let uid, uid != previous else { return .unchanged }
+        guard let uid else { return .unchanged }
+        if isPresetPerOutputEnabled && noCorrectionOutputs.contains(uid) { return .noCorrection }
+        guard uid != previous else { return .unchanged }
         lastOutputDeviceUID = uid
         guard isPresetPerOutputEnabled else { return .unchanged }
 
@@ -214,13 +261,7 @@ extension AppSettings {
         guard assigned != nil || restore != nil else { return .unchanged }
 
         // About to replace the working state: keep its unsaved changes.
-        if let previous {
-            if hasUnsavedChanges {
-                editsByDevice[previous] = DeviceEdits(presetID: activePresetID, bands: bands, preampDecibels: preampDecibels)
-            } else {
-                editsByDevice[previous] = nil
-            }
-        }
+        if let previous, hasUnsavedChanges { rememberWorkingState(for: previous) }
         editsByDevice[uid] = nil
         pruneDeviceNames()
         if let restore {
@@ -231,5 +272,29 @@ extension AppSettings {
         }
         guard let assigned, (try? applyPreset(id: assigned)) != nil else { return .unchanged }
         return .appliedPreset(assigned)
+    }
+
+    /// Call when the rule of the CURRENT output `uid` (the macOS default)
+    /// has just changed from "no correction" to something else. With the
+    /// option on and a preset assigned, the preset is applied at once,
+    /// ALWAYS: also when `uid` is the recorded output (rule set while in
+    /// use) and even if edits are remembered for `uid` (they stay
+    /// remembered, restored when it comes back). Unsaved changes are first
+    /// remembered for the recorded output (whose sound they are: `uid`
+    /// itself in the first case). Otherwise: like arriving on `uid`.
+    public mutating func noCorrectionLifted(onCurrentOutput uid: String) -> OutputSwitch {
+        guard isPresetPerOutputEnabled, case .preset(let id)? = outputAssignment(forDeviceUID: uid) else {
+            return outputDidChange(to: uid)
+        }
+        if hasUnsavedChanges { rememberWorkingState(for: lastOutputDeviceUID ?? uid) }
+        lastOutputDeviceUID = uid
+        guard (try? applyPreset(id: id)) != nil else { return .unchanged }
+        return .appliedPreset(id)
+    }
+
+    /// Remembers the working state as unsaved edits made on `uid`
+    /// (replacing older ones for it: the newest work wins).
+    private mutating func rememberWorkingState(for uid: String) {
+        editsByDevice[uid] = DeviceEdits(presetID: activePresetID, bands: bands, preampDecibels: preampDecibels)
     }
 }

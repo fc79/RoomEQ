@@ -51,7 +51,11 @@ struct EQQuickRow: View {
                 Text("EQ spenta (bypass): senti il suono originale")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.orange)
-            } else if !(controller.isRunning || controller.state == .starting) {
+            } else if controller.state == .paused {
+                Text("In pausa: la correzione non è applicata su questa uscita")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if !controller.isSwitchedOn {
                 Text("RoomEQ è spento: la correzione non è applicata")
                     .font(.caption)
                     .foregroundStyle(.secondary)

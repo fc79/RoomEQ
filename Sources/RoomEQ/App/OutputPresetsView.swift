@@ -1,6 +1,7 @@
-// "Preset per uscita": optionally apply a preset automatically when the macOS
-// output changes (e.g. one for the monitors, one for the headphones).
-// Collapsed by default.
+// "Impostazioni per uscita": optionally apply a rule automatically when the
+// macOS output changes: a preset (e.g. one for the monitors, one for the
+// headphones) or "Nessuna correzione" (RoomEQ pauses, audio goes straight to
+// the device). Collapsed by default.
 
 import RoomEQCore
 import SwiftUI
@@ -11,9 +12,9 @@ struct OutputPresetsView: View {
     @State private var note: InlineNote?
 
     var body: some View {
-        PanelDisclosure(title: "Preset per uscita") {
+        PanelDisclosure(title: "Impostazioni per uscita") {
             Toggle(
-                "Cambia preset in base all'uscita",
+                "Usa le impostazioni per uscita",
                 isOn: Binding(
                     get: { controller.isPresetPerOutputEnabled },
                     set: { controller.setPresetPerOutputEnabled($0) })
@@ -21,8 +22,9 @@ struct OutputPresetsView: View {
             .toggleStyle(.switch)
             Text(
                 controller.isPresetPerOutputEnabled
-                    ? "Quando cambi uscita in macOS, RoomEQ applica il preset assegnato a quell'uscita."
-                    : "Spento: le assegnazioni qui sotto non hanno effetto."
+                    ? "Quando cambi uscita in macOS, RoomEQ applica il preset assegnato. "
+                    + "Con «Nessuna correzione» RoomEQ si mette in pausa: l'audio va diretto, senza latenza aggiunta."
+                    : "Spento: le impostazioni qui sotto non hanno effetto."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -58,31 +60,51 @@ struct OutputPresetsView: View {
             }
             Spacer(minLength: 4)
             Picker(
-                "Preset per \(output.name)",
-                selection: Binding<UUID?>(
-                    get: { output.assignedPresetID },
+                "Impostazione per \(output.name)",
+                selection: Binding<RuleChoice>(
+                    get: { RuleChoice(output.assignment) },
                     set: { assign($0, to: output) })
             ) {
-                Text("Nessuno").tag(UUID?.none)
+                Text("Nessuna regola").tag(RuleChoice.none)
                 ForEach(controller.presets) { preset in
-                    Text(preset.name).tag(Optional(preset.id))
+                    Text(preset.name).tag(RuleChoice.preset(preset.id))
                 }
+                Divider()
+                Text("Nessuna correzione").tag(RuleChoice.noCorrection)
             }
             .labelsHidden()
             .frame(width: 130)
         }
     }
 
-    private func assign(_ presetID: UUID?, to output: KnownOutput) {
-        note = nil
-        guard let presetID else {
-            controller.clearAssignment(deviceUID: output.uid)
-            return
+    /// Picker tag for an output's rule (`none` = no rule).
+    private enum RuleChoice: Hashable {
+        case none
+        case preset(UUID)
+        case noCorrection
+
+        init(_ assignment: OutputAssignment?) {
+            switch assignment {
+            case nil: self = .none
+            case .preset(let id): self = .preset(id)
+            case .noCorrection: self = .noCorrection
+            }
         }
-        do {
-            try controller.assignPreset(id: presetID, toDeviceUID: output.uid)
-        } catch {
-            note = .error(error.localizedDescription)
+    }
+
+    private func assign(_ choice: RuleChoice, to output: KnownOutput) {
+        note = nil
+        switch choice {
+        case .none:
+            controller.clearAssignment(deviceUID: output.uid)
+        case .noCorrection:
+            controller.assignNoCorrection(toDeviceUID: output.uid)
+        case .preset(let presetID):
+            do {
+                try controller.assignPreset(id: presetID, toDeviceUID: output.uid)
+            } catch {
+                note = .error(error.localizedDescription)
+            }
         }
     }
 }

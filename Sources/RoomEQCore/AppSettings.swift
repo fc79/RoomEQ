@@ -1,8 +1,8 @@
 // Everything RoomEQ persists (stage 4), in one versioned JSON document.
 //
 // Contents: the working EQ state (bands, preamp, EQ on/off), the presets,
-// per-output preset assignments (+ remembered device names and unsaved
-// edits per device), excluded apps, auto-start, buffer size, output channel
+// per-output preset assignments and "no correction" outputs (+ remembered
+// device names and unsaved edits per device), excluded apps, auto-start, buffer size, output channel
 // pair per device. The login item's state is NOT here (macOS, SMAppService,
 // is its source of truth); only whether the user ever asked for it.
 //
@@ -10,7 +10,11 @@
 // whose UID changes (some USB devices when moved to another port) is seen
 // as a new output: its assignment and remembered edits stay under the old
 // UID until the user assigns again. Remembered names are kept only for
-// outputs with an assignment or remembered edits (no unbounded growth).
+// outputs with an assignment, "no correction" or remembered edits (no
+// unbounded growth).
+//
+// Version 3 adds `noCorrectionOutputs` (version 2 documents read as before,
+// with none); an older build reading a version-3 document keeps a backup.
 //
 // Same philosophy as stage 3 (EQSettings.swift): loading is LOSSY and
 // forward-compatible. Every field is read on its own; a field that is
@@ -69,7 +73,7 @@ public struct ExcludedAppRecord: Codable, Sendable, Equatable, Hashable {
 }
 
 public struct AppSettings: Codable, Sendable, Equatable {
-    public static let currentVersion = 2
+    public static let currentVersion = 3
     /// UserDefaults key of this document.
     public static let storageKey = "RoomEQSettings"
     /// Name of the preset created at first launch / migration.
@@ -91,12 +95,19 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var isPresetPerOutputEnabled: Bool
     /// Output device UID -> preset ID.
     public var presetAssignments: [String: UUID]
+    /// Output device UIDs set to "no correction": with per-output presets
+    /// on, RoomEQ pauses on them (see `EngineMode`). Never also in
+    /// `presetAssignments`.
+    public var noCorrectionOutputs: Set<String>
     /// Output device UID -> last known name (for devices not connected).
     public var deviceNames: [String: String]
     /// Output device UID -> unsaved edits made on it, stashed when an
     /// automatic preset switch replaced them.
     public var editsByDevice: [String: DeviceEdits]
-    /// The macOS default output last seen (to detect changes, also across launches).
+    /// The output the working state belongs to (to detect changes, also
+    /// across launches): the macOS default output last seen, passing over
+    /// outputs with "no correction" while the option is on. It can still be
+    /// one with "no correction" (rule set while in use, or option off then).
     public var lastOutputDeviceUID: String?
 
     // Exclusions (RoomEQ itself is always excluded in addition, never listed).
@@ -119,7 +130,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public init(
         bands: [EQBand], preampDecibels: Double, isEQEnabled: Bool, presets: [EQPreset], activePresetID: UUID?,
         isPresetPerOutputEnabled: Bool = false, presetAssignments: [String: UUID] = [:],
-        deviceNames: [String: String] = [:], editsByDevice: [String: DeviceEdits] = [:],
+        noCorrectionOutputs: Set<String> = [], deviceNames: [String: String] = [:], editsByDevice: [String: DeviceEdits] = [:],
         lastOutputDeviceUID: String? = nil, excludedApps: [ExcludedAppRecord] = ExclusionRules.defaultApps,
         autoStartEngineOnLaunch: Bool = false, loginItemRequested: Bool = false,
         bufferFrames: Int = AppSettings.defaultBufferFrames, outputPairs: [String: Int] = [:]
@@ -132,6 +143,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.activePresetID = activePresetID
         self.isPresetPerOutputEnabled = isPresetPerOutputEnabled
         self.presetAssignments = presetAssignments
+        self.noCorrectionOutputs = noCorrectionOutputs
         self.deviceNames = deviceNames
         self.editsByDevice = editsByDevice
         self.lastOutputDeviceUID = lastOutputDeviceUID
@@ -160,6 +172,30 @@ public struct AppSettings: Codable, Sendable, Equatable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(self)
+    }
+
+    /// Written by hand only so that `noCorrectionOutputs` is a SORTED array
+    /// (byte-stable document). Keep in sync with the properties (the
+    /// round-trip tests catch a missing one).
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(version, forKey: .version)
+        try c.encode(bands, forKey: .bands)
+        try c.encode(preampDecibels, forKey: .preampDecibels)
+        try c.encode(isEQEnabled, forKey: .isEQEnabled)
+        try c.encode(presets, forKey: .presets)
+        try c.encodeIfPresent(activePresetID, forKey: .activePresetID)
+        try c.encode(isPresetPerOutputEnabled, forKey: .isPresetPerOutputEnabled)
+        try c.encode(presetAssignments, forKey: .presetAssignments)
+        try c.encode(noCorrectionOutputs.sorted(), forKey: .noCorrectionOutputs)
+        try c.encode(deviceNames, forKey: .deviceNames)
+        try c.encode(editsByDevice, forKey: .editsByDevice)
+        try c.encodeIfPresent(lastOutputDeviceUID, forKey: .lastOutputDeviceUID)
+        try c.encode(excludedApps, forKey: .excludedApps)
+        try c.encode(autoStartEngineOnLaunch, forKey: .autoStartEngineOnLaunch)
+        try c.encode(loginItemRequested, forKey: .loginItemRequested)
+        try c.encode(bufferFrames, forKey: .bufferFrames)
+        try c.encode(outputPairs, forKey: .outputPairs)
     }
 
     // MARK: Sanitising
@@ -199,7 +235,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
         result.presets = cleanPresets
         let existing = Set(cleanPresets.map(\.id))
         if let active = result.activePresetID, !existing.contains(active) { result.activePresetID = nil }
-        result.presetAssignments = presetAssignments.filter { !$0.key.isEmpty && existing.contains($0.value) }
+        result.noCorrectionOutputs = noCorrectionOutputs.filter { !$0.isEmpty }
+        // One rule per output: "no correction" wins over a preset.
+        result.presetAssignments = presetAssignments.filter {
+            !$0.key.isEmpty && existing.contains($0.value) && !result.noCorrectionOutputs.contains($0.key)
+        }
         result.editsByDevice = [:]
         for (uid, var edits) in editsByDevice where !uid.isEmpty {
             // Never drop remembered work: only forget a base that is gone.
@@ -287,6 +327,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         }
         if let value = stored.isPresetPerOutputEnabled { settings.isPresetPerOutputEnabled = value }
         if let value = stored.presetAssignments { settings.presetAssignments = value }
+        if let value = stored.noCorrectionOutputs { settings.noCorrectionOutputs = Set(value) }
         if let value = stored.deviceNames { settings.deviceNames = value }
         if let value = stored.editsByDevice { settings.editsByDevice = value }
         settings.lastOutputDeviceUID = stored.lastOutputDeviceUID
@@ -298,10 +339,16 @@ public struct AppSettings: Codable, Sendable, Equatable {
         return (settings, problems)
     }
 
+    /// Outputs that are listed (and keep their name) even when unplugged:
+    /// a preset assignment, "no correction", or remembered edits.
+    public var outputsWithRules: Set<String> {
+        Set(presetAssignments.keys).union(noCorrectionOutputs).union(editsByDevice.keys)
+    }
+
     /// Keeps remembered device names only for outputs that still need one
-    /// (an assignment or remembered edits).
+    /// (`outputsWithRules`).
     public mutating func pruneDeviceNames() {
-        let needed = Set(presetAssignments.keys).union(editsByDevice.keys)
+        let needed = outputsWithRules
         deviceNames = deviceNames.filter { needed.contains($0.key) }
     }
 }
@@ -339,6 +386,7 @@ private struct StoredAppSettings: Decodable {
     var activePresetID: UUID?
     var isPresetPerOutputEnabled: Bool?
     var presetAssignments: [String: UUID]?
+    var noCorrectionOutputs: [String]?
     var deviceNames: [String: String]?
     var editsByDevice: [String: DeviceEdits]?
     var lastOutputDeviceUID: String?
@@ -351,7 +399,7 @@ private struct StoredAppSettings: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case version, bands, preampDecibels, isEQEnabled, presets, activePresetID, isPresetPerOutputEnabled
-        case presetAssignments, deviceNames, editsByDevice, lastOutputDeviceUID, excludedApps
+        case presetAssignments, noCorrectionOutputs, deviceNames, editsByDevice, lastOutputDeviceUID, excludedApps
         case autoStartEngineOnLaunch, loginItemRequested, bufferFrames, outputPairs
     }
 
@@ -389,6 +437,12 @@ private struct StoredAppSettings: Decodable {
         if let raw = field([String: String].self, .presetAssignments, "Associazioni preset-uscita") {
             presetAssignments = raw.compactMapValues(UUID.init(uuidString:))
             if presetAssignments!.count < raw.count { problems.append("Associazioni preset-uscita illeggibili ignorate") }
+        }
+        if let list = field([LenientString].self, .noCorrectionOutputs, "Uscite senza correzione") {
+            noCorrectionOutputs = list.compactMap(\.value)
+            if noCorrectionOutputs!.count < list.count {
+                problems.append("\(list.count - noCorrectionOutputs!.count) uscite senza correzione illeggibili ignorate")
+            }
         }
         deviceNames = field([String: String].self, .deviceNames, "Nomi delle uscite")
         if let raw = field([String: LenientEdits].self, .editsByDevice, "Modifiche per uscita") {
@@ -467,6 +521,15 @@ private struct LenientEdits: Decodable {
         if readable.count < bands.count { problems.append("Modifiche per uscita: filtri illeggibili ignorati") }
         problems += bands.compactMap(\.problem).map { "Modifiche per uscita: \($0)" }
         edits = DeviceEdits(presetID: preset, bands: readable, preampDecibels: storedPreamp ?? 0)
+    }
+}
+
+/// One string of a list; never throws (nil if not a string).
+private struct LenientString: Decodable {
+    let value: String?
+
+    init(from decoder: Decoder) {
+        value = try? decoder.singleValueContainer().decode(String.self)
     }
 }
 

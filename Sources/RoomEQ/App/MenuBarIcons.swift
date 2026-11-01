@@ -1,27 +1,44 @@
-// Custom menu bar icons, one per `MenuBarState`: a filled rounded rectangle
-// with the state's symbol cut out of it. Drawn as vectors (sharp at any
-// resolution) and marked as template, so macOS tints them for the light/dark
-// menu bar and the highlighted state.
+// Custom menu bar icons: a filled rounded rectangle (the room) with a symbol
+// cut out of it. There are only three looks, so one glance tells whether the
+// correction is being applied:
+//   applied      (.active)  narrow EQ waves
+//   not applied  (everything else: stopped, paused, bypassed, starting)
+//                           room crossed by a slash
+//   error        (.failed)  exclamation mark
+// Drawn as vectors (sharp at any resolution) and marked as template, so macOS
+// tints them for the light/dark menu bar and the highlighted state.
 
 import AppKit
 
 enum MenuBarIcons {
+    /// What the icon shows; several `MenuBarState`s share one look.
+    private enum Look: CaseIterable {
+        case applied, notApplied, error
+
+        init(_ state: MenuBarState) {
+            switch state {
+            case .active: self = .applied
+            case .failed: self = .error
+            case .stopped, .paused, .bypassed, .starting: self = .notApplied
+            }
+        }
+    }
+
     /// Icon canvas in points; the origin is top-left (flipped drawing).
     private static let size = NSSize(width: 24, height: 18)
 
     // Built once: the menu bar view only picks one on each state change.
-    private static let images: [MenuBarState: NSImage] = {
-        let states: [MenuBarState] = [.stopped, .starting, .active, .bypassed, .failed]
-        return Dictionary(uniqueKeysWithValues: states.map { ($0, makeImage(for: $0)) })
-    }()
+    private static let images: [Look: NSImage] = Dictionary(
+        uniqueKeysWithValues: Look.allCases.map { ($0, makeImage(for: $0)) })
 
     static func image(for state: MenuBarState) -> NSImage {
-        images[state] ?? makeImage(for: state)
+        let look = Look(state)
+        return images[look] ?? makeImage(for: look)
     }
 
-    private static func makeImage(for state: MenuBarState) -> NSImage {
+    private static func makeImage(for look: Look) -> NSImage {
         let image = NSImage(size: size, flipped: true) { _ in
-            draw(state)
+            draw(look)
             return true
         }
         image.isTemplate = true
@@ -30,23 +47,21 @@ enum MenuBarIcons {
 
     // MARK: - Drawing
 
-    private static func draw(_ state: MenuBarState) {
+    private static func draw(_ look: Look) {
         guard let context = NSGraphicsContext.current else { return }
         let base = NSBezierPath(roundedRect: NSRect(x: 2, y: 2, width: 20, height: 14),
                                 xRadius: 2.5, yRadius: 2.5)
-        NSColor.black.withAlphaComponent(state == .stopped ? 0.55 : 1).setFill()
+        NSColor.black.withAlphaComponent(look == .notApplied ? 0.55 : 1).setFill()
         base.fill()
 
         // Everything below removes alpha from the base (destinationOut).
         context.compositingOperation = .destinationOut
         defer { context.compositingOperation = .sourceOver }
 
-        switch state {
-        case .active:
+        switch look {
+        case .applied:
             cutEQCurves(top: 7.6, bottom: 10.4)
-        case .bypassed:
-            cutEQCurves(top: 4.8, bottom: 13.2)
-        case .stopped:
+        case .notApplied:
             let slash = line(from: NSPoint(x: 3, y: 17), to: NSPoint(x: 21, y: 1))
             cut(slash, width: 3.6)
             // The slash itself is drawn back on top, fully opaque.
@@ -54,9 +69,7 @@ enum MenuBarIcons {
             NSColor.black.setStroke()
             slash.lineWidth = 1.5
             slash.stroke()
-        case .starting:
-            for x in [8.0, 12.0, 16.0] { cutDot(center: NSPoint(x: x, y: 9), radius: 1.4) }
-        case .failed:
+        case .error:
             cut(line(from: NSPoint(x: 12, y: 5), to: NSPoint(x: 12, y: 10)), width: 2)
             cutDot(center: NSPoint(x: 12, y: 13.1), radius: 1.2)
         }

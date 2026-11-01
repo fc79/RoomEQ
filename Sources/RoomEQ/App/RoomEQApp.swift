@@ -21,8 +21,10 @@ struct RoomEQApp: App {
     }
 }
 
-/// Menu bar icon that changes with the engine state and the EQ on/off, so
-/// both are visible without opening the panel (drawings in MenuBarIcons.swift).
+/// Menu bar icon with three looks (correction applied / not applied / error),
+/// so it is clear without opening the panel whether the correction is on
+/// (drawings in MenuBarIcons.swift). The accessibility label tells every
+/// state apart.
 /// A separate view so that it observes the controller.
 struct MenuBarIcon: View {
     let controller: AudioEngineController
@@ -39,6 +41,7 @@ struct MenuBarIcon: View {
         case .active: "RoomEQ attivo, EQ accesa"
         case .bypassed: "RoomEQ attivo, EQ spenta"
         case .failed: "RoomEQ: errore"
+        case .paused: "RoomEQ in pausa: nessuna correzione per questa uscita"
         }
     }
 }
