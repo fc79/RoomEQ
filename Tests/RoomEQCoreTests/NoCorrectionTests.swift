@@ -27,7 +27,7 @@ struct EngineModeDecisionTests {
     }
 
     /// The rules always apply: "no correction" pauses, anything else
-    /// ("Nessuna regola" included) corrects.
+    /// ("Preset attuale", i.e. no rule, included) corrects.
     @Test func pausedOnlyForNoCorrection() {
         #expect(EngineMode.desired(userWantsOn: true, assignment: .noCorrection) == .paused)
         #expect(EngineMode.desired(userWantsOn: true, assignment: .preset(UUID())) == .active)
@@ -41,7 +41,7 @@ struct EngineModeDecisionTests {
         #expect(settings.engineMode(userWantsOn: true, outputUID: "cuffie") == .active)
         #expect(settings.engineMode(userWantsOn: true, outputUID: "hdmi") == .active)  // no rule
         #expect(settings.engineMode(userWantsOn: true, outputUID: nil) == .active)  // no output
-        settings.clearAssignment(deviceUID: "tv")  // "Nessuna regola": corrects
+        settings.clearAssignment(deviceUID: "tv")  // "Preset attuale" (no rule): corrects
         #expect(settings.engineMode(userWantsOn: true, outputUID: "tv") == .active)
     }
 }

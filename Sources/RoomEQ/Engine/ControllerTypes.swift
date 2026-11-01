@@ -66,7 +66,7 @@ struct KnownOutput: Identifiable, Hashable, Sendable {
     let hasRememberedEdits: Bool
 
     var id: String { uid }
-    /// The rule as one value (nil = "Nessuna regola"), e.g. for a picker.
+    /// The rule as one value (nil = no rule, "Preset attuale"), e.g. for a picker.
     var assignment: OutputAssignment? {
         isNoCorrection ? .noCorrection : assignedPresetID.map { .preset($0) }
     }

@@ -114,7 +114,7 @@ struct OutputPresetTests {
         #expect(settings.lastOutputDeviceUID == "cuffie" && settings.activePresetID == studio)
         #expect(settings.outputDidChange(to: "cuffie") == .unchanged)  // same output: nothing
         let before = settings.bands
-        #expect(settings.outputDidChange(to: "hdmi") == .unchanged)  // "Nessuna regola": only recorded
+        #expect(settings.outputDidChange(to: "hdmi") == .unchanged)  // "Preset attuale" (no rule): only recorded
         #expect(settings.lastOutputDeviceUID == "hdmi" && settings.bands == before)
     }
 

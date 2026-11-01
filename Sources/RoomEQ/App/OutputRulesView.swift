@@ -15,8 +15,8 @@ struct OutputRulesView: View {
     var body: some View {
         CollapsibleSection(title: "Regole per uscita", summary: summary, storageKey: "rules") {
             Text(
-                "Scegli un preset per ogni uscita, oppure «Nessuna correzione»: "
-                    + "RoomEQ si fa da parte e l'audio va diretto, senza latenza."
+                "Per ogni uscita: «Preset attuale» non cambia il suono, un preset lo cambia, "
+                    + "«Nessuna correzione» fa da parte RoomEQ e l'audio va diretto, senza latenza."
             )
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -67,7 +67,7 @@ struct OutputRulesView: View {
                     get: { RuleChoice(output.assignment) },
                     set: { assign($0, to: output) })
             ) {
-                Text("Nessuna regola").tag(RuleChoice.none)
+                Text("Preset attuale").tag(RuleChoice.none)
                 ForEach(controller.presets) { preset in
                     Text(preset.name).tag(RuleChoice.preset(preset.id))
                 }
@@ -79,7 +79,8 @@ struct OutputRulesView: View {
         }
     }
 
-    /// Picker tag for an output's rule (`none` = no rule).
+    /// Picker tag for an output's rule (`none` = no rule, shown as
+    /// "Preset attuale": the current sound stays, corrected).
     private enum RuleChoice: Hashable {
         case none
         case preset(UUID)
