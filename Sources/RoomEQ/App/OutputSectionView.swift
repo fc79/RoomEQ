@@ -36,7 +36,7 @@ struct OutputSectionView: View {
         var parts: [String] = []
         if let name = controller.effectiveOutputDevice?.name { parts.append(name) }
         if let rate = controller.currentSampleRate { parts.append(AudioFormatText.kilohertz(rate)) }
-        parts.append("buffer \(controller.bufferSize)")
+        parts.append(String(localized: "buffer \(controller.bufferSize)"))
         return parts.joined(separator: " · ")
     }
 
@@ -108,7 +108,7 @@ struct OutputSectionView: View {
                         get: { currentRate },
                         set: { if let rate = $0, rate != currentRate { requestRate(rate) } })
                 ) {
-                    if currentRate == nil { Text("—").tag(Double?.none) }
+                    if currentRate == nil { Text(verbatim: "—").tag(Double?.none) }
                     ForEach(controller.availableSampleRates, id: \.self) { rate in
                         Text(AudioFormatText.kilohertz(rate)).tag(Optional(rate))
                     }
@@ -127,8 +127,8 @@ struct OutputSectionView: View {
         confirmations.present(
             InlineConfirmation(
                 title: "Cambiare la frequenza di campionamento a \(AudioFormatText.kilohertz(rate))?",
-                message: "Vale per tutte le app, compreso Ableton."
-                    + (controller.isRunning ? " RoomEQ si riavvia per un istante." : ""),
+                message: String(localized: "Vale per tutte le app, compreso Ableton.")
+                    + (controller.isRunning ? " " + String(localized: "RoomEQ si riavvia per un istante.") : ""),
                 options: [.standard("Cambia") { [controller] in controller.setDeviceSampleRate(rate) }]))
     }
 

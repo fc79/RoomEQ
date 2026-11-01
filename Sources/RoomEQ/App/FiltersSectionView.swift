@@ -28,18 +28,21 @@ struct FiltersSectionView: View {
     }
 
     /// "4 filtri · preamp −3,5 dB"; with some filters switched off,
-    /// "3 di 4 filtri · preamp −3,5 dB".
+    /// "3 di 4 filtri · preamp −3,5 dB" ("1 filtro, non attivo" when the
+    /// only filter is off).
     private var summary: String {
         let total = controller.bands.count
         let active = controller.bands.filter(\.isEnabled).count
         let filters: String
         switch (total, active) {
-        case (0, _): filters = "Nessun filtro"
-        case (1, _): filters = "1 filtro"
-        case _ where active < total: filters = "\(active) di \(total) filtri"
-        default: filters = "\(total) filtri"
+        case (0, _): filters = String(localized: "Nessun filtro")
+        case (1, 0): filters = String(localized: "1 filtro, non attivo")
+        case (1, _): filters = String(localized: "1 filtro")
+        case _ where active < total: filters = String(localized: "\(active) di \(total) filtri")
+        default: filters = String(localized: "\(total) filtri")
         }
-        return "\(filters) · preamp \(Format.signedDecibels(controller.preampDecibels))"
+        let preamp = Format.signedDecibels(controller.preampDecibels)
+        return String(localized: "\(filters) · preamp \(preamp)")
     }
 
     // MARK: Preamp
@@ -72,10 +75,8 @@ struct FiltersSectionView: View {
         if boost > 0 {
             let suggested = controller.suggestedPreampDecibels
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(
-                    "La curva amplifica fino a \(Format.signedDecibels(boost, plusSign: true)): "
-                        + "preamp consigliato \(Format.signedDecibels(suggested))"
-                )
+                let peak = Format.signedDecibels(boost, plusSign: true)
+                Text("La curva amplifica fino a \(peak): preamp consigliato \(Format.signedDecibels(suggested))")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -118,8 +119,8 @@ struct FiltersSectionView: View {
     private func requestImport() {
         let message =
             controller.activePreset.map {
-                "I filtri importati sostituiscono il suono attuale: le modifiche non salvate a «\($0.name)» andranno perse."
-            } ?? "I filtri importati sostituiscono il suono attuale, che non è salvato in nessun preset e andrà perso."
+                String(localized: "I filtri importati sostituiscono il suono attuale: le modifiche non salvate a «\($0.name)» andranno perse.")
+            } ?? String(localized: "I filtri importati sostituiscono il suono attuale, che non è salvato in nessun preset e andrà perso.")
         confirmations.present(
             InlineConfirmation(
                 title: "Importare da REW?", message: message,
@@ -157,9 +158,9 @@ struct FiltersSectionView: View {
     /// open meanwhile (`FileChooser`, StatusItemController.swift).
     private func chooseREWFile() {
         let panel = NSOpenPanel()
-        panel.title = "Importa filtri da REW"
-        panel.message = "Scegli il file di testo esportato da REW (Export filter settings as text)."
-        panel.prompt = "Importa"
+        panel.title = String(localized: "Importa filtri da REW")
+        panel.message = String(localized: "Scegli il file di testo esportato da REW (Export filter settings as text).")
+        panel.prompt = String(localized: "Importa")
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false

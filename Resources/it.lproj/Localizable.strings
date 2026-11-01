@@ -1,0 +1,6 @@
+/*
+  Italian texts of RoomEQ: intentionally empty. Italian is the language the
+  texts are written in, in the code, so every key already is its Italian text.
+  This table exists so that, for an Italian user, the lookup stops here and
+  never falls back to the English table (development region "en").
+*/

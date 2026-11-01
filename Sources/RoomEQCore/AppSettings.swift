@@ -271,8 +271,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public static func load(current: Data?, legacy: Data?, ownBundleID: String) -> AppSettingsLoad {
         var backups: [AppSettingsLoad.Backup] = []
         var warnings: [String] = []
-        let partialNotice =
-            "Parte delle impostazioni salvate non era leggibile: ne ho conservato una copia e ho caricato il resto."
+        // Notices are shown in the panel (localized); `warnings` only go to the log.
+        let partialNotice = String(
+            localized: "Parte delle impostazioni salvate non era leggibile: ne ho conservato una copia e ho caricato il resto.")
+        let defaultsNotice = String(
+            localized: "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho caricato i filtri iniziali.")
 
         if let current {
             if let (settings, problems, version) = decodeLeniently(current) {
@@ -296,10 +299,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
             var notice: String?
             if current != nil {
                 notice = loaded.status == .unreadable
-                    ? "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho caricato i filtri iniziali."
-                    : "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho recuperato i filtri della versione precedente."
+                    ? defaultsNotice
+                    : String(
+                        localized: "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho recuperato i filtri della versione precedente.")
             } else if loaded.status == .unreadable {
-                notice = "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho caricato i filtri iniziali."
+                notice = defaultsNotice
             } else if loaded.status == .partial {
                 notice = partialNotice
             }
@@ -310,9 +314,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
         return AppSettingsLoad(
             settings: defaults().sanitized(ownBundleID: ownBundleID), warnings: warnings, backups: backups,
-            notice: current == nil
-                ? nil
-                : "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho caricato i filtri iniziali.",
+            notice: current == nil ? nil : defaultsNotice,
             migrated: false, upgraded: false)
     }
 
@@ -377,7 +379,7 @@ public struct AppSettingsLoad: Sendable {
     public var warnings: [String]
     /// Raw data to keep before anything saves over it.
     public var backups: [Backup]
-    /// Italian notice for the UI (nil when everything was read).
+    /// Localized notice for the UI (nil when everything was read).
     public var notice: String?
     /// True when the stage-3 document was converted.
     public var migrated: Bool

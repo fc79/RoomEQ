@@ -1,6 +1,7 @@
 // Small helpers for the output-device menus (sample rates, transport type).
 
 import CoreAudio
+import Foundation
 
 public enum SampleRates {
     /// Rates closer than this are the same rate (HAL values can carry
@@ -33,10 +34,10 @@ public enum SampleRates {
 }
 
 public enum TransportType {
-    /// Italian/English short name of a `kAudioDevicePropertyTransportType` value.
+    /// Short (localized) name of a `kAudioDevicePropertyTransportType` value.
     public static func name(_ code: UInt32) -> String {
         switch code {
-        case kAudioDeviceTransportTypeBuiltIn: return "Integrato"
+        case kAudioDeviceTransportTypeBuiltIn: return String(localized: "Integrato")
         case kAudioDeviceTransportTypeUSB: return "USB"
         case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: return "Bluetooth"
         case kAudioDeviceTransportTypeHDMI: return "HDMI"
@@ -46,9 +47,9 @@ public enum TransportType {
         case kAudioDeviceTransportTypePCI: return "PCI"
         case kAudioDeviceTransportTypeAirPlay: return "AirPlay"
         case kAudioDeviceTransportTypeAVB: return "AVB"
-        case kAudioDeviceTransportTypeVirtual: return "Virtuale"
-        case kAudioDeviceTransportTypeAggregate, kAudioDeviceTransportTypeAutoAggregate: return "Aggregato"
-        default: return "Altro"
+        case kAudioDeviceTransportTypeVirtual: return String(localized: "Virtuale")
+        case kAudioDeviceTransportTypeAggregate, kAudioDeviceTransportTypeAutoAggregate: return String(localized: "Aggregato")
+        default: return String(localized: "Altro")
         }
     }
 

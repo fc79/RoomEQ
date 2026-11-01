@@ -111,9 +111,9 @@ struct EQDesignTests {
         #expect(EQDesign(bands: [EQBand(frequency: 19_846, gain: -3, q: 2)], sampleRate: 44_100).sections.isEmpty)
         #expect(EQDesign(bands: [EQBand(frequency: 20_000, gain: -3, q: 2)], sampleRate: 96_000).sections.count == 1)
         let above = EQBand(frequency: 20_500, gain: -3, q: 2)
-        #expect(EQDesign(bands: [above], sampleRate: 96_000).warnings == ["Filtro 1: frequenza sopra 20000 Hz, disattivato"])
+        #expect(EQDesign(bands: [above], sampleRate: 96_000).warnings == ["Filtro 1: frequenza sopra 20000 Hz, non applicato"])
         let low = EQDesign(bands: [EQBand(frequency: 15_000, gain: -3, q: 2)], sampleRate: 32_000)
-        #expect(low.warnings == ["Filtro 1: frequenza troppo alta per 32 kHz (massimo 14400 Hz), disattivato"])
+        #expect(low.warnings == ["Filtro 1: frequenza troppo alta per 32 kHz (massimo 14400 Hz), non applicato"])
     }
 
     @Test func frequencyTooHighForTheSampleRateIsDisabledWithWarning() {
@@ -121,7 +121,7 @@ struct EQDesignTests {
         let at44 = EQDesign(bands: [band], sampleRate: 44_100)
         #expect(at44.sections.isEmpty)
         let message = at44.issues[band.id]
-        #expect(message == "Filtro 1: frequenza troppo alta per 44,1 kHz (massimo 19845 Hz), disattivato")
+        #expect(message == "Filtro 1: frequenza troppo alta per 44,1 kHz (massimo 19845 Hz), non applicato")
         #expect(at44.warnings == [message!])
         // The same band is fine at 48 kHz (limit 21600 Hz).
         #expect(EQDesign(bands: [band], sampleRate: 48_000).sections.count == 1)
@@ -142,10 +142,10 @@ struct EQDesignTests {
         let design = EQDesign(bands: bands, sampleRate: 48_000)
         #expect(design.sections.count == 1)
         #expect(design.warnings.count == 8)
-        #expect(design.warnings.allSatisfy { $0.hasSuffix("disattivato") })
-        #expect(design.warnings[0] == "Filtro 1: parametri non validi, disattivato")
-        #expect(design.warnings[6] == "Filtro 7: guadagno fuori dall'intervallo -30…+30 dB, disattivato")
-        #expect(design.warnings[7] == "Filtro 8: Q fuori dall'intervallo 0,1…100, disattivato")
+        #expect(design.warnings.allSatisfy { $0.hasSuffix("non applicato") })
+        #expect(design.warnings[0] == "Filtro 1: parametri non validi, non applicato")
+        #expect(design.warnings[6] == "Filtro 7: guadagno fuori dall'intervallo -30…+30 dB, non applicato")
+        #expect(design.warnings[7] == "Filtro 8: Q fuori dall'intervallo 0,1…100, non applicato")
         for section in design.sections {
             let c = section.coefficients
             #expect([c.b0, c.b1, c.b2, c.a1, c.a2].allSatisfy { $0.isFinite })

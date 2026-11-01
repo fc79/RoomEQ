@@ -14,9 +14,9 @@ public enum ExclusionError: LocalizedError, Equatable, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case .invalidBundleID: return "Identificativo dell'app non valido."
-        case .ownApp: return "RoomEQ è sempre escluso automaticamente."
-        case .alreadyExcluded(let name): return "«\(name)» è già esclusa."
+        case .invalidBundleID: return String(localized: "Identificativo dell'app non valido.")
+        case .ownApp: return String(localized: "RoomEQ è sempre escluso automaticamente.")
+        case .alreadyExcluded(let name): return String(localized: "«\(name)» è già esclusa.")
         }
     }
 }
@@ -25,7 +25,7 @@ public enum ExclusionRules {
     /// Excluded on first launch.
     public static let defaultApps = [ExcludedAppRecord(bundleID: "com.ableton.live", name: "Ableton Live")]
 
-    public static let rewWarning = "Escludendo REW, le misure non passeranno da RoomEQ"
+    public static let rewWarning = String(localized: "Escludendo REW, le misure non passeranno da RoomEQ")
 
     /// Trimmed bundle ID if it looks like one (letters, digits, '.', '-',
     /// '_', at most 255 characters), else nil.
@@ -74,7 +74,7 @@ public enum ExclusionRules {
         var lines: [String] = []
         if isREW(bundleID) { lines.append(rewWarning) }
         if isBroad(bundleID, isInstalledApp: isInstalledApp) && !isREW(bundleID) {
-            lines.append("«\(bundleID)» escluderebbe molte app (tutte quelle il cui identificativo inizia così)")
+            lines.append(String(localized: "«\(bundleID)» escluderebbe molte app (tutte quelle il cui identificativo inizia così)"))
         }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }

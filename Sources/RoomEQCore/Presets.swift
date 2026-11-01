@@ -4,7 +4,7 @@
 
 import Foundation
 
-/// Preset errors, with Italian messages for the UI.
+/// Preset errors, with (localized) messages for the UI.
 public enum PresetError: LocalizedError, Equatable, Sendable {
     case emptyName
     case nameTooLong(maximum: Int)
@@ -15,12 +15,12 @@ public enum PresetError: LocalizedError, Equatable, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case .emptyName: return "Il nome del preset non può essere vuoto."
-        case .nameTooLong(let maximum): return "Il nome del preset può avere al massimo \(maximum) caratteri."
-        case .duplicateName(let name): return "Esiste già un preset chiamato «\(name)»."
-        case .notFound: return "Preset non trovato."
-        case .lastPreset: return "Non puoi eliminare l'unico preset rimasto."
-        case .noActivePreset: return "Nessun preset attivo in cui salvare: salva come nuovo preset."
+        case .emptyName: return String(localized: "Il nome del preset non può essere vuoto.")
+        case .nameTooLong(let maximum): return String(localized: "Il nome del preset può avere al massimo \(maximum) caratteri.")
+        case .duplicateName(let name): return String(localized: "Esiste già un preset chiamato «\(name)».")
+        case .notFound: return String(localized: "Preset non trovato.")
+        case .lastPreset: return String(localized: "Non puoi eliminare l'unico preset rimasto.")
+        case .noActivePreset: return String(localized: "Nessun preset attivo in cui salvare: salva come nuovo preset.")
         }
     }
 }
@@ -35,10 +35,17 @@ public enum PresetNames {
         name.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
-    /// Same name for the user: case and accents ignored ("Studio" == "studio").
+    /// Same name for the user: case and accents ignored ("Studio" == "studio",
+    /// "Città" == "citta"). Always with the same neutral rules, never those of
+    /// the user's region: with a Turkish region, for example, "STUDIO" would
+    /// no longer match "studio" (I/ı), and names saved as distinct could
+    /// become duplicates.
     public static func same(_ a: String, _ b: String) -> Bool {
-        a.compare(b, options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "it_IT")) == .orderedSame
+        a.compare(b, options: [.caseInsensitive, .diacriticInsensitive], locale: comparisonLocale) == .orderedSame
     }
+
+    /// Fixed, region-independent locale for `same`.
+    private static let comparisonLocale = Locale(identifier: "en_US_POSIX")
 
     /// `name`, or "name 2", "name 3"… if already taken; the result never
     /// exceeds `maximumLength` (the base is shortened to make room).
@@ -55,8 +62,9 @@ public enum PresetNames {
         return candidate(number)
     }
 
-    /// Default name for saving without asking ("Senza nome", "Senza nome 2"…).
-    public static let untitled = "Senza nome"
+    /// Default name for saving without asking ("Senza nome", "Senza nome 2"…;
+    /// "Untitled" in English).
+    public static let untitled = String(localized: "Senza nome")
 }
 
 extension AppSettings {
@@ -153,7 +161,7 @@ extension AppSettings {
         pruneDeviceNames()
     }
 
-    /// A copy named "<name> copia" (then "copia 2"…), right after the
+    /// A copy named "<name> copia" (then "copia 2"…; "copy" in English), right after the
     /// original. Not activated. Same band IDs: switching between the two
     /// morphs each band instead of fading bands out and in.
     @discardableResult
@@ -161,7 +169,7 @@ extension AppSettings {
         guard let index = presets.firstIndex(where: { $0.id == id }) else { throw PresetError.notFound }
         var copy = presets[index]
         copy.id = UUID()
-        copy.name = PresetNames.unique("\(copy.name) copia", among: presets.map(\.name))
+        copy.name = PresetNames.unique(String(localized: "\(copy.name) copia"), among: presets.map(\.name))
         presets.insert(copy, at: index + 1)
         return copy
     }

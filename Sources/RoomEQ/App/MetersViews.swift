@@ -50,8 +50,8 @@ struct LevelsView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(
                             clip.maxProcessingOverDecibels.map {
-                                "La correzione supera 0 dB di \(Format.signedDecibels($0, plusSign: true))"
-                            } ?? "La correzione supera 0 dB"
+                                String(localized: "La correzione supera 0 dB di \(Format.signedDecibels($0, plusSign: true))")
+                            } ?? String(localized: "La correzione supera 0 dB")
                         )
                         .font(.callout)
                         .foregroundStyle(.orange)
@@ -67,9 +67,9 @@ struct LevelsView: View {
                 }
                 if clip.sourceClipping {
                     Text(
-                        "Il segnale arriva già oltre 0 dB"
-                            + (clip.maxInputOverDecibels.map { " (\(Format.signedDecibels($0, plusSign: true)))" } ?? "")
-                            + " dall'app: non dipende da RoomEQ"
+                        clip.maxInputOverDecibels.map {
+                            String(localized: "Il segnale arriva già oltre 0 dB (\(Format.signedDecibels($0, plusSign: true))) dall'app: non dipende da RoomEQ")
+                        } ?? String(localized: "Il segnale arriva già oltre 0 dB dall'app: non dipende da RoomEQ")
                     )
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -115,8 +115,7 @@ private struct DiagnosticsContent: View {
                 Text("Sovraccarichi (xrun): uscita \(meters.overloads) · cattura \(ring.captureOverloads)")
                 Text("Campioni NaN: \(meters.nonFiniteSamples) · cicli non validi: \(meters.invalidCycles)")
                 Text(
-                    "Ingresso L \(Self.peakText(meters.inputPeakLeft)) · R \(Self.peakText(meters.inputPeakRight))\n"
-                        + "Uscita L \(Self.peakText(meters.outputPeakLeft)) · R \(Self.peakText(meters.outputPeakRight))"
+                    "Ingresso L \(Self.peakText(meters.inputPeakLeft)) · R \(Self.peakText(meters.inputPeakRight))\nUscita L \(Self.peakText(meters.outputPeakLeft)) · R \(Self.peakText(meters.outputPeakRight))"
                 )
                 .monospacedDigit()
             } else {

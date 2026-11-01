@@ -97,7 +97,7 @@ struct MenuPanelView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("RoomEQ").font(.title2.weight(.bold))
+                Text(verbatim: "RoomEQ").font(.title2.weight(.bold))
                 Spacer()
                 Toggle(
                     "Correzione",

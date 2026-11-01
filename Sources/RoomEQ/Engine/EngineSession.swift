@@ -130,9 +130,9 @@ struct AudioCapturePermissionError: LocalizedError {
     let underlying: CoreAudioError
 
     var errorDescription: String? {
-        "macOS non consente a RoomEQ di catturare l'audio di sistema (\(describeOSStatus(underlying.status))). "
-            + "Apri Impostazioni di Sistema › Privacy e sicurezza › Registrazione schermo e audio di sistema, "
-            + "consenti l'accesso a RoomEQ e riprova."
+        let code = describeOSStatus(underlying.status)
+        return String(
+            localized: "macOS non consente a RoomEQ di catturare l'audio di sistema (\(code)). Apri Impostazioni di Sistema › Privacy e sicurezza › Registrazione schermo e audio di sistema, consenti l'accesso a RoomEQ e riprova.")
     }
 
     /// Wraps `error` if its status looks like a permission refusal.
@@ -248,7 +248,7 @@ final class EngineSession {
         case .success(let located): source = located
         case .failure(let error):
             Log.engine.error("Source selection refused: streams \(streamCounts, privacy: .public), preferred \(preferred.map { "\($0.0)/\($0.1)" } ?? "n/a", privacy: .public)")
-            throw EngineError(error.message)
+            throw EngineError(message: error.message)
         }
         Log.engine.info(
             "Starting session \(self.id) on \(device.name, privacy: .public): output streams \(streamCounts, privacy: .public) ch, preferred stereo \(preferred.map { "\($0.0)/\($0.1)" } ?? "n/a (1/2)", privacy: .public) -> stream \(source.stream), channels \(source.left + 1)/\(source.right + 1)"
@@ -294,9 +294,9 @@ final class EngineSession {
         guard captureLayout.matches(reportedBufferChannelCounts: reportedCapture),
             outputLayout.matches(reportedBufferChannelCounts: reportedOutput)
         else {
-            throw EngineError(
-                "Disposizione buffer inattesa: cattura \(reportedCapture) vs \(captureLayout.bufferChannelCounts), "
-                    + "uscita \(reportedOutput) vs \(outputLayout.bufferChannelCounts)")
+            let capture = "\(reportedCapture) vs \(captureLayout.bufferChannelCounts)"
+            let output = "\(reportedOutput) vs \(outputLayout.bufferChannelCounts)"
+            throw EngineError("Disposizione buffer inattesa: cattura \(capture), uscita \(output)")
         }
         if let bad = outputStreams.first(where: { !$0.format.isFloat32 }) {
             throw EngineError("Formato di uscita non supportato: \(bad.format.logDescription)")
@@ -411,7 +411,7 @@ final class EngineSession {
         let captureRate = (try? aggregate.nominalSampleRate()) ?? 0
         if let violation = SampleRateGuard.violation(tapRate: tapRate, deviceRate: deviceRate, captureRate: captureRate) {
             Log.engine.error("Rate mismatch (\(initial ? "start" : "after listeners", privacy: .public)): tap \(tapRate), device \(deviceRate), capture \(captureRate)")
-            throw EngineError(violation)
+            throw EngineError(message: violation)
         }
         if initial {
             deviceSampleRate = deviceRate
@@ -450,7 +450,7 @@ final class EngineSession {
                     return delay
                 case .failure(let error):
                     Log.engine.error("Delay: need max \(stats.max) exceeds the maximum \(link.maximumDelay)")
-                    throw EngineError(error.message)
+                    throw EngineError(message: error.message)
                 }
             }
             Log.engine.notice(
@@ -458,8 +458,7 @@ final class EngineSession {
             )
             guard clock.now + .seconds(Self.warmupWindow) <= deadline else {
                 throw EngineError(
-                    "Avvio non riuscito: la cattura o l'uscita non funzionano in modo regolare "
-                        + "(cicli cattura \(after.captureCycles), uscita \(after.outputCycles)).")
+                    "Avvio non riuscito: la cattura o l'uscita non funzionano in modo regolare (cicli cattura \(after.captureCycles), uscita \(after.outputCycles)).")
             }
         }
     }
@@ -667,24 +666,29 @@ final class EngineSession {
         if let format = try? tap.format(),
             format.mSampleRate != tapFormat.mSampleRate || format.mChannelsPerFrame != tapFormat.mChannelsPerFrame
         {
-            return "formato del tap cambiato (\(format.logDescription))"
+            return String(localized: "formato del tap cambiato (\(format.logDescription))")
         }
         if let rate = try? AudioDevices.nominalSampleRate(of: outputDevice.objectID), !SampleRates.same(rate, deviceSampleRate) {
-            return "frequenza di \(outputDevice.name) cambiata (\(deviceSampleRate) -> \(rate) Hz)"
+            let change = "\(deviceSampleRate) -> \(rate) Hz"
+            return String(localized: "frequenza di \(outputDevice.name) cambiata (\(change))")
         }
         if let rate = try? aggregate.nominalSampleRate(), !SampleRates.same(rate, captureSampleRate) {
-            return "frequenza di cattura cambiata (\(captureSampleRate) -> \(rate) Hz)"
+            let change = "\(captureSampleRate) -> \(rate) Hz"
+            return String(localized: "frequenza di cattura cambiata (\(change))")
         }
         let captureCounts = try? AudioObject.bufferChannelCounts(aggregate.objectID, scope: kAudioObjectPropertyScopeInput)
         let outputCounts = try? AudioObject.bufferChannelCounts(outputDevice.objectID, scope: kAudioObjectPropertyScopeOutput)
         if captureCounts != captureLayout.bufferChannelCounts || outputCounts != outputLayout.bufferChannelCounts {
-            return "disposizione degli stream cambiata (cattura \(captureCounts ?? []), uscita \(outputCounts ?? []))"
+            let capture = "\(captureCounts ?? [])", output = "\(outputCounts ?? [])"
+            return String(localized: "disposizione degli stream cambiata (cattura \(capture), uscita \(output))")
         }
         let outputIDs = (try? DeviceStreams.streams(of: outputDevice.objectID, scope: kAudioObjectPropertyScopeOutput))?
             .map(\.objectID)
-        if outputIDs != outputStreams.map(\.objectID) { return "stream di uscita sostituiti" }
-        if !aggregate.activeSubDeviceIDs().isEmpty { return "l'aggregato di cattura ha acquisito un dispositivo" }
-        if link?.status().muted == true { return "uscita silenziata per cambio di frequenza" }
+        if outputIDs != outputStreams.map(\.objectID) { return String(localized: "stream di uscita sostituiti") }
+        if !aggregate.activeSubDeviceIDs().isEmpty {
+            return String(localized: "l'aggregato di cattura ha acquisito un dispositivo")
+        }
+        if link?.status().muted == true { return String(localized: "uscita silenziata per cambio di frequenza") }
         return nil
     }
 

@@ -59,9 +59,9 @@ struct PresetRowView: View {
                 presetMenuItems
             } label: {
                 HStack(spacing: 4) {
-                    Text(controller.activePreset?.name ?? "Nessun preset")
+                    Text(controller.activePreset?.name ?? String(localized: "Nessun preset"))
                     if controller.hasUnsavedChanges {
-                        Text("●").foregroundStyle(.orange).accessibilityLabel("modificato")
+                        Text(verbatim: "●").foregroundStyle(.orange).accessibilityLabel("modificato")
                     }
                 }
             }
@@ -115,7 +115,7 @@ struct PresetRowView: View {
         var options: [InlineConfirmation.Option] = []
         let message: String
         if let active {
-            message = "Le modifiche non salvate a «\(active.name)» andranno perse. Continuare?"
+            message = String(localized: "Le modifiche non salvate a «\(active.name)» andranno perse. Continuare?")
             if preset.id == active.id {
                 // Picking the preset being edited: only discards the edits.
                 options = [.destructive("Scarta modifiche") { apply(preset) }]
@@ -126,9 +126,9 @@ struct PresetRowView: View {
                 ]
             }
         } else {
-            message =
-                "Il suono attuale non è salvato in nessun preset e andrà perso. "
-                + "Puoi salvarlo come «\(controller.suggestedNewPresetName)». Continuare?"
+            let name = controller.suggestedNewPresetName
+            message = String(
+                localized: "Il suono attuale non è salvato in nessun preset e andrà perso. Puoi salvarlo come «\(name)». Continuare?")
             options = [
                 .standard("Salva come nuovo preset e cambia") { saveThenApply(preset) },
                 .destructive("Cambia senza salvare") { apply(preset) },
@@ -149,7 +149,7 @@ struct PresetRowView: View {
         do {
             if controller.activePreset == nil {
                 let saved = try controller.saveCurrentAsNewPreset(name: controller.suggestedNewPresetName)
-                note = .info("Suono salvato come «\(saved.name)»")
+                note = .info(String(localized: "Suono salvato come «\(saved.name)»"))
             } else {
                 try controller.saveCurrentToActivePreset()
             }
@@ -222,10 +222,10 @@ struct PresetRowView: View {
             switch editor {
             case .saveAs:
                 let preset = try controller.saveCurrentAsNewPreset(name: nameText)
-                note = .info("Salvato come «\(preset.name)»")
+                note = .info(String(localized: "Salvato come «\(preset.name)»"))
             case .rename(let id):
                 try controller.renamePreset(id: id, name: nameText)
-                note = .info("Preset rinominato")
+                note = .info(String(localized: "Preset rinominato"))
             }
             self.editor = nil
         } catch {
@@ -239,7 +239,7 @@ struct PresetRowView: View {
         note = nil
         do {
             try controller.saveCurrentToActivePreset()
-            if let name = controller.activePreset?.name { note = .info("Modifiche salvate in «\(name)»") }
+            if let name = controller.activePreset?.name { note = .info(String(localized: "Modifiche salvate in «\(name)»")) }
         } catch {
             note = .error(error.localizedDescription)
         }
@@ -250,7 +250,7 @@ struct PresetRowView: View {
         note = nil
         do {
             let copy = try controller.duplicatePreset(id: active.id)
-            note = .info("Creato «\(copy.name)» (selezionalo dal menu Preset)")
+            note = .info(String(localized: "Creato «\(copy.name)» (selezionalo dal menu Preset)"))
         } catch {
             note = .error(error.localizedDescription)
         }
@@ -269,16 +269,16 @@ struct PresetRowView: View {
         note = nil
         do {
             try controller.deletePreset(id: preset.id)
-            note = .info("Preset «\(preset.name)» eliminato; il suono non è cambiato")
+            note = .info(String(localized: "Preset «\(preset.name)» eliminato; il suono non è cambiato"))
         } catch {
             note = .error(error.localizedDescription)
         }
     }
 
     private func deleteMessage(for preset: EQPreset) -> String {
-        var text = "«\(preset.name)» non sarà più disponibile. Il suono attuale non cambia."
+        var text = String(localized: "«\(preset.name)» non sarà più disponibile. Il suono attuale non cambia.")
         if controller.presetAssignments.values.contains(preset.id) {
-            text += " Verrà tolto anche dalle regole per uscita."
+            text += " " + String(localized: "Verrà tolto anche dalle regole per uscita.")
         }
         return text
     }

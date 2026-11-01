@@ -104,8 +104,7 @@ final class ProcessTap {
         }
         Log.tap.error("Own process object (pid \(pid)) not found; refusing to create the tap")
         throw EngineError(
-            "Core Audio non riconosce ancora RoomEQ come processo audio: avvio annullato per evitare che "
-                + "RoomEQ catturi il proprio suono (effetto eco/feedback). Riprova tra qualche secondo.")
+            "Core Audio non riconosce ancora RoomEQ come processo audio: avvio annullato per evitare che RoomEQ catturi il proprio suono (effetto eco/feedback). Riprova tra qualche secondo.")
     }
 
     /// Builds the tap description. Kept in one place so creation and later

@@ -4,8 +4,10 @@
 //
 // Safety principle: whenever RoomEQ cannot deliver audio, it must release
 // the tap promptly (stop -> the tapped apps are unmuted) with a clear
-// Italian error, instead of keeping apps muted while outputting silence for
-// more than about a second.
+// (localized) error, instead of keeping apps muted while outputting silence
+// for more than about a second.
+
+import Foundation
 
 // MARK: - Health
 
@@ -21,13 +23,17 @@ public struct SplitHealthMonitor: Sendable {
         /// Most output cycles could not play (invalid, overwritten, gap).
         case badCycles
 
-        /// Italian message for the UI.
+        /// Message for the UI (localized).
         public var message: String {
             switch self {
-            case .outputStalled: "L'uscita audio si è bloccata: RoomEQ si ferma per non lasciare le app mute."
-            case .captureStalled: "La cattura dell'audio si è bloccata: RoomEQ si ferma per non lasciare le app mute."
-            case .ioStalled: "L'audio non viene più elaborato: RoomEQ si ferma per non lasciare le app mute."
-            case .badCycles: "L'audio non può essere riprodotto correttamente: RoomEQ si ferma per non lasciare le app mute."
+            case .outputStalled:
+                String(localized: "L'uscita audio si è bloccata: RoomEQ si ferma per non lasciare le app mute.")
+            case .captureStalled:
+                String(localized: "La cattura dell'audio si è bloccata: RoomEQ si ferma per non lasciare le app mute.")
+            case .ioStalled:
+                String(localized: "L'audio non viene più elaborato: RoomEQ si ferma per non lasciare le app mute.")
+            case .badCycles:
+                String(localized: "L'audio non può essere riprodotto correttamente: RoomEQ si ferma per non lasciare le app mute.")
             }
         }
     }
@@ -79,8 +85,8 @@ public struct SplitHealthMonitor: Sendable {
 /// stays constant; a trend means the clocks differ, which RoomEQ does not
 /// compensate (no resampling).
 public struct DriftMonitor: Sendable {
-    public static let message =
-        "Gli orologi di cattura e uscita non coincidono: RoomEQ non converte la frequenza, quindi si ferma."
+    public static let message = String(
+        localized: "Gli orologi di cattura e uscita non coincidono: RoomEQ non converte la frequenza, quindi si ferma.")
 
     public let sampleRate: Double
     public let bufferFrames: Int
@@ -168,7 +174,7 @@ public enum WarmupAnalysis {
 
 public enum DelayPolicy {
     /// Initial delay: worst measured need + one full block (covers the two
-    /// IOProcs being called in the other order). Fails (Italian message)
+    /// IOProcs being called in the other order). Fails (localized message)
     /// instead of clamping when it exceeds `maximum`.
     public static func initialDelay(maxNeed: Int64, block: Int, maximum: Int) -> Result<Int64, DelayError> {
         let delay = max(1, maxNeed + Int64(block))
@@ -180,8 +186,8 @@ public enum DelayPolicy {
         public let needed: Int64
         public let maximum: Int
         public var message: String {
-            "Il ritardo necessario (\(needed) frame) supera il massimo consentito (\(maximum) frame): "
-                + "RoomEQ non si avvia."
+            String(
+                localized: "Il ritardo necessario (\(needed) frame) supera il massimo consentito (\(maximum) frame): RoomEQ non si avvia.")
         }
     }
 }
@@ -196,8 +202,8 @@ public struct DelayAdaptation: Sendable {
         case fail
     }
 
-    public static let failureMessage =
-        "RoomEQ non riesce a mantenere l'audio continuo (interruzioni ripetute): si ferma per non lasciare le app mute."
+    public static let failureMessage = String(
+        localized: "RoomEQ non riesce a mantenere l'audio continuo (interruzioni ripetute): si ferma per non lasciare le app mute.")
 
     public let maximumIncreases: Int
     public private(set) var increases = 0

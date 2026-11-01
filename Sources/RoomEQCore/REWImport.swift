@@ -27,7 +27,7 @@ import Foundation
 public struct REWImportResult: Sendable, Equatable {
     /// PK filters in file order (OFF ones disabled), at most 16.
     public var bands: [EQBand]
-    /// Italian messages for everything skipped or suspicious.
+    /// Localized messages for everything skipped or suspicious.
     public var warnings: [String]
     /// Value of the "Equaliser:" line (nil if missing).
     public var equaliser: String?
@@ -45,14 +45,14 @@ public enum REWImportError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .unreadable(let name, let reason):
-            return "Impossibile leggere «\(name)»: \(reason)"
+            return String(localized: "Impossibile leggere «\(name)»: \(reason)")
         case .tooLarge(let name):
-            return "«\(name)» è troppo grande per essere un file di filtri REW"
+            return String(localized: "«\(name)» è troppo grande per essere un file di filtri REW")
         case .notText(let name):
-            return "«\(name)» non è un file di testo"
+            return String(localized: "«\(name)» non è un file di testo")
         case .noUsableFilters(let name, _):
-            return "«\(name)» non contiene filtri PK utilizzabili: filtri attuali invariati. "
-                + "In REW usa «Export filter settings as text» con l'equalizzatore «Generic»."
+            return String(
+                localized: "«\(name)» non contiene filtri PK utilizzabili: filtri attuali invariati. In REW usa «Export filter settings as text» con l'equalizzatore «Generic».")
         }
     }
 }
@@ -61,7 +61,7 @@ public enum REWImport {
     /// Larger files are refused without being parsed.
     public static let maximumFileSize = 1_000_000
 
-    /// Reads and parses `url`. Throws (Italian messages) if the file can't
+    /// Reads and parses `url`. Throws (localized messages) if the file can't
     /// be read or holds no usable PK filter. Blocking file I/O: call it off
     /// the main thread.
     public static func load(url: URL) throws -> REWImportResult {
@@ -124,18 +124,19 @@ public enum REWImport {
                 continue
             case .malformed:
                 filterLines += 1
-                warnings.append("Riga \(lineIndex + 1) non riconosciuta, ignorata: «\(shortened(line))»")
+                let lineNumber = lineIndex + 1
+                warnings.append(String(localized: "Riga \(lineNumber) non riconosciuta, ignorata: «\(shortened(line))»"))
             case .filter(let number, let body):
                 filterLines += 1
                 switch parseFilterBody(body) {
                 case .none:
                     continue
                 case .unsupported(let type):
-                    warnings.append("Filtro \(number): tipo \(type) non supportato, ignorato")
+                    warnings.append(String(localized: "Filtro \(number): tipo \(type) non supportato, ignorato"))
                 case .unreadable:
-                    warnings.append("Filtro \(number): valori non leggibili, ignorato")
+                    warnings.append(String(localized: "Filtro \(number): valori non leggibili, ignorato"))
                 case .invalid:
-                    warnings.append("Filtro \(number): frequenza o Q non validi, ignorato")
+                    warnings.append(String(localized: "Filtro \(number): frequenza o Q non validi, ignorato"))
                 case .peaking(let isOn, let frequency, let gain, let q):
                     candidates.append((number, EQBand(frequency: frequency, gain: gain, q: q, isEnabled: isOn)))
                 }
@@ -146,16 +147,17 @@ public enum REWImport {
         if let equaliser {
             if equaliser.lowercased() != "generic" {
                 warnings.insert(
-                    "Equalizzatore «\(equaliser)» invece di «Generic»: altri modelli possono definire i filtri "
-                        + "in modo diverso, verifica la risposta con una misura", at: 0)
+                    String(
+                        localized: "Equalizzatore «\(equaliser)» invece di «Generic»: altri modelli possono definire i filtri in modo diverso, verifica la risposta con una misura"),
+                    at: 0)
             }
         } else if filterLines > 0 {
             warnings.insert(
-                "Riga «Equaliser:» assente: verifica che il file sia stato esportato con l'equalizzatore «Generic»",
+                String(localized: "Riga «Equaliser:» assente: verifica che il file sia stato esportato con l'equalizzatore «Generic»"),
                 at: 0)
         }
         if filterLines == 0 {
-            warnings.append("Nessuna riga «Filter N: …» trovata: non sembra un file di filtri di REW")
+            warnings.append(String(localized: "Nessuna riga «Filter N: …» trovata: non sembra un file di filtri di REW"))
         }
         return REWImportResult(bands: bands, warnings: warnings, equaliser: equaliser, filterLineCount: filterLines)
     }
@@ -172,10 +174,9 @@ public enum REWImport {
         let dropped = candidates.indices.filter { !kept.contains($0) }.map { candidates[$0] }
         let droppedOn = dropped.filter { $0.band.isEnabled }.count
         let names = dropped.map { String($0.number) }.joined(separator: ", ")
-        var message = "Più di \(limit) filtri PK: importati \(limit) "
-        message += droppedOn == 0
-            ? "(tutti quelli attivi), ignorati \(dropped.count) filtri disattivati (\(names))"
-            : "(i primi \(limit) attivi), ignorati gli altri \(dropped.count) (\(names))"
+        let message = droppedOn == 0
+            ? String(localized: "Più di \(limit) filtri PK: importati \(limit) (tutti quelli attivi), ignorati \(dropped.count) filtri disattivati (\(names))")
+            : String(localized: "Più di \(limit) filtri PK: importati \(limit) (i primi \(limit) attivi), ignorati gli altri \(dropped.count) (\(names))")
         warnings.append(message)
         return candidates.indices.filter { kept.contains($0) }.map { candidates[$0].band }
     }

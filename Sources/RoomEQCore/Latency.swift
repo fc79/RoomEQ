@@ -81,14 +81,15 @@ public struct LatencyBreakdown: Sendable, Equatable {
     public var outputMilliseconds: Double { milliseconds(outputFrames) }
     public var totalMilliseconds: Double { milliseconds(totalFrames) }
 
-    /// One-line Italian summary for the UI, e.g.
+    /// One-line (localized) summary for the UI, e.g.
     /// "Stima 5,7 ms (RoomEQ 5,0 + uscita 0,7) a 44,1 kHz"; "—" when the
     /// sample rate is unknown (no milliseconds can be computed).
     public var summary: String {
         guard AudioFormatText.isKnownRate(sampleRate) else { return "—" }
-        let number = AudioFormatText.oneDecimal
-        return "Stima \(number(totalMilliseconds)) ms (RoomEQ \(number(roomEQMilliseconds)) + uscita "
-            + "\(number(outputMilliseconds))) a \(AudioFormatText.kilohertz(sampleRate))"
+        let number: (Double) -> String = AudioFormatText.oneDecimal
+        let total = number(totalMilliseconds), roomEQ = number(roomEQMilliseconds)
+        let output = number(outputMilliseconds), rate = AudioFormatText.kilohertz(sampleRate)
+        return String(localized: "Stima \(total) ms (RoomEQ \(roomEQ) + uscita \(output)) a \(rate)")
     }
 
     /// Detailed breakdown in frames, for logs and diagnostics.

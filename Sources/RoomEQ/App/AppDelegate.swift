@@ -10,13 +10,22 @@
 // our IOProc on the output device dies with the process.
 
 import AppKit
+import RoomEQCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let controller = AudioEngineController()
+    let controller: AudioEngineController
     /// The menu bar icon and its panel (StatusItemController.swift).
     private var statusItemController: StatusItemController?
     private var signalSources: [DispatchSourceSignal] = []
+
+    override init() {
+        // Numbers in texts follow the user's language and region from now on;
+        // first, because the controller already writes some on loading.
+        TextLocale.current = .autoupdatingCurrent
+        controller = AudioEngineController()
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.app.info("RoomEQ launched (pid \(ProcessInfo.processInfo.processIdentifier))")

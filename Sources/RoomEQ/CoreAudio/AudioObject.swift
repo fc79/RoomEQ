@@ -18,25 +18,33 @@ enum Log {
     static let devices = Logger(subsystem: subsystem, category: "devices")
 }
 
-/// A failed Core Audio call.
+/// A failed Core Audio call. The operation is a fixed (localizable) text,
+/// localized only when the error is shown.
 struct CoreAudioError: LocalizedError {
     let status: OSStatus
-    let operation: String
+    let operation: String.LocalizationValue
 
     /// "<operation>: operazione non riuscita (errore Core Audio 'xxxx')":
     /// neutral wording, since operation names have either gender.
     var errorDescription: String? {
-        "\(operation): operazione non riuscita (errore Core Audio \(describeOSStatus(status)))"
+        let name = String(localized: operation), code = describeOSStatus(status)
+        return String(localized: "\(name): operazione non riuscita (errore Core Audio \(code))")
     }
 
     /// Just "errore Core Audio 'xxxx'", for messages that already say what failed.
-    var shortDescription: String { "errore Core Audio \(describeOSStatus(status))" }
+    var shortDescription: String {
+        let code = describeOSStatus(status)
+        return String(localized: "errore Core Audio \(code)")
+    }
 }
 
 /// A logical engine error (not a Core Audio status).
 struct EngineError: LocalizedError {
     let message: String
-    init(_ message: String) { self.message = message }
+    /// A fixed text, localized here.
+    init(_ message: String.LocalizationValue) { self.message = String(localized: message) }
+    /// A message already localized elsewhere (e.g. by RoomEQCore).
+    init(message: String) { self.message = message }
     var errorDescription: String? { message }
 }
 
@@ -49,7 +57,7 @@ enum AudioObject {
         AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: element)
     }
 
-    static func check(_ status: OSStatus, _ operation: @autoclosure () -> String) throws {
+    static func check(_ status: OSStatus, _ operation: @autoclosure () -> String.LocalizationValue) throws {
         guard status == noErr else { throw CoreAudioError(status: status, operation: operation()) }
     }
 
@@ -60,7 +68,7 @@ enum AudioObject {
 
     /// Reads a fixed-size (plain C) value.
     static func read<T>(
-        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, initial: T, _ operation: String
+        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, initial: T, _ operation: String.LocalizationValue
     ) throws -> T {
         var address = address
         var value = initial
@@ -74,7 +82,7 @@ enum AudioObject {
 
     /// Reads a fixed-size value with a qualifier (e.g. PID -> process object).
     static func read<T, Q>(
-        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, qualifier: Q, initial: T, _ operation: String
+        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, qualifier: Q, initial: T, _ operation: String.LocalizationValue
     ) throws -> T {
         var address = address
         var value = initial
@@ -92,7 +100,7 @@ enum AudioObject {
 
     /// Reads an array of fixed-size values (e.g. a list of AudioObjectIDs).
     static func readArray<T>(
-        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, element: T, _ operation: String
+        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, element: T, _ operation: String.LocalizationValue
     ) throws -> [T] {
         var address = address
         var size: UInt32 = 0
@@ -109,7 +117,7 @@ enum AudioObject {
 
     /// Reads an array with a qualifier (e.g. owned objects filtered by class).
     static func readArray<T, Q>(
-        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, qualifier: Q, element: T, _ operation: String
+        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, qualifier: Q, element: T, _ operation: String.LocalizationValue
     ) throws -> [T] {
         var address = address
         var qualifier = qualifier
@@ -133,7 +141,7 @@ enum AudioObject {
     /// Reads a CFString property. Core Audio returns these retained (+1):
     /// "The caller is responsible for releasing the returned CFObject."
     static func readString(
-        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, _ operation: String
+        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, _ operation: String.LocalizationValue
     ) throws -> String {
         var address = address
         var value: Unmanaged<CFString>?
@@ -142,13 +150,16 @@ enum AudioObject {
             AudioObjectGetPropertyData(object, &address, 0, nil, &size, $0)
         }
         try check(status, operation)
-        guard let value else { throw EngineError("\(operation): valore mancante") }
+        guard let value else {
+            let name = String(localized: operation)
+            throw EngineError("\(name): valore mancante")
+        }
         return value.takeRetainedValue() as String
     }
 
     /// Writes a fixed-size value.
     static func write<T>(
-        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, value: T, _ operation: String
+        _ object: AudioObjectID, _ address: AudioObjectPropertyAddress, value: T, _ operation: String.LocalizationValue
     ) throws {
         var address = address
         var value = value

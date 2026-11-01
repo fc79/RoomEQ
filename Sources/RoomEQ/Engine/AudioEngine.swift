@@ -218,7 +218,7 @@ final class AudioEngine: @unchecked Sendable {
 
         case .deviceMayBeGone:
             guard !session.outputDeviceIsPresent() else { return }
-            let name = session.outputDevice?.name ?? "dispositivo di uscita"
+            let name = session.outputDevice?.name ?? String(localized: "dispositivo di uscita")
             Log.engine.error("Output device \(name, privacy: .public) disappeared; stopping")
             stopSession()
             emit(.deviceLost(sessionID: sessionID, deviceName: name))
@@ -227,7 +227,7 @@ final class AudioEngine: @unchecked Sendable {
             guard !session.restartRequested else { return }
             session.restartRequested = true
             Log.engine.error("IO stopped abnormally")
-            emit(.restartNeeded(sessionID: sessionID, reason: "l'audio si è interrotto in modo anomalo"))
+            emit(.restartNeeded(sessionID: sessionID, reason: String(localized: "l'audio si è interrotto in modo anomalo")))
 
         case .processListChanged:
             session.handleProcessListChanged()

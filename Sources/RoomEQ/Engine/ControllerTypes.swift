@@ -12,7 +12,7 @@ struct ExcludedApp: Identifiable, Hashable, Sendable {
     /// Installed app bundle (for the icon: `NSWorkspace.shared.icon(forFile: url.path)`),
     /// nil when not installed.
     let url: URL?
-    /// Italian warning(s) about this exclusion, one per line (REW; an ID so
+    /// Localized warning(s) about this exclusion, one per line (REW; an ID so
     /// short it would exclude many apps), else nil.
     let warning: String?
 
@@ -29,7 +29,7 @@ struct AppInfo: Identifiable, Hashable, Sendable {
     let isRunning: Bool
     /// Currently sending audio to an output (Core Audio process list).
     let isPlayingAudio: Bool
-    /// Italian warning if excluded (REW, very short ID), else nil. Prefer
+    /// Localized warning if excluded (REW, very short ID), else nil. Prefer
     /// `AudioEngineController.warningForExcluding(bundleID:)`, which also
     /// knows whether the ID belongs to an installed app.
     var warning: String? { ExclusionRules.warning(forBundleID: bundleID, isInstalledApp: url != nil) }
@@ -77,7 +77,7 @@ enum LaunchAtLoginStatus: Equatable, Sendable {
     case disabled
     case enabled
     /// Registered, but the user must allow it in System Settings ›
-    /// Generali › Elementi login (`openLoginItemsSettings()`).
+    /// Generali › Elementi login ed estensioni (`openLoginItemsSettings()`).
     case requiresApproval
     /// macOS can't find the app as a login item (typically: not in /Applications).
     case unavailable

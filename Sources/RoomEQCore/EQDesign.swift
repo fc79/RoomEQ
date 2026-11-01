@@ -1,7 +1,7 @@
 // From the band list to what the audio path runs (off the real-time thread).
 //
 // `EQDesign` validates every band for a given sample rate, computes the
-// biquad coefficients of the usable ones and collects an Italian message for
+// biquad coefficients of the usable ones and collects a localized message for
 // every band that cannot be processed (it is then simply left out: never
 // NaN, never an unstable filter). It also evaluates the combined curve for
 // drawing and for the "suggested preamp".
@@ -30,16 +30,16 @@ public struct EQDesign: Sendable, Equatable {
         var warnings: [String] = []
         var centers: [Double] = []
         for (index, band) in bands.enumerated() where band.isEnabled {
-            let name = "Filtro \(index + 1)"
+            let number = index + 1
             if sections.count >= EQBand.maximumCount {
-                let message = "\(name): oltre il limite di \(EQBand.maximumCount) filtri, ignorato"
+                let message = String(localized: "Filtro \(number): oltre il limite di \(EQBand.maximumCount) filtri, ignorato")
                 issues[band.id] = message
                 warnings.append(message)
                 continue
             }
             switch Self.validate(band, sampleRate: sampleRate) {
             case .failure(let reason):
-                let message = "\(name): \(reason.message), disattivato"
+                let message = String(localized: "Filtro \(number): \(reason.message), non applicato")
                 issues[band.id] = message
                 warnings.append(message)
             case .success(let coefficients):
@@ -70,22 +70,23 @@ public struct EQDesign: Sendable, Equatable {
         public var message: String {
             switch self {
             case .notANumber:
-                return "parametri non validi"
+                return String(localized: "parametri non validi")
             case .frequencyTooLow(let minimum):
-                return "frequenza sotto \(ItalianNumber.compact(minimum)) Hz"
+                return String(localized: "frequenza sotto \(NumberText.compact(minimum)) Hz")
             case .frequencyTooHigh(let maximum, let sampleRate):
-                return "frequenza troppo alta per \(ItalianNumber.compact(sampleRate / 1000, maxDecimals: 1)) kHz"
-                    + " (massimo \(ItalianNumber.compact(maximum.rounded(.down), maxDecimals: 0)) Hz)"
+                let rate = NumberText.compact(sampleRate / 1000, maxDecimals: 1)
+                let limit = NumberText.compact(maximum.rounded(.down), maxDecimals: 0)
+                return String(localized: "frequenza troppo alta per \(rate) kHz (massimo \(limit) Hz)")
             case .frequencyAboveLimit(let maximum):
-                return "frequenza sopra \(ItalianNumber.compact(maximum, maxDecimals: 0)) Hz"
+                return String(localized: "frequenza sopra \(NumberText.compact(maximum, maxDecimals: 0)) Hz")
             case .gainOutOfRange:
-                return "guadagno fuori dall'intervallo "
-                    + "\(ItalianNumber.compact(EQBand.gainRange.lowerBound))…+\(ItalianNumber.compact(EQBand.gainRange.upperBound)) dB"
+                let range = "\(NumberText.compact(EQBand.gainRange.lowerBound))…+\(NumberText.compact(EQBand.gainRange.upperBound)) dB"
+                return String(localized: "guadagno fuori dall'intervallo \(range)")
             case .qOutOfRange:
-                return "Q fuori dall'intervallo "
-                    + "\(ItalianNumber.compact(EQBand.qRange.lowerBound))…\(ItalianNumber.compact(EQBand.qRange.upperBound))"
+                let range = "\(NumberText.compact(EQBand.qRange.lowerBound))…\(NumberText.compact(EQBand.qRange.upperBound))"
+                return String(localized: "Q fuori dall'intervallo \(range)")
             case .unstable:
-                return "filtro instabile"
+                return String(localized: "filtro instabile")
             }
         }
     }

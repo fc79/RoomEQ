@@ -100,7 +100,7 @@ final class AudioEngineController {
     // MARK: Status
 
     private(set) var state: EngineState = .stopped
-    /// Engine error (start failed, too many restarts…), Italian; nil when
+    /// Engine error (start failed, too many restarts…), localized; nil when
     /// everything is fine. The panel shows it in red; with `.failed`,
     /// `statusLine` only says "Correzione non attiva". It can also hold a
     /// short notice while the correction goes on (a device was unplugged, a
@@ -113,7 +113,7 @@ final class AudioEngineController {
     private var transitionStatus = CorrectionStatusText.starting
     /// True when the last start failed in a way that looks like macOS
     /// refusing audio capture (privacy permission). `lastError` then holds an
-    /// Italian explanation with the System Settings path.
+    /// Localized explanation with the System Settings path.
     private(set) var audioCapturePermissionLikelyDenied = false
 
     var isRunning: Bool { state == .running }
@@ -214,7 +214,7 @@ final class AudioEngineController {
     private(set) var eqSampleRate: Double = AudioEngineController.idleSampleRate
     static let idleSampleRate: Double = 48_000
     /// Set at launch when the saved settings could not be read completely
-    /// (a backup copy was kept). Italian, for the UI; nil otherwise.
+    /// (a backup copy was kept). Localized, for the UI; nil otherwise.
     private(set) var settingsNotice: String?
 
     /// Result of the last REW import: warnings (skipped filters, other
@@ -231,13 +231,13 @@ final class AudioEngineController {
     /// Everything persisted (read-only for views: use the documented API).
     private(set) var settings: AppSettings
     /// Error of the last output action (choosing the macOS output, channel
-    /// pair, sample rate), Italian; nil when fine. Show it next to the
+    /// pair, sample rate), localized; nil when fine. Show it next to the
     /// output controls; `clearOutputError()` resets it.
     private(set) var outputError: String?
-    /// Error of the last "open at login" change, Italian; nil when fine.
+    /// Error of the last "open at login" change, localized; nil when fine.
     /// `clearLaunchAtLoginError()` resets it.
     private(set) var launchAtLoginError: String?
-    /// The settings could not be saved, Italian; nil when fine. Cleared by
+    /// The settings could not be saved, localized; nil when fine. Cleared by
     /// the next successful save or `clearSaveError()`.
     private(set) var saveError: String?
     /// Rates the output device offers (standard rates inside its ranges).
@@ -254,7 +254,7 @@ final class AudioEngineController {
     private(set) var candidateApps: [AppInfo] = []
     /// Excluded apps with display info (RoomEQ itself never listed).
     private(set) var excludedApps: [ExcludedApp] = []
-    /// Italian note about the last automatic per-output preset switch
+    /// Localized note about the last automatic per-output preset switch
     /// (e.g. "Uscita «Cuffie»: applicato il preset «Cuffie»"); cleared after
     /// 20 s, on an output change that switches nothing, or on a manual preset.
     private(set) var lastAutomaticPresetSwitch: String?
@@ -412,7 +412,7 @@ final class AudioEngineController {
 
     // MARK: The "Correzione" switch
 
-    /// One-line Italian status for the panel, e.g. "Correzione attiva ·
+    /// One-line localized status for the panel, e.g. "Correzione attiva ·
     /// «Quantum» · 6,3 ms", "Correzione spenta", "In pausa: nessuna
     /// correzione per «…»", "Avvio…", "Attendo che l'uscita «…» sia
     /// pronta…"; after an error "Correzione non attiva" (the detail is in
@@ -464,7 +464,7 @@ final class AudioEngineController {
         refreshDevices { [weak self] in
             guard let self, self.state == .starting, self.launchGeneration == generation else { return }
             guard let device = self.systemOutputDevice else {
-                let noOutput = "Nessun dispositivo di uscita di macOS disponibile"
+                let noOutput = String(localized: "Nessun dispositivo di uscita di macOS disponibile")
                 if !self.retryWithinWindow(after: noOutput) { self.fail(noOutput) }
                 return
             }
@@ -515,12 +515,12 @@ final class AudioEngineController {
     /// Applied live (validated against the active device).
     func setOutputChannelPair(_ pair: OutputChannelPair) {
         guard availableChannelPairs.contains(pair) else {
-            outputError = "Canali \(pair) non disponibili su questo dispositivo"
+            outputError = String(localized: "Canali \(pair.description) non disponibili su questo dispositivo")
             return
         }
         if let renderState {
             guard renderState.setOutputPair(pair) else {
-                outputError = "Canali \(pair) non disponibili sul dispositivo in uso"
+                outputError = String(localized: "Canali \(pair.description) non disponibili sul dispositivo in uso")
                 return
             }
             engine.refreshLatency()
@@ -807,7 +807,7 @@ final class AudioEngineController {
                 // The refresh may have paused, or started over on a new output.
                 guard let self, self.isWaitingForRetry, self.launchGeneration == generation else { return }
                 guard let device = self.systemOutputDevice else {
-                    let noOutput = "Nessun dispositivo di uscita di macOS disponibile"
+                    let noOutput = String(localized: "Nessun dispositivo di uscita di macOS disponibile")
                     if !self.retryWithinWindow(after: noOutput) { self.fail(noOutput) }
                     return
                 }
@@ -945,7 +945,7 @@ final class AudioEngineController {
             self.refreshDevices { [weak self] in
                 guard let self, self.state == .starting, self.launchGeneration == generation else { return }
                 guard let device = self.systemOutputDevice else {
-                    self.fail("Nessun dispositivo di uscita di macOS disponibile")
+                    self.fail(String(localized: "Nessun dispositivo di uscita di macOS disponibile"))
                     return
                 }
                 self.launch(on: device, statusText: CorrectionStatusText.starting)
@@ -972,12 +972,14 @@ final class AudioEngineController {
             refreshDevices { [weak self] in
                 guard let self, self.state == .starting, self.launchGeneration == generation else { return }
                 guard let device = self.systemOutputDevice, device.uid != lostUID else {
-                    self.fail("\(name) è stato scollegato")
+                    self.fail(String(localized: "«\(name)» è stato scollegato"))
                     return
                 }
                 self.openRetryWindow()  // the new output may not be ready yet
                 self.launch(on: device, statusText: CorrectionStatusText.starting)
-                if self.state == .starting { self.showEngineNotice("«\(name)» è stato scollegato: audio su «\(device.name)»") }
+                if self.state == .starting {
+                    self.showEngineNotice(String(localized: "«\(name)» è stato scollegato: audio su «\(device.name)»"))
+                }
             }
 
         case .latencyChanged(let sessionID, let latency):
@@ -995,8 +997,8 @@ final class AudioEngineController {
                 // going on (switched off / paused: nothing to report).
                 Log.app.error("Replaced session \(sessionID) had failed: \(message, privacy: .public)")
                 guard isCorrectionOn, state == .running || state == .starting else { return }
-                showEngineNotice("La sessione precedente si era interrotta: \(message)")
-                if !countAutomaticRestart() { fail("Troppi riavvii automatici (\(message))") }
+                showEngineNotice(String(localized: "La sessione precedente si era interrotta: \(message)"))
+                if !countAutomaticRestart() { fail(String(localized: "Troppi riavvii automatici (\(message))")) }
             }
         }
     }
@@ -1020,7 +1022,7 @@ final class AudioEngineController {
             return
         }
         guard countAutomaticRestart() else {
-            fail("Troppi riavvii automatici (\(reason))")
+            fail(String(localized: "Troppi riavvii automatici (\(reason))"))
             return
         }
         restartIfActive(reason: reason)
@@ -1029,7 +1031,7 @@ final class AudioEngineController {
     private func restartIfActive(reason: String) {
         guard state == .running || state == .starting else { return }
         guard let device = systemOutputDevice else {
-            fail("Nessun dispositivo di uscita di macOS disponibile")
+            fail(String(localized: "Nessun dispositivo di uscita di macOS disponibile"))
             return
         }
         Log.app.info("Restarting engine: \(reason, privacy: .public)")
@@ -1126,7 +1128,7 @@ final class AudioEngineController {
             if saveError != nil { saveError = nil }
         } catch {
             Log.app.error("Saving settings failed: \(error.localizedDescription, privacy: .public)")
-            saveError = "Impossibile salvare le impostazioni: \(error.localizedDescription)"
+            saveError = String(localized: "Impossibile salvare le impostazioni: \(error.localizedDescription)")
         }
     }
 
@@ -1140,10 +1142,13 @@ final class AudioEngineController {
             lastImportWarnings = imported.warnings
             lastImportError = nil
             let count = imported.bands.count
-            var summary = count == 1 ? "Importato 1 filtro" : "Importati \(count) filtri"
-            summary += " da «\(fileName)»"
+            var summary = count == 1
+                ? String(localized: "Importato 1 filtro da «\(fileName)»")
+                : String(localized: "Importati \(count) filtri da «\(fileName)»")
             let off = imported.bands.filter { !$0.isEnabled }.count
-            if off > 0 { summary += off == 1 ? " (1 disattivato)" : " (\(off) disattivati)" }
+            if off > 0 {
+                summary += " " + (off == 1 ? String(localized: "(1 disattivato)") : String(localized: "(\(off) disattivati)"))
+            }
             lastImportSummary = summary
             Log.app.info("REW import: \(count) bands, \(imported.warnings.count) warnings")
         case .failure(let error):
@@ -1153,7 +1158,8 @@ final class AudioEngineController {
                 lastImportWarnings = []
             }
             lastImportSummary = nil
-            lastImportError = (error as? LocalizedError)?.errorDescription ?? "Importazione non riuscita: \(error.localizedDescription)"
+            lastImportError = (error as? LocalizedError)?.errorDescription
+                ?? String(localized: "Importazione non riuscita: \(error.localizedDescription)")
             Log.app.error("REW import failed: \(error.localizedDescription, privacy: .public)")
         }
     }
@@ -1216,7 +1222,7 @@ extension AudioEngineController {
     /// A free name ("Senza nome", "Senza nome 2"…) for saving without asking.
     var suggestedNewPresetName: String { settings.suggestedNewPresetName }
 
-    // MARK: Presets — actions (errors: `PresetError`, Italian messages)
+    // MARK: Presets — actions (errors: `PresetError`, localized messages)
 
     /// Loads a preset (replaces the current sound: ask the user first if
     /// `hasUnsavedChanges`). Click-free (bands and preamp ramp).
@@ -1264,7 +1270,7 @@ extension AudioEngineController {
         return copy
     }
 
-    /// Italian error for a proposed name (live validation in a text field),
+    /// Localized error for a proposed name (live validation in a text field),
     /// nil if valid. `excluding`: the preset being renamed.
     func presetNameError(_ name: String, excluding id: UUID? = nil) -> String? {
         do {
@@ -1382,13 +1388,14 @@ extension AudioEngineController {
             showAutomaticNote(nil)
             saveSettings()  // lastOutputDeviceUID
         case .appliedPreset(let id):
-            showAutomaticNote("Uscita «\(output.name)»: applicato il preset «\(presetName(id) ?? "?")»")
+            let preset = presetName(id) ?? "?"
+            showAutomaticNote(String(localized: "Uscita «\(output.name)»: applicato il preset «\(preset)»"))
             Log.app.info("Per-output preset applied for \(output.uid, privacy: .public)")
             workingStateChanged()
         case .restoredEdits(let base, let assigned):
-            var note = "Modifiche recuperate per «\(output.name)»"
-            if let name = presetName(base) { note += " (basate su «\(name)»)" }
-            if let name = presetName(assigned) { note += "; il preset assegnato è «\(name)»" }
+            var note = String(localized: "Modifiche recuperate per «\(output.name)»")
+            if let name = presetName(base) { note += " " + String(localized: "(basate su «\(name)»)") }
+            if let name = presetName(assigned) { note += "; " + String(localized: "il preset assegnato è «\(name)»") }
             showAutomaticNote(note)
             Log.app.info("Per-output edits restored for \(output.uid, privacy: .public)")
             workingStateChanged()
@@ -1429,7 +1436,7 @@ extension AudioEngineController {
     /// output (engine restart if running). Errors in `outputError`.
     func setSystemOutputDevice(uid: String) {
         guard let device = outputDevices.first(where: { $0.uid == uid }) else {
-            outputError = "Dispositivo di uscita non trovato"
+            outputError = String(localized: "Dispositivo di uscita non trovato")
             return
         }
         guard uid != systemOutputDevice?.uid, !isChangingOutputDevice else { return }
@@ -1440,7 +1447,7 @@ extension AudioEngineController {
             do {
                 try AudioDevices.setDefaultOutputDevice(device.objectID)
             } catch {
-                message = "macOS non ha accettato «\(device.name)» come uscita (\(Self.reason(error)))"
+                message = String(localized: "macOS non ha accettato «\(device.name)» come uscita (\(Self.reason(error)))")
             }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -1469,21 +1476,21 @@ extension AudioEngineController {
     /// stopping. Errors in `outputError`.
     func setDeviceSampleRate(_ rate: Double) {
         guard let device = systemOutputDevice else {
-            outputError = "Nessun dispositivo di uscita di macOS disponibile"
+            outputError = String(localized: "Nessun dispositivo di uscita di macOS disponibile")
             return
         }
         switch state {
         case .starting:
-            outputError = "Attendi l'avvio della correzione"
+            outputError = String(localized: "Attendi l'avvio della correzione")
             return
         case .stopping:
-            outputError = "Attendi lo spegnimento della correzione"
+            outputError = String(localized: "Attendi lo spegnimento della correzione")
             return
         case .running, .stopped, .failed, .paused:
             break
         }
         guard SampleRates.contains(availableSampleRates, rate) else {
-            outputError = "«\(device.name)» non offre \(AudioFormatText.kilohertz(rate))"
+            outputError = String(localized: "«\(device.name)» non offre \(AudioFormatText.kilohertz(rate))")
             return
         }
         guard !isChangingSampleRate, !(currentSampleRate.map { SampleRates.same($0, rate) } ?? false) else { return }
@@ -1508,9 +1515,10 @@ extension AudioEngineController {
                     }
                     Thread.sleep(forTimeInterval: 0.05)
                 }
-                if !reached { message = "«\(device.name)» non è passato a \(AudioFormatText.kilohertz(rate))" }
+                if !reached { message = String(localized: "«\(device.name)» non è passato a \(AudioFormatText.kilohertz(rate))") }
             } catch {
-                message = "«\(device.name)» non accetta \(AudioFormatText.kilohertz(rate)) (\(Self.reason(error)))"
+                let rateText = AudioFormatText.kilohertz(rate), reason = Self.reason(error)
+                message = String(localized: "«\(device.name)» non accetta \(rateText) (\(reason))")
             }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -1577,7 +1585,7 @@ extension AudioEngineController {
     /// Bundle IDs passed to the engine (RoomEQ's own is added by the tap).
     var excludedBundleIDs: [String] { settings.excludedApps.map(\.bundleID) }
 
-    /// Warnings about the current exclusions (e.g. REW), Italian.
+    /// Warnings about the current exclusions (e.g. REW), localized.
     var exclusionWarnings: [String] { excludedApps.compactMap(\.warning) }
 
     /// Warning(s) to show BEFORE excluding `bundleID`, one per line, nil if
@@ -1587,7 +1595,7 @@ extension AudioEngineController {
         ExclusionRules.warning(forBundleID: bundleID, isInstalledApp: Self.installedApp(bundleID: bundleID) != nil)
     }
 
-    /// Excludes an app (errors: `ExclusionError`, Italian). Allowed with a
+    /// Excludes an app (errors: `ExclusionError`, localized). Allowed with a
     /// warning for REW and very short IDs (`warningForExcluding`). The
     /// installed app's own casing of the ID is stored when known (matching
     /// ignores case anyway). Applied live.
@@ -1709,7 +1717,7 @@ extension AudioEngineController {
         return processes.compactMap { process in
             let running: UInt32? = try? AudioObject.read(
                 process, AudioObject.address(kAudioProcessPropertyIsRunningOutput), initial: UInt32(0),
-                "Processo in riproduzione")
+                "Lettura stato di riproduzione del processo")
             guard running == 1 else { return nil }
             return AudioProcesses.bundleID(of: process)
         }
@@ -1746,18 +1754,19 @@ extension AudioEngineController {
     /// True when registered (enabled or waiting for approval).
     var launchAtLogin: Bool { launchAtLoginStatus == .enabled || launchAtLoginStatus == .requiresApproval }
 
-    /// Italian hint for the current status, nil when nothing to do.
+    /// Hint (localized) for the current status, nil when nothing to do.
     var launchAtLoginHint: String? {
         switch launchAtLoginStatus {
         case .requiresApproval:
-            return "Per completare, consenti RoomEQ in Impostazioni di Sistema › Generali › Elementi login."
+            return String(localized: "Per completare, consenti RoomEQ in Impostazioni di Sistema › Generali › Elementi login ed estensioni.")
         case .unavailable:
             return Self.isInApplicationsFolder
-                ? "macOS non trova RoomEQ tra gli elementi di login: disattiva e riattiva l'opzione."
-                : "macOS non trova RoomEQ tra gli elementi di login: copia RoomEQ nella cartella Applicazioni, aprilo da lì e riattiva l'opzione."
+                ? String(localized: "macOS non trova RoomEQ tra gli elementi di login: disattiva e riattiva l'opzione.")
+                : String(
+                    localized: "macOS non trova RoomEQ tra gli elementi di login: copia RoomEQ nella cartella Applicazioni, aprilo da lì e riattiva l'opzione.")
         case .enabled, .disabled:
             return Self.isInApplicationsFolder
-                ? nil : "L'apertura al login funziona meglio con RoomEQ nella cartella Applicazioni."
+                ? nil : String(localized: "L'apertura al login funziona meglio con RoomEQ nella cartella Applicazioni.")
         }
     }
 
@@ -1781,8 +1790,8 @@ extension AudioEngineController {
                 }
             } catch {
                 message = enabled
-                    ? "Impossibile attivare l'apertura al login: \(error.localizedDescription)"
-                    : "Impossibile disattivare l'apertura al login: \(error.localizedDescription)"
+                    ? String(localized: "Impossibile attivare l'apertura al login: \(error.localizedDescription)")
+                    : String(localized: "Impossibile disattivare l'apertura al login: \(error.localizedDescription)")
                 Log.app.error("Login item: \(error.localizedDescription, privacy: .public)")
             }
             let status = SMAppService.mainApp.status
@@ -1824,7 +1833,7 @@ extension AudioEngineController {
         if status != launchAtLoginStatus { launchAtLoginStatus = status }
     }
 
-    /// Opens System Settings › Generali › Elementi login.
+    /// Opens System Settings › Generali › Elementi login ed estensioni.
     func openLoginItemsSettings() {
         SMAppService.openSystemSettingsLoginItems()
     }

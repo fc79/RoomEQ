@@ -1,6 +1,8 @@
 // Tap format helpers: which tap channels to use, format text, and the
 // "no sample-rate conversion" guard.
 
+import Foundation
+
 /// Where the source L/R channels are: the output stream that holds the
 /// device's preferred stereo channels, and their positions inside it.
 public struct TapSource: Sendable, Equatable {
@@ -15,7 +17,7 @@ public enum TapSourceSelection {
     /// Locates `preferred` (1-based device channel numbers across all output
     /// streams, from kAudioDevicePropertyPreferredChannelsForStereo; nil ->
     /// 1/2) in streams with `streamChannelCounts` channels.
-    /// Refuses (Italian message) if L and R are in different streams, out of
+    /// Refuses (localized message) if L and R are in different streams, out of
     /// range, or the stream has fewer than 2 channels: RoomEQ never silently
     /// duplicates one channel onto both outputs.
     public static func locate(preferred: (Int, Int)?, streamChannelCounts: [Int]) -> Result<TapSource, TapSourceError> {
@@ -27,15 +29,16 @@ public enum TapSourceSelection {
             first += max(0, count)
         }
         guard left != right, let l = streamOf[left], let r = streamOf[right] else {
-            return .failure(TapSourceError(message: "I canali stereo del dispositivo (\(left)/\(right)) non sono validi: RoomEQ non si avvia."))
+            return .failure(TapSourceError(message: String(
+                localized: "I canali stereo del dispositivo (\(left)/\(right)) non sono validi: RoomEQ non si avvia.")))
         }
         guard l.stream == r.stream else {
             return .failure(TapSourceError(
-                message: "I canali stereo del dispositivo (\(left)/\(right)) sono in stream diversi: "
-                    + "RoomEQ non supporta ancora questo dispositivo."))
+                message: String(
+                    localized: "I canali stereo del dispositivo (\(left)/\(right)) sono in stream diversi: RoomEQ non supporta ancora questo dispositivo.")))
         }
         guard streamChannelCounts[l.stream] >= 2 else {
-            return .failure(TapSourceError(message: "Lo stream di uscita ha un solo canale: RoomEQ non si avvia."))
+            return .failure(TapSourceError(message: String(localized: "Lo stream di uscita ha un solo canale: RoomEQ non si avvia.")))
         }
         return .success(TapSource(stream: l.stream, left: l.offset, right: r.offset))
     }
@@ -45,7 +48,8 @@ public enum TapSourceSelection {
     }
 }
 
-/// Short format text for the UI, Italian style: "44,1 kHz · 2 ch".
+/// Short format text for the UI: "44,1 kHz · 2 ch", with the numbers of
+/// `TextLocale` (`NumberText`: Italian comma by default, "44.1 kHz" in the US).
 public enum AudioFormatText {
     public static func summary(sampleRate: Double, channels: Int) -> String {
         "\(kilohertz(sampleRate)) · \(channels) ch"
@@ -54,19 +58,24 @@ public enum AudioFormatText {
     /// "44,1 kHz", "48 kHz", "88,2 kHz"; "—" for an unknown rate (not
     /// finite, not positive, or absurdly large).
     public static func kilohertz(_ hertz: Double) -> String {
-        guard isKnownRate(hertz) else { return "—" }
-        let tenths = Int((hertz / 100).rounded())
-        let whole = tenths / 10, fraction = tenths % 10
-        return fraction == 0 ? "\(whole) kHz" : "\(whole),\(fraction) kHz"
+        kilohertz(hertz, locale: TextLocale.current)
     }
 
-    /// "5,7" (always one decimal, Italian comma, half away from zero);
-    /// "—" if not finite. No minus sign for values that round to zero.
+    static func kilohertz(_ hertz: Double, locale: Locale) -> String {
+        guard isKnownRate(hertz) else { return "—" }
+        return "\(NumberText.string(hertz / 1000, decimals: 0...1, locale: locale)) kHz"
+    }
+
+    /// "5,7" (always one decimal, `TextLocale`, half away from zero); "—"
+    /// if not finite or absurdly large (a meaningless long number). No minus
+    /// sign for values that round to zero.
     public static func oneDecimal(_ value: Double) -> String {
-        guard value.isFinite, abs(value) < 1e12 else { return "—" }  // `Int` of a huge value would trap
-        let tenths = Int((abs(value) * 10).rounded())
-        let sign = value < 0 && tenths > 0 ? "-" : ""
-        return "\(sign)\(tenths / 10),\(tenths % 10)"
+        oneDecimal(value, locale: TextLocale.current)
+    }
+
+    static func oneDecimal(_ value: Double, locale: Locale) -> String {
+        guard abs(value) < 1e12 else { return "—" }  // also NaN
+        return NumberText.string(value, decimals: 1...1, locale: locale)
     }
 
     /// "6,3 ms".
@@ -77,7 +86,7 @@ public enum AudioFormatText {
 
     /// "44,1 kHz", or "sconosciuta" for an unknown rate (error messages).
     public static func kilohertzOrUnknown(_ hertz: Double) -> String {
-        isKnownRate(hertz) ? kilohertz(hertz) : "sconosciuta"
+        isKnownRate(hertz) ? kilohertz(hertz) : String(localized: "sconosciuta")
     }
 
     /// "44,1 → 48 kHz" (or just "48 kHz" without a known old rate).
@@ -90,23 +99,23 @@ public enum AudioFormatText {
 /// RoomEQ never converts sample rates: the tap, the output device and the
 /// capture aggregate must all run at exactly the same rate.
 public enum SampleRateGuard {
-    /// nil if everything matches, otherwise the Italian error to show.
+    /// nil if everything matches, otherwise the (localized) error to show.
     public static func violation(tapRate: Double, deviceRate: Double, captureRate: Double) -> String? {
         let known = AudioFormatText.isKnownRate
         guard known(tapRate), known(deviceRate), known(captureRate) else {
             let text = AudioFormatText.kilohertzOrUnknown
-            return "Frequenza di campionamento sconosciuta (tap \(text(tapRate)), dispositivo \(text(deviceRate)), "
-                + "cattura \(text(captureRate))): RoomEQ non si avvia."
+            return String(
+                localized: "Frequenza di campionamento sconosciuta (tap \(text(tapRate)), dispositivo \(text(deviceRate)), cattura \(text(captureRate))): RoomEQ non si avvia.")
         }
         if !SampleRates.same(tapRate, deviceRate) {
-            return "La frequenza del tap (\(AudioFormatText.kilohertz(tapRate))) non coincide con quella del "
-                + "dispositivo (\(AudioFormatText.kilohertz(deviceRate))): RoomEQ non converte la frequenza, "
-                + "quindi non si avvia."
+            let tap = AudioFormatText.kilohertz(tapRate), device = AudioFormatText.kilohertz(deviceRate)
+            return String(
+                localized: "La frequenza del tap (\(tap)) non coincide con quella del dispositivo (\(device)): RoomEQ non converte la frequenza, quindi non si avvia.")
         }
         if !SampleRates.same(captureRate, deviceRate) {
-            return "La frequenza di cattura (\(AudioFormatText.kilohertz(captureRate))) non coincide con quella del "
-                + "dispositivo (\(AudioFormatText.kilohertz(deviceRate))): RoomEQ non converte la frequenza, "
-                + "quindi non si avvia."
+            let capture = AudioFormatText.kilohertz(captureRate), device = AudioFormatText.kilohertz(deviceRate)
+            return String(
+                localized: "La frequenza di cattura (\(capture)) non coincide con quella del dispositivo (\(device)): RoomEQ non converte la frequenza, quindi non si avvia.")
         }
         return nil
     }

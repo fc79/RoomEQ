@@ -15,8 +15,7 @@ struct OutputRulesView: View {
     var body: some View {
         CollapsibleSection(title: "Regole per uscita", summary: summary, storageKey: "rules") {
             Text(
-                "Per ogni uscita: «Preset attuale» non cambia il suono, un preset lo cambia, "
-                    + "«Nessuna correzione» fa da parte RoomEQ e l'audio va diretto, senza latenza."
+                "Per ogni uscita: «Preset attuale» non cambia il suono, un preset lo cambia; con «Nessuna correzione» RoomEQ si fa da parte e l'audio va diretto, senza latenza."
             )
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -37,9 +36,9 @@ struct OutputRulesView: View {
     private var summary: String {
         let count = controller.knownOutputs.filter { $0.assignment != nil }.count
         switch count {
-        case 0: return "Nessuna regola"
-        case 1: return "1 regola"
-        default: return "\(count) regole"
+        case 0: return String(localized: "Nessuna regola")
+        case 1: return String(localized: "1 regola")
+        default: return String(localized: "\(count) regole")
         }
     }
 
@@ -47,7 +46,7 @@ struct OutputRulesView: View {
         let isInUse = controller.outputDeviceOptions.contains { $0.uid == output.uid && $0.isDefault }
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(output.isConnected ? output.name : "\(output.name) (scollegato)")
+                Text(output.isConnected ? output.name : String(localized: "\(output.name) (scollegato)"))
                     .font(.body)
                     .foregroundStyle(output.isConnected ? .primary : .secondary)
                     .lineLimit(2)

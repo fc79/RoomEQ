@@ -62,7 +62,7 @@ enum DeviceStreams {
 
         let streamCount = Int(usage.pointee.mNumberStreams)
         guard streamCount == enabled.count else {
-            throw EngineError("Uso stream: \(streamCount) stream riportati, \(enabled.count) attesi")
+            throw EngineError("Uso stream: numero riportato \(streamCount), atteso \(enabled.count)")
         }
         let flags = (raw + headerSize).assumingMemoryBound(to: UInt32.self)
         for index in 0..<streamCount { flags[index] = enabled[index] ? 1 : 0 }
@@ -122,22 +122,22 @@ enum DeviceIO {
 
     /// `kAudioDevicePropertyLatency` in frames; 0 (with a warning) if unreadable.
     static func latency(_ device: AudioObjectID, scope: AudioObjectPropertyScope) -> Int {
-        frames(device, kAudioDevicePropertyLatency, scope, "device latency")
+        frames(device, kAudioDevicePropertyLatency, scope, "Latenza del dispositivo")
     }
 
     /// `kAudioDevicePropertySafetyOffset` in frames; 0 (with a warning) if unreadable.
     static func safetyOffset(_ device: AudioObjectID, scope: AudioObjectPropertyScope) -> Int {
-        frames(device, kAudioDevicePropertySafetyOffset, scope, "safety offset")
+        frames(device, kAudioDevicePropertySafetyOffset, scope, "Offset di sicurezza")
     }
 
     private static func frames(
         _ device: AudioObjectID, _ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope,
-        _ name: String
+        _ name: String.LocalizationValue
     ) -> Int {
         do {
             return Int(try AudioObject.read(device, AudioObject.address(selector, scope), initial: UInt32(0), name))
         } catch {
-            Log.engine.warning("Device \(device) \(name, privacy: .public) unreadable, using 0: \(error.localizedDescription, privacy: .public)")
+            Log.engine.warning("Device \(device) \(String(localized: name), privacy: .public) unreadable, using 0: \(error.localizedDescription, privacy: .public)")
             return 0
         }
     }
@@ -227,8 +227,7 @@ final class AggregateDevice {
             Thread.sleep(forTimeInterval: 0.05)
         }
         throw EngineError(
-            "Lo stream del tap non è comparso nell'aggregato di cattura (\(last.count) stream, "
-                + "attesi 1 con \(channels) canali)")
+            "Lo stream del tap non è comparso nell'aggregato di cattura (stream trovati: \(last.count); atteso: 1 stream, canali: \(channels))")
     }
 
     func destroy() {

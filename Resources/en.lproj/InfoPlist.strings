@@ -1,0 +1,3 @@
+/* English texts of the Info.plist keys shown by macOS (permission requests). */
+"NSAudioCaptureUsageDescription" = "RoomEQ captures the system audio to apply the room correction.";
+"NSMicrophoneUsageDescription" = "RoomEQ does not record the microphone: it uses the audio interface only as an output. macOS may ask for this permission because the audio interface also has inputs.";

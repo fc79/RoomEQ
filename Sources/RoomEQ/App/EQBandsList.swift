@@ -82,7 +82,7 @@ private struct EQBandRow: View {
             )
             .labelsHidden()
             .toggleStyle(.checkbox)
-            Text("F\(number)").font(.callout.weight(.semibold)).frame(width: 28, alignment: .leading)
+            Text(verbatim: "F\(number)").font(.callout.weight(.semibold)).frame(width: 28, alignment: .leading)
             Text(Format.frequency(band.frequency)).frame(width: 70, alignment: .trailing)
             Text(Format.signedDecibels(band.gain)).frame(width: 66, alignment: .trailing)
             Text(Format.qFactor(band.q)).frame(width: 62, alignment: .trailing)
@@ -145,10 +145,10 @@ private struct EQBandRow: View {
     }
 }
 
-/// Label + number field (Italian format, committed with Return or when
-/// leaving the field) + stepper. `step(+1 / -1)` returns the new value.
+/// Label + number field (locale's decimal separator, committed with Return
+/// or when leaving the field) + stepper. `step(+1 / -1)` returns the new value.
 private struct BandValueField: View {
-    let title: String
+    let title: LocalizedStringKey
     let unit: String
     let maxDecimals: Int
     let value: Double

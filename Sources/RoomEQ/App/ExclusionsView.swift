@@ -31,9 +31,9 @@ struct ExclusionsView: View {
     private var summary: String {
         let apps = controller.excludedApps
         switch apps.count {
-        case 0: return "Nessuna"
+        case 0: return String(localized: "Nessuna")
         case 1, 2: return apps.map(\.name).joined(separator: ", ")
-        default: return "\(apps.count) app"
+        default: return String(localized: "\(apps.count) app")
         }
     }
 
@@ -86,7 +86,7 @@ struct ExclusionsView: View {
                     request(app, presenter: confirmations)
                 } label: {
                     Label {
-                        Text(app.isPlayingAudio ? "\(app.name) · sta suonando" : app.name)
+                        Text(app.isPlayingAudio ? String(localized: "\(app.name) · sta suonando") : app.name)
                     } icon: {
                         Image(nsImage: controller.icon(forBundleID: app.bundleID).resized(toSide: 16))
                     }
@@ -127,9 +127,9 @@ struct ExclusionsView: View {
     /// open meanwhile (`FileChooser`, StatusItemController.swift).
     private func chooseApp() {
         let panel = NSOpenPanel()
-        panel.title = "Scegli un'app da escludere"
-        panel.message = "Scegli l'app il cui audio non deve passare da RoomEQ."
-        panel.prompt = "Escludi"
+        panel.title = String(localized: "Scegli un'app da escludere")
+        panel.message = String(localized: "Scegli l'app il cui audio non deve passare da RoomEQ.")
+        panel.prompt = String(localized: "Escludi")
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
@@ -141,7 +141,7 @@ struct ExclusionsView: View {
         fileChooser(panel) { [self] url in
             guard let url else { return }
             guard let app = controller.appInfo(forBundleURL: url) else {
-                note = .error("Questa app non ha un identificativo valido: non posso escluderla.")
+                note = .error(String(localized: "Questa app non ha un identificativo valido: non posso escluderla."))
                 return
             }
             request(app, presenter: presenter)

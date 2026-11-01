@@ -6,6 +6,12 @@
 // (PresetRowView, MetersViews, FiltersSectionView, OutputSectionView,
 // OutputRulesView, ExclusionsView, StartupSectionView); shared pieces are in
 // PanelComponents.swift.
+//
+// Language: the texts follow the macOS language (also the per-app choice in
+// System Settings › General › Language & Region): Italian (it.lproj, the
+// development texts) or English (en.lproj); any other language falls back to
+// English (CFBundleDevelopmentRegion "en" in Info.plist). Numbers follow the
+// user's locale (`TextLocale`, set by AppDelegate before anything is formatted).
 
 import SwiftUI
 

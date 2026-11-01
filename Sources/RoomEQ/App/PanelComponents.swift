@@ -1,9 +1,15 @@
 // Small reusable SwiftUI pieces and formatting helpers for the menu panel:
 // the collapsible section, dismissible messages and inline notes, the inline
-// confirmation card, the level meter and the Italian number formats.
+// confirmation card, the level meter and the number formats.
+//
+// Texts: fixed texts are localized (String(localized:) / LocalizedStringKey,
+// en.lproj and it.lproj in the app bundle, see tools/check-localizations.swift);
+// parameters that always receive a fixed text take a `String.LocalizationValue`,
+// parameters that receive composed or user text take an already localized `String`.
 
 import AppKit
 import Observation
+import RoomEQCore
 import SwiftUI
 
 // MARK: - Layout
@@ -22,10 +28,10 @@ struct CollapsibleSection<Content: View>: View {
     private let content: Content
 
     init(
-        title: String, summary: String? = nil, hasError: Bool = false, storageKey: String,
+        title: String.LocalizationValue, summary: String? = nil, hasError: Bool = false, storageKey: String,
         @ViewBuilder content: () -> Content
     ) {
-        self.title = title
+        self.title = String(localized: title)
         self.summary = summary
         self.hasError = hasError
         _isExpanded = AppStorage(wrappedValue: false, "panel.section.\(storageKey)")
@@ -62,9 +68,9 @@ struct CollapsibleSection<Content: View>: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(
-                ([title] + (summary.map { [$0] } ?? []) + (hasError ? ["contiene un errore"] : []))
+                ([title] + (summary.map { [$0] } ?? []) + (hasError ? [String(localized: "contiene un errore")] : []))
                     .joined(separator: ", "))
-            .accessibilityValue(isExpanded ? "aperta" : "chiusa")
+            .accessibilityValue(isExpanded ? String(localized: "aperta") : String(localized: "chiusa"))
             if isExpanded {
                 VStack(alignment: .leading, spacing: 8) {
                     content
@@ -139,7 +145,9 @@ extension NSImage {
 // them with it. Any view asks through the `ConfirmationPresenter` in the
 // environment (installed by MenuPanelView).
 
-/// A question with one or more actions; "Annulla" is always added.
+/// A question with one or more actions; "Annulla" is always added. The
+/// title and the option titles are fixed texts (localized here), the message
+/// is composed by the caller (already localized).
 struct InlineConfirmation: Identifiable {
     enum Role {
         /// The expected answer: gets the Return key.
@@ -160,20 +168,20 @@ struct InlineConfirmation: Identifiable {
     let message: String
     let options: [Option]
 
-    init(title: String, message: String = "", options: [Option]) {
-        self.title = title
+    init(title: String.LocalizationValue, message: String = "", options: [Option]) {
+        self.title = String(localized: title)
         self.message = message
         self.options = options
     }
 }
 
 extension InlineConfirmation.Option {
-    static func standard(_ title: String, action: @escaping () -> Void) -> Self {
-        Self(title: title, role: .standard, action: action)
+    static func standard(_ title: String.LocalizationValue, action: @escaping () -> Void) -> Self {
+        Self(title: String(localized: title), role: .standard, action: action)
     }
 
-    static func destructive(_ title: String, action: @escaping () -> Void) -> Self {
-        Self(title: title, role: .destructive, action: action)
+    static func destructive(_ title: String.LocalizationValue, action: @escaping () -> Void) -> Self {
+        Self(title: String(localized: title), role: .destructive, action: action)
     }
 }
 
@@ -297,7 +305,7 @@ struct LevelMeterRow: View {
 /// Red "CLIP" badge.
 struct ClipBadge: View {
     var body: some View {
-        Text("CLIP")
+        Text(verbatim: "CLIP")
             .font(.callout.weight(.bold))
             .foregroundStyle(.white)
             .padding(.horizontal, 6)
@@ -306,11 +314,16 @@ struct ClipBadge: View {
     }
 }
 
-// MARK: - Formatting (Italian conventions: decimal comma)
+// MARK: - Formatting
+//
+// Numbers follow the user's locale (`TextLocale.current`, set at launch to
+// the macOS language and region, like Apple's apps do): "−12,3 dB" with an
+// Italian region, "−12.3 dB" with a US one. They all go through
+// `NumberText` (RoomEQCore), the same formatter as the messages of
+// RoomEQCore, so digits and separators are the same everywhere. The minus
+// sign of the UI is the real one (U+2212); units are not translated.
 
 enum Format {
-    private static let locale = Locale(identifier: "it_IT")
-
     /// "−12,3 dB" (real minus sign), or "—" for silence (zero, −∞ or below
     /// -90 dB: such values would only show a meaningless long number).
     static func decibels(_ value: Float) -> String {
@@ -327,34 +340,27 @@ enum Format {
     /// Number with a fixed count of decimals and a real minus sign; a value
     /// that rounds to zero is shown without sign.
     static func signedNumber(_ value: Double, decimals: Int, plusSign: Bool = false) -> String {
-        guard value.isFinite else { return "—" }
-        let scale = pow(10, Double(decimals))
-        let rounded = (value * scale).rounded() / scale + 0  // "+ 0" turns -0 into 0
-        let text = abs(rounded).formatted(.number.precision(.fractionLength(decimals)).grouping(.never).locale(locale))
-        if rounded < 0 { return "\u{2212}\(text)" }
-        return plusSign && rounded > 0 ? "+\(text)" : text
+        NumberText.string(value, decimals: decimals...decimals, minusSign: "\u{2212}", plusSign: plusSign)
     }
 
     /// "58,8 Hz", "140 Hz", "1,20 kHz".
     static func frequency(_ hertz: Double) -> String {
         guard hertz.isFinite else { return "—" }
         if hertz >= 1000 {
-            let text = (hertz / 1000).formatted(.number.precision(.fractionLength(2)).grouping(.never).locale(locale))
-            return "\(text) kHz"
+            return "\(NumberText.string(hertz / 1000, decimals: 2...2)) kHz"
         }
-        let text = hertz.formatted(.number.precision(.fractionLength(0...1)).grouping(.never).locale(locale))
-        return "\(text) Hz"
+        return "\(NumberText.string(hertz, decimals: 0...1)) Hz"
     }
 
     /// "Q 10,66".
     static func qFactor(_ q: Double) -> String {
         guard q.isFinite else { return "Q —" }
-        return "Q \(q.formatted(.number.precision(.fractionLength(2)).grouping(.never).locale(locale)))"
+        return "Q \(NumberText.string(q, decimals: 2...2))"
     }
 
-    /// Number format of the editable fields (Italian decimal comma).
+    /// Number format of the editable fields (same rules as the texts).
     static func fieldStyle(maxDecimals: Int) -> FloatingPointFormatStyle<Double> {
-        .number.precision(.fractionLength(0...maxDecimals)).grouping(.never).locale(locale)
+        NumberText.style(decimals: 0...maxDecimals)
     }
 
     /// Friendly name for a bundle ID: the installed app's name when found,

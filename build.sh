@@ -11,9 +11,18 @@ cd "$(dirname "$0")"
 APP_NAME="RoomEQ"
 APP_DIR="build/${APP_NAME}.app"
 
+# The compiler also lists every localized text it finds (one .stringsdata per
+# source file): tools/check-localizations.swift checks them against the
+# English table and stops the build if a translation is missing.
+STRINGS_DIR="$(pwd)/.build/localized-strings"
+
 echo "==> Compiling (release)…"
-swift build -c release --product "${APP_NAME}"
+swift build -c release --product "${APP_NAME}" \
+    -Xswiftc -emit-localized-strings -Xswiftc -emit-localized-strings-path -Xswiftc "${STRINGS_DIR}"
 BIN_DIR="$(swift build -c release --show-bin-path)"
+
+echo "==> Checking translations…"
+swift tools/check-localizations.swift "${STRINGS_DIR}"
 
 echo "==> Assembling ${APP_DIR}…"
 rm -rf "${APP_DIR}"
@@ -22,6 +31,14 @@ cp "${BIN_DIR}/${APP_NAME}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 cp "Resources/Info.plist" "${APP_DIR}/Contents/Info.plist"
 plutil -lint "${APP_DIR}/Contents/Info.plist" >/dev/null
 cp "Resources/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
+# Texts: it.lproj (Italian, the texts of the code) and en.lproj (English).
+for LPROJ in Resources/*.lproj; do
+    mkdir -p "${APP_DIR}/Contents/Resources/$(basename "${LPROJ}")"
+    for STRINGS in "${LPROJ}"/*.strings; do
+        plutil -lint "${STRINGS}" >/dev/null
+        cp "${STRINGS}" "${APP_DIR}/Contents/Resources/$(basename "${LPROJ}")/"
+    done
+done
 
 echo "==> Signing (ad-hoc)…"
 # Ad-hoc signature: no developer certificate needed. Note that macOS ties

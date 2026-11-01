@@ -38,7 +38,7 @@ enum AudioDevices {
 
     static func name(of device: AudioObjectID) -> String {
         (try? AudioObject.readString(device, AudioObject.address(kAudioObjectPropertyName), "Lettura nome"))
-            ?? "Dispositivo \(device)"
+            ?? String(localized: "Dispositivo \(device)")
     }
 
     static func isAlive(_ device: AudioObjectID) -> Bool {

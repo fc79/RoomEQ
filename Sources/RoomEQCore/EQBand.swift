@@ -115,21 +115,3 @@ public enum Preamp {
         clamp(decibels).map { Float(Decibels.linear(fromDecibels: $0)) }
     }
 }
-
-/// Small Italian number formatting for messages produced in RoomEQCore
-/// (decimal comma). The UI has its own, locale-based formatter.
-enum ItalianNumber {
-    static func format(_ value: Double, decimals: Int) -> String {
-        guard value.isFinite else { return value.isNaN ? "non valido" : (value > 0 ? "∞" : "-∞") }
-        return String(format: "%.\(max(0, decimals))f", value).replacingOccurrences(of: ".", with: ",")
-    }
-
-    /// "58,8" / "1000" style: up to `maxDecimals`, trailing zeros removed.
-    static func compact(_ value: Double, maxDecimals: Int = 2) -> String {
-        var text = format(value, decimals: maxDecimals)
-        guard text.contains(",") else { return text }
-        while text.hasSuffix("0") { text.removeLast() }
-        if text.hasSuffix(",") { text.removeLast() }
-        return text
-    }
-}

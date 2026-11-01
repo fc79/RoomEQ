@@ -1,0 +1,354 @@
+/*
+  English texts of RoomEQ.
+
+  Key = the Italian text written in the code (development language), with the
+  values written as format specifiers: %@ (text), %lld / %llu / %u (whole
+  numbers). The English text must keep the same specifiers, in the same order
+  (or numbered: %1$@, %2$@…). Numbers arrive already formatted (decimal
+  separator of the user's region); units (dB, Hz, kHz, ms) are not translated.
+  Quotes: «» in Italian, “” in English.
+
+  Checked at every build by tools/check-localizations.swift (missing keys,
+  mismatched specifiers). Italian needs no table: the key is the text.
+*/
+
+/* Panel and sections */
+"Correzione" = "Correction";
+"Esci" = "Quit";
+"Riprova" = "Retry";
+"contiene un errore" = "contains an error";
+"aperta" = "expanded";
+"chiusa" = "collapsed";
+"Chiudi il messaggio" = "Dismiss message";
+"Annulla" = "Cancel";
+
+/* Preset row */
+"Preset" = "Preset";
+"Nessun preset" = "No preset";
+"modificato" = "modified";
+"Salva" = "Save";
+"Salva il suono attuale come nuovo preset" = "Save the current sound as a new preset";
+"Salva le modifiche nel preset attuale" = "Save the changes to the current preset";
+"Salva come…" = "Save As…";
+"Rinomina…" = "Rename…";
+"Duplica" = "Duplicate";
+"Elimina…" = "Delete…";
+"Le modifiche non salvate a «%@» andranno perse. Continuare?" = "Unsaved changes to “%@” will be lost. Continue?";
+"Scarta modifiche" = "Discard Changes";
+"Salva e cambia" = "Save and Switch";
+"Cambia senza salvare" = "Switch Without Saving";
+"Il suono attuale non è salvato in nessun preset e andrà perso. Puoi salvarlo come «%@». Continuare?" = "The current sound is not saved in any preset and will be lost. You can save it as “%@”. Continue?";
+"Salva come nuovo preset e cambia" = "Save as New Preset and Switch";
+"Modifiche non salvate" = "Unsaved Changes";
+"Suono salvato come «%@»" = "Sound saved as “%@”";
+"Nome del nuovo preset" = "Name of the new preset";
+"Nuovo nome del preset" = "New name of the preset";
+"Nome" = "Name";
+"Rinomina" = "Rename";
+"Salvato come «%@»" = "Saved as “%@”";
+"Preset rinominato" = "Preset renamed";
+"Modifiche salvate in «%@»" = "Changes saved to “%@”";
+"Creato «%@» (selezionalo dal menu Preset)" = "Created “%@” (choose it from the Preset menu)";
+"Eliminare il preset «%@»?" = "Delete Preset “%@”?";
+"Elimina" = "Delete";
+"Preset «%@» eliminato; il suono non è cambiato" = "Preset “%@” deleted; the sound has not changed";
+"«%@» non sarà più disponibile. Il suono attuale non cambia." = "“%@” will no longer be available. The current sound does not change.";
+"Verrà tolto anche dalle regole per uscita." = "It will also be removed from the output rules.";
+
+/* Filters & preamp */
+"Filtri e preamp" = "Filters & Preamp";
+"Nessun filtro" = "No filters";
+"1 filtro, non attivo" = "1 filter, disabled";
+"1 filtro" = "1 filter";
+"%lld di %lld filtri" = "%lld of %lld filters";
+"%lld filtri" = "%lld filters";
+"%@ · preamp %@" = "%@ · preamp %@";
+"Preamp" = "Preamp";
+"La curva amplifica fino a %@: preamp consigliato %@" = "The curve boosts up to %@: suggested preamp %@";
+"Applica" = "Apply";
+"Importa da REW…" = "Import from REW…";
+"Importazione in corso…" = "Importing…";
+"I filtri importati sostituiscono il suono attuale: le modifiche non salvate a «%@» andranno perse." = "The imported filters replace the current sound: unsaved changes to “%@” will be lost.";
+"I filtri importati sostituiscono il suono attuale, che non è salvato in nessun preset e andrà perso." = "The imported filters replace the current sound, which is not saved in any preset and will be lost.";
+"Importare da REW?" = "Import from REW?";
+"Scegli il file…" = "Choose File…";
+"%lld avvisi sull'importazione" = "%lld import warnings";
+"Importa filtri da REW" = "Import Filters from REW";
+"Scegli il file di testo esportato da REW (Export filter settings as text)." = "Choose the text file exported from REW (Export filter settings as text).";
+"Importa" = "Import";
+"Nessun filtro: aggiungine uno o importa da REW." = "No filters: add one or import from REW.";
+"Aggiungi filtro" = "Add Filter";
+"Filtro F%lld attivo" = "Filter F%lld enabled";
+"Modifica il filtro" = "Edit the filter";
+"Modifica filtro F%lld" = "Edit filter F%lld";
+"Elimina il filtro" = "Delete the filter";
+"Elimina filtro F%lld" = "Delete filter F%lld";
+"Frequenza" = "Frequency";
+"Guadagno" = "Gain";
+"Q" = "Q";
+"Grafico della curva di correzione" = "Correction curve graph";
+
+/* Levels and diagnostics */
+"Clic per azzerare" = "Click to reset";
+"Saturazione: clic per azzerare" = "Clipping: click to reset";
+"La correzione supera 0 dB di %@" = "The correction exceeds 0 dB by %@";
+"La correzione supera 0 dB" = "The correction exceeds 0 dB";
+"Preamp a %@" = "Set Preamp to %@";
+"Il segnale arriva già oltre 0 dB (%@) dall'app: non dipende da RoomEQ" = "The signal already arrives above 0 dB (%@) from the app: not caused by RoomEQ";
+"Il segnale arriva già oltre 0 dB dall'app: non dipende da RoomEQ" = "The signal already arrives above 0 dB from the app: not caused by RoomEQ";
+"Diagnostica" = "Diagnostics";
+"Latenza: %@" = "Latency: %@";
+"Formato tap: %@" = "Tap format: %@";
+"Ritardo anello: %lld frame (%@)" = "Ring buffer delay: %lld frames (%@)";
+"Underrun %llu · buchi %llu · sovrascritti %llu" = "Underruns %llu · gaps %llu · overwritten %llu";
+"Clip: ingresso %llu · correzione %llu · uscita %llu" = "Clips: input %llu · correction %llu · output %llu";
+"Sovraccarichi (xrun): uscita %llu · cattura %llu" = "Overloads (xruns): output %llu · capture %llu";
+"Campioni NaN: %llu · cicli non validi: %llu" = "NaN samples: %llu · invalid cycles: %llu";
+"Ingresso L %@ · R %@\nUscita L %@ · R %@" = "Input L %@ · R %@\nOutput L %@ · R %@";
+"Gli altri valori compaiono quando la correzione è attiva." = "The other values appear while the correction is on.";
+"Stima %@ ms (RoomEQ %@ + uscita %@) a %@" = "Estimated %@ ms (RoomEQ %@ + output %@) at %@";
+
+/* Output & interface */
+"Uscita e scheda" = "Output & Interface";
+"buffer %lld" = "buffer %lld";
+"Uscita audio" = "Audio output";
+"Canali" = "Channels";
+"Canali %@" = "Channels %@";
+"Frequenza di campionamento" = "Sample rate";
+"Vale per tutte le app, compreso Ableton." = "Applies to every app, Ableton included.";
+"Cambiare la frequenza di campionamento a %@?" = "Change Sample Rate to %@?";
+"RoomEQ si riavvia per un istante." = "RoomEQ restarts for a moment.";
+"Cambia" = "Change";
+"Buffer" = "Buffer";
+"Integrato" = "Built-in";
+"Virtuale" = "Virtual";
+"Aggregato" = "Aggregate";
+"Altro" = "Other";
+
+/* Output rules */
+"Regole per uscita" = "Output Rules";
+"Per ogni uscita: «Preset attuale» non cambia il suono, un preset lo cambia; con «Nessuna correzione» RoomEQ si fa da parte e l'audio va diretto, senza latenza." = "For each output: “Current preset” leaves the sound as it is, a preset changes it; with “No correction” RoomEQ steps aside and the audio goes straight to the output, with no latency.";
+"Nessuna uscita trovata" = "No outputs found";
+"Nessuna regola" = "No rules";
+"1 regola" = "1 rule";
+"%lld regole" = "%lld rules";
+"%@ (scollegato)" = "%@ (disconnected)";
+"in uso" = "in use";
+"modifiche non salvate ricordate" = "unsaved changes kept";
+"Impostazione per %@" = "Rule for %@";
+"Preset attuale" = "Current preset";
+"Nessuna correzione" = "No correction";
+
+/* Excluded apps */
+"App escluse" = "Excluded Apps";
+"Nessuna app esclusa" = "No excluded apps";
+"Nessuna" = "None";
+"%lld app" = "%lld apps";
+"non installata" = "not installed";
+"Smetti di escludere «%@»" = "Stop excluding “%@”";
+"Rimuovi «%@» dalle app escluse" = "Remove “%@” from the excluded apps";
+"Nessun'altra app aperta" = "No other open apps";
+"%@ · sta suonando" = "%@ · playing";
+"Scegli dalle Applicazioni…" = "Choose from Applications…";
+"Aggiungi app…" = "Add App…";
+"Escludere «%@»?" = "Exclude “%@”?";
+"Escludi" = "Exclude";
+"Scegli un'app da escludere" = "Choose an App to Exclude";
+"Scegli l'app il cui audio non deve passare da RoomEQ." = "Choose the app whose audio must not go through RoomEQ.";
+"Questa app non ha un identificativo valido: non posso escluderla." = "This app has no valid identifier: it cannot be excluded.";
+"Identificativo dell'app non valido." = "Invalid app identifier.";
+"RoomEQ è sempre escluso automaticamente." = "RoomEQ is always excluded automatically.";
+"«%@» è già esclusa." = "“%@” is already excluded.";
+"Escludendo REW, le misure non passeranno da RoomEQ" = "With REW excluded, measurements will not go through RoomEQ";
+"«%@» escluderebbe molte app (tutte quelle il cui identificativo inizia così)" = "“%@” would exclude many apps (all those whose identifier starts like this)";
+
+/* Startup */
+"Avvio" = "Startup";
+"All'accesso" = "At login";
+"Manuale" = "Manual";
+"Apri all'accesso" = "Open at login";
+"Apri Elementi login ed estensioni" = "Open Login Items & Extensions";
+"Per completare, consenti RoomEQ in Impostazioni di Sistema › Generali › Elementi login ed estensioni." = "To finish, allow RoomEQ in System Settings › General › Login Items & Extensions.";
+"macOS non trova RoomEQ tra gli elementi di login: disattiva e riattiva l'opzione." = "macOS cannot find RoomEQ among the login items: turn the option off and on again.";
+"macOS non trova RoomEQ tra gli elementi di login: copia RoomEQ nella cartella Applicazioni, aprilo da lì e riattiva l'opzione." = "macOS cannot find RoomEQ among the login items: copy RoomEQ to the Applications folder, open it from there and turn the option on again.";
+"L'apertura al login funziona meglio con RoomEQ nella cartella Applicazioni." = "Opening at login works best with RoomEQ in the Applications folder.";
+"Impossibile attivare l'apertura al login: %@" = "Could not turn on opening at login: %@";
+"Impossibile disattivare l'apertura al login: %@" = "Could not turn off opening at login: %@";
+
+/* Status line and menu bar icon */
+"Correzione spenta" = "Correction off";
+"Correzione non attiva" = "Correction not active";
+"Correzione attiva" = "Correction on";
+"Correzione in avvio" = "Correction starting";
+"Correzione in pausa per questa uscita" = "Correction paused for this output";
+"RoomEQ: errore" = "RoomEQ: error";
+"Avvio…" = "Starting…";
+"Riavvio…" = "Restarting…";
+"Spegnimento…" = "Turning off…";
+"Riprovo dopo il cambio di frequenza…" = "Retrying after the sample rate change…";
+"In pausa: nessuna correzione per questa uscita" = "Paused: no correction for this output";
+"In pausa: nessuna correzione per «%@»" = "Paused: no correction for “%@”";
+"Attendo un'uscita audio…" = "Waiting for an audio output…";
+"Attendo che l'uscita «%@» sia pronta…" = "Waiting for the output “%@” to be ready…";
+"Riprendo su «%@»…" = "Resuming on “%@”…";
+"«%@» scollegato, passo all'uscita di macOS…" = "“%@” disconnected, switching to the macOS output…";
+
+/* Presets (RoomEQCore) */
+"Senza nome" = "Untitled";
+"%@ copia" = "%@ copy";
+"Il nome del preset non può essere vuoto." = "The preset name cannot be empty.";
+"Il nome del preset può avere al massimo %lld caratteri." = "The preset name can have at most %lld characters.";
+"Esiste già un preset chiamato «%@»." = "A preset named “%@” already exists.";
+"Preset non trovato." = "Preset not found.";
+"Non puoi eliminare l'unico preset rimasto." = "You cannot delete the only remaining preset.";
+"Nessun preset attivo in cui salvare: salva come nuovo preset." = "No active preset to save to: save as a new preset.";
+
+/* Settings */
+"Parte delle impostazioni salvate non era leggibile: ne ho conservato una copia e ho caricato il resto." = "Part of the saved settings could not be read: a copy was kept and the rest was loaded.";
+"Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho caricato i filtri iniziali." = "The saved settings could not be read: a copy was kept and the initial filters were loaded.";
+"Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho recuperato i filtri della versione precedente." = "The saved settings could not be read: a copy was kept and the filters of the previous version were recovered.";
+"Impossibile salvare le impostazioni: %@" = "Could not save the settings: %@";
+
+/* REW import */
+"Impossibile leggere «%@»: %@" = "Could not read “%@”: %@";
+"«%@» è troppo grande per essere un file di filtri REW" = "“%@” is too large to be a REW filter file";
+"«%@» non è un file di testo" = "“%@” is not a text file";
+"«%@» non contiene filtri PK utilizzabili: filtri attuali invariati. In REW usa «Export filter settings as text» con l'equalizzatore «Generic»." = "“%@” contains no usable PK filters: current filters unchanged. In REW, use “Export filter settings as text” with the “Generic” equalizer.";
+"Riga %lld non riconosciuta, ignorata: «%@»" = "Line %lld not recognized, ignored: “%@”";
+"Filtro %lld: tipo %@ non supportato, ignorato" = "Filter %lld: type %@ not supported, ignored";
+"Filtro %lld: valori non leggibili, ignorato" = "Filter %lld: unreadable values, ignored";
+"Filtro %lld: frequenza o Q non validi, ignorato" = "Filter %lld: invalid frequency or Q, ignored";
+"Equalizzatore «%@» invece di «Generic»: altri modelli possono definire i filtri in modo diverso, verifica la risposta con una misura" = "Equalizer “%@” instead of “Generic”: other models may define the filters differently, check the response with a measurement";
+"Riga «Equaliser:» assente: verifica che il file sia stato esportato con l'equalizzatore «Generic»" = "No “Equaliser:” line: check that the file was exported with the “Generic” equalizer";
+"Nessuna riga «Filter N: …» trovata: non sembra un file di filtri di REW" = "No “Filter N: …” lines found: this does not look like a REW filter file";
+"Più di %lld filtri PK: importati %lld (tutti quelli attivi), ignorati %lld filtri disattivati (%@)" = "More than %lld PK filters: imported %lld (all the enabled ones); disabled filters ignored: %lld (%@)";
+"Più di %lld filtri PK: importati %lld (i primi %lld attivi), ignorati gli altri %lld (%@)" = "More than %lld PK filters: imported %lld (the first %lld enabled ones); others ignored: %lld (%@)";
+"Importato 1 filtro da «%@»" = "Imported 1 filter from “%@”";
+"Importati %lld filtri da «%@»" = "Imported %lld filters from “%@”";
+"(1 disattivato)" = "(1 disabled)";
+"(%lld disattivati)" = "(%lld disabled)";
+"Importazione non riuscita: %@" = "Import failed: %@";
+
+/* Filter validation (RoomEQCore) */
+"Filtro %lld: oltre il limite di %lld filtri, ignorato" = "Filter %lld: over the limit of %lld filters, ignored";
+"Filtro %lld: %@, non applicato" = "Filter %lld: %@, not applied";
+"parametri non validi" = "invalid parameters";
+"frequenza sotto %@ Hz" = "frequency below %@ Hz";
+"frequenza troppo alta per %@ kHz (massimo %@ Hz)" = "frequency too high for %@ kHz (maximum %@ Hz)";
+"frequenza sopra %@ Hz" = "frequency above %@ Hz";
+"guadagno fuori dall'intervallo %@" = "gain outside the range %@";
+"Q fuori dall'intervallo %@" = "Q outside the range %@";
+"filtro instabile" = "unstable filter";
+"non valido" = "invalid";
+
+/* Controller messages */
+"Nessun dispositivo di uscita di macOS disponibile" = "No macOS output device available";
+"Canali %@ non disponibili su questo dispositivo" = "Channels %@ not available on this device";
+"Canali %@ non disponibili sul dispositivo in uso" = "Channels %@ not available on the device in use";
+"«%@» è stato scollegato" = "“%@” was disconnected";
+"«%@» è stato scollegato: audio su «%@»" = "“%@” was disconnected: audio on “%@”";
+"La sessione precedente si era interrotta: %@" = "The previous session had stopped: %@";
+"Troppi riavvii automatici (%@)" = "Too many automatic restarts (%@)";
+"Uscita «%@»: applicato il preset «%@»" = "Output “%@”: preset “%@” applied";
+"Modifiche recuperate per «%@»" = "Changes recovered for “%@”";
+"(basate su «%@»)" = "(based on “%@”)";
+"il preset assegnato è «%@»" = "the assigned preset is “%@”";
+"Dispositivo di uscita non trovato" = "Output device not found";
+"macOS non ha accettato «%@» come uscita (%@)" = "macOS did not accept “%@” as the output (%@)";
+"Attendi l'avvio della correzione" = "Wait for the correction to start";
+"Attendi lo spegnimento della correzione" = "Wait for the correction to turn off";
+"«%@» non offre %@" = "“%@” does not offer %@";
+"«%@» non è passato a %@" = "“%@” did not switch to %@";
+"«%@» non accetta %@ (%@)" = "“%@” does not accept %@ (%@)";
+
+/* Engine errors */
+"%@ ha meno di 2 canali di uscita" = "%@ has fewer than 2 output channels";
+"Dispositivo di uscita non trovato (%@)" = "Output device not found (%@)";
+"Formato del tap non supportato: %@" = "Unsupported tap format: %@";
+"L'aggregato di cattura contiene un dispositivo: avvio annullato" = "The capture aggregate contains a device: start canceled";
+"Formato dello stream di cattura non supportato: %@" = "Unsupported capture stream format: %@";
+"Disposizione buffer inattesa: cattura %@, uscita %@" = "Unexpected buffer layout: capture %@, output %@";
+"Formato di uscita non supportato: %@" = "Unsupported output format: %@";
+"Creazione delle callback: ID mancante" = "Creating the callbacks: missing ID";
+"La frequenza di campionamento è cambiata durante l'avvio: riprova." = "The sample rate changed during the start: try again.";
+"Avvio non riuscito: la cattura o l'uscita non funzionano in modo regolare (cicli cattura %llu, uscita %llu)." = "Start failed: capture or output is not running steadily (capture cycles %llu, output %llu).";
+"Nessun tap attivo" = "No active tap";
+"Sessione non più attiva" = "Session no longer active";
+"formato del tap cambiato (%@)" = "tap format changed (%@)";
+"frequenza di %@ cambiata (%@)" = "sample rate of %@ changed (%@)";
+"frequenza di cattura cambiata (%@)" = "capture sample rate changed (%@)";
+"disposizione degli stream cambiata (cattura %@, uscita %@)" = "stream layout changed (capture %@, output %@)";
+"stream di uscita sostituiti" = "output streams replaced";
+"l'aggregato di cattura ha acquisito un dispositivo" = "the capture aggregate acquired a device";
+"uscita silenziata per cambio di frequenza" = "output muted for a sample rate change";
+"l'audio si è interrotto in modo anomalo" = "audio stopped abnormally";
+"dispositivo di uscita" = "output device";
+"macOS non consente a RoomEQ di catturare l'audio di sistema (%@). Apri Impostazioni di Sistema › Privacy e sicurezza › Registrazione schermo e audio di sistema, consenti l'accesso a RoomEQ e riprova." = "macOS does not allow RoomEQ to capture system audio (%@). Open System Settings › Privacy & Security › Screen & System Audio Recording, allow RoomEQ and try again.";
+"Core Audio non riconosce ancora RoomEQ come processo audio: avvio annullato per evitare che RoomEQ catturi il proprio suono (effetto eco/feedback). Riprova tra qualche secondo." = "Core Audio does not recognize RoomEQ as an audio process yet: start canceled so that RoomEQ does not capture its own sound (echo/feedback). Try again in a few seconds.";
+"macOS non ha cambiato l'uscita" = "macOS did not change the output";
+"Lo stream del tap non è comparso nell'aggregato di cattura (stream trovati: %lld; atteso: 1 stream, canali: %lld)" = "The tap stream did not appear in the capture aggregate (streams found: %lld; expected: 1 stream, channels: %lld)";
+"Uso stream: numero riportato %lld, atteso %lld" = "Stream usage: count reported %lld, expected %lld";
+"Dispositivo %u" = "Device %u";
+"%@: operazione non riuscita (errore Core Audio %@)" = "%@: operation failed (Core Audio error %@)";
+"errore Core Audio %@" = "Core Audio error %@";
+"%@: valore mancante" = "%@: missing value";
+"L'uscita audio si è bloccata: RoomEQ si ferma per non lasciare le app mute." = "The audio output stalled: RoomEQ stops so as not to leave apps muted.";
+"La cattura dell'audio si è bloccata: RoomEQ si ferma per non lasciare le app mute." = "Audio capture stalled: RoomEQ stops so as not to leave apps muted.";
+"L'audio non viene più elaborato: RoomEQ si ferma per non lasciare le app mute." = "Audio is no longer being processed: RoomEQ stops so as not to leave apps muted.";
+"L'audio non può essere riprodotto correttamente: RoomEQ si ferma per non lasciare le app mute." = "Audio cannot be played correctly: RoomEQ stops so as not to leave apps muted.";
+"Gli orologi di cattura e uscita non coincidono: RoomEQ non converte la frequenza, quindi si ferma." = "The capture and output clocks do not match: RoomEQ does not convert sample rates, so it stops.";
+"Il ritardo necessario (%lld frame) supera il massimo consentito (%lld frame): RoomEQ non si avvia." = "The required delay (%lld frames) exceeds the maximum allowed (%lld frames): RoomEQ does not start.";
+"RoomEQ non riesce a mantenere l'audio continuo (interruzioni ripetute): si ferma per non lasciare le app mute." = "RoomEQ cannot keep the audio continuous (repeated dropouts): it stops so as not to leave apps muted.";
+"I canali stereo del dispositivo (%lld/%lld) non sono validi: RoomEQ non si avvia." = "The stereo channels of the device (%lld/%lld) are not valid: RoomEQ does not start.";
+"I canali stereo del dispositivo (%lld/%lld) sono in stream diversi: RoomEQ non supporta ancora questo dispositivo." = "The stereo channels of the device (%lld/%lld) are in different streams: RoomEQ does not support this device yet.";
+"Lo stream di uscita ha un solo canale: RoomEQ non si avvia." = "The output stream has only one channel: RoomEQ does not start.";
+"Frequenza di campionamento sconosciuta (tap %@, dispositivo %@, cattura %@): RoomEQ non si avvia." = "Unknown sample rate (tap %@, device %@, capture %@): RoomEQ does not start.";
+"La frequenza del tap (%@) non coincide con quella del dispositivo (%@): RoomEQ non converte la frequenza, quindi non si avvia." = "The sample rate of the tap (%@) does not match that of the device (%@): RoomEQ does not convert sample rates, so it does not start.";
+"La frequenza di cattura (%@) non coincide con quella del dispositivo (%@): RoomEQ non converte la frequenza, quindi non si avvia." = "The capture sample rate (%@) does not match that of the device (%@): RoomEQ does not convert sample rates, so it does not start.";
+"sconosciuta" = "unknown";
+
+/* Core Audio operation names (shown in error messages) */
+"Aggiornamento esclusioni del tap" = "Updating the tap exclusions";
+"Avvio dell'uscita" = "Starting the output";
+"Avvio della cattura" = "Starting the capture";
+"Buffer variabile" = "Variable buffer size";
+"Canali stereo preferiti" = "Preferred stereo channels";
+"Creazione del tap audio" = "Creating the audio tap";
+"Creazione dell'aggregato di cattura" = "Creating the capture aggregate";
+"Creazione della callback di cattura" = "Creating the capture callback";
+"Creazione della callback di uscita" = "Creating the output callback";
+"Formato tap" = "Tap format";
+"Frequenze disponibili" = "Available sample rates";
+"Impostazione dell'uscita di macOS" = "Setting the macOS output";
+"Impostazione della frequenza di campionamento" = "Setting the sample rate";
+"Impostazione dimensione buffer" = "Setting the buffer size";
+"Impostazione uso stream" = "Setting the stream usage";
+"IsAlive" = "IsAlive";
+"Latenza del dispositivo" = "Device latency";
+"Latenza extra sub-tap" = "Sub-tap extra latency";
+"Latenza stream" = "Stream latency";
+"Lettura UID" = "Reading the UID";
+"Lettura UID del tap" = "Reading the tap UID";
+"Lettura bundle ID processo" = "Reading the process bundle ID";
+"Lettura configurazione stream" = "Reading the stream configuration";
+"Lettura dimensione buffer" = "Reading the buffer size";
+"Lettura elenco dispositivi" = "Reading the device list";
+"Lettura elenco processi audio" = "Reading the audio process list";
+"Lettura formato del tap" = "Reading the tap format";
+"Lettura formato stream" = "Reading the stream format";
+"Lettura frequenza di campionamento" = "Reading the sample rate";
+"Lettura idoneità come uscita" = "Checking whether the device can be an output";
+"Lettura intervallo dimensione buffer" = "Reading the buffer size range";
+"Lettura nome" = "Reading the name";
+"Lettura stato di riproduzione del processo" = "Reading whether the process is playing";
+"Lettura stream del dispositivo" = "Reading the device streams";
+"Lettura sub-tap" = "Reading the sub-taps";
+"Lettura uscita predefinita" = "Reading the default output";
+"Lettura uso stream" = "Reading the stream usage";
+"Lettura uso stream (dimensione)" = "Reading the stream usage (size)";
+"Offset di sicurezza" = "Safety offset";
+"Registrazione listener '%@'" = "Registering listener '%@'";
+"Registrazione listener RT '%@'" = "Registering RT listener '%@'";
+"Sub-device attivi" = "Active sub-devices";
+"Tipo di collegamento" = "Transport type";
+"Traduzione PID" = "Translating the PID";
