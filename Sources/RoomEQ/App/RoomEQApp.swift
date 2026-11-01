@@ -22,23 +22,14 @@ struct RoomEQApp: App {
 }
 
 /// Menu bar icon that changes with the engine state and the EQ on/off, so
-/// both are visible without opening the panel. A separate view so that it observes the controller.
+/// both are visible without opening the panel (drawings in MenuBarIcons.swift).
+/// A separate view so that it observes the controller.
 struct MenuBarIcon: View {
     let controller: AudioEngineController
 
     var body: some View {
-        Image(systemName: symbolName)
+        Image(nsImage: MenuBarIcons.image(for: controller.menuBarState))
             .accessibilityLabel(description)
-    }
-
-    private var symbolName: String {
-        switch controller.menuBarState {
-        case .stopped: "speaker.slash"
-        case .starting: "hourglass"
-        case .active: "slider.vertical.3"
-        case .bypassed: "waveform"
-        case .failed: "exclamationmark.triangle"
-        }
     }
 
     private var description: String {
