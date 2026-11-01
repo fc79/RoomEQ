@@ -4,6 +4,8 @@ Un'app per la barra dei menu di macOS che applica una correzione della stanza (u
 
 *Guida in italiano: questa pagina è la traduzione di [README.md](README.md) e [docs/USER_GUIDE.md](docs/USER_GUIDE.md). Per chi sviluppa: [architettura](docs/ARCHITECTURE.md) (in inglese) e [come contribuire](CONTRIBUTING.md) (in inglese).*
 
+<p align="center"><img src="docs/images/panel.png" width="400" alt="Il pannello di RoomEQ sotto l'icona nella barra dei menu: interruttore Correzione, preset, livelli, curva ed elenco dei filtri, sezioni richiudibili"></p>
+
 RoomEQ è pensato per chi misura la propria stanza d'ascolto con [REW](https://www.roomeqwizard.com) (Room EQ Wizard) e vuole applicare i filtri di correzione calcolati a tutto il Mac, senza passare da un dispositivo audio virtuale o da un driver di terze parti. L'app cattura l'uscita di sistema con un «process tap» di Core Audio, la fa passare da un equalizzatore parametrico e la riproduce sulla stessa scheda audio. Le app che fanno già una correzione per conto loro, per esempio un DAW con un EQ sul master, si possono escludere, così il loro audio non viene corretto due volte.
 
 ## Indice

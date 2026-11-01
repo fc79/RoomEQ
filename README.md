@@ -4,7 +4,7 @@ A macOS menu bar app that applies a room-correction EQ to all your Mac's audio, 
 
 *Italian guide: [LEGGIMI.md](LEGGIMI.md).*
 
-<!-- TODO: screenshot of the panel goes here -->
+<p align="center"><img src="docs/images/panel.png" width="400" alt="The RoomEQ panel under the menu bar icon: Correction switch, preset, level meters, filter curve and list, and the collapsible sections (shown with the Italian interface)"></p>
 
 RoomEQ is for people who measure their listening room with [REW](https://www.roomeqwizard.com) (Room EQ Wizard) and want the resulting correction filters applied system-wide on a Mac, without routing audio through a virtual device or a third-party driver. It captures the system output with a Core Audio process tap, runs it through a parametric EQ, and plays it on the same output device. Apps that do their own correction, such as a DAW with an EQ on the master, can be excluded so their audio is not corrected twice.
 
