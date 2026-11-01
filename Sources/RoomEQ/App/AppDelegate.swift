@@ -14,12 +14,15 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let controller = AudioEngineController()
+    /// The menu bar icon and its panel (StatusItemController.swift).
+    private var statusItemController: StatusItemController?
     private var signalSources: [DispatchSourceSignal] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.app.info("RoomEQ launched (pid \(ProcessInfo.processInfo.processIdentifier))")
         installSignalHandlers()
         controller.prepare()
+        statusItemController = StatusItemController(controller: controller)
     }
 
     func applicationWillTerminate(_ notification: Notification) {

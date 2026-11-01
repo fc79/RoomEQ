@@ -1,4 +1,7 @@
-// The menu-bar panel.
+// The menu-bar panel, shown in a popover under the menu bar icon
+// (StatusItemController.swift). The popover takes this view's ideal size and
+// follows it when sections open or close; what must be refreshed at each
+// opening is refreshed there too.
 //
 // Pure view over `AudioEngineController`: it only reads the observable
 // properties and calls the controller's methods. Layout (top to bottom):
@@ -49,27 +52,9 @@ struct MenuPanelView: View {
         }
         .padding(14)
         .frame(width: 400)
-        // Opening/closing a section changes the height: the window must
-        // follow it both ways (on its own it grows but never shrinks), top
-        // edge under the menu bar (PanelWindowAnchor.swift). Applied here, on
-        // the fixed-width content with its natural height, so it measures
-        // the content and not the window.
-        .fitsWindowToContent()
         .disabled(confirmations.current != nil)  // only the card answers
         .overlay { confirmationOverlay }
         .environment(confirmations)
-        .onAppear(perform: refreshOnOpen)
-        // The panel keeps its view between openings, so onAppear alone is
-        // not enough: refresh whenever the panel window becomes key again
-        // (not for the file choosers it opens).
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
-            guard !(notification.object is NSOpenPanel) else { return }
-            refreshOnOpen()
-        }
-        // When a section closes, the content shrinks one frame before the
-        // window does: pinned to the top it stays still (centered it would
-        // jump down and back up).
-        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     /// The confirmation card over the dimmed panel (no separate window).
@@ -105,12 +90,6 @@ struct MenuPanelView: View {
             DiagnosticsSectionView(controller: controller)
         }
         .padding(.trailing, 6)  // room for the scroll bar
-    }
-
-    /// Things that can change outside the app while the panel is closed.
-    private func refreshOnOpen() {
-        controller.refreshLaunchAtLoginStatus()
-        controller.refreshCandidateApps()
     }
 
     // MARK: Header: title, switch, status, errors

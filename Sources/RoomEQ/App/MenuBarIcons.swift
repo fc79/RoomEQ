@@ -37,6 +37,18 @@ enum MenuBarIcons {
         return images[look] ?? makeImage(for: look)
     }
 
+    /// Spoken label of the icon: unlike the looks, it tells every state
+    /// apart (off and paused share one drawing).
+    static func accessibilityLabel(for state: MenuBarState) -> String {
+        switch state {
+        case .stopped: "Correzione spenta"
+        case .starting: "Correzione in avvio"
+        case .active: "Correzione attiva"
+        case .failed: "RoomEQ: errore"
+        case .paused: "Correzione in pausa per questa uscita"
+        }
+    }
+
     private static func makeImage(for look: Look) -> NSImage {
         let image = NSImage(size: size, flipped: true) { _ in
             draw(look)

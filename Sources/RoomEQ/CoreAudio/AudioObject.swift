@@ -16,8 +16,6 @@ enum Log {
     static let engine = Logger(subsystem: subsystem, category: "engine")
     static let tap = Logger(subsystem: subsystem, category: "tap")
     static let devices = Logger(subsystem: subsystem, category: "devices")
-    /// Menu bar panel geometry (PanelWindowAnchor.swift), for diagnostics.
-    static let panel = Logger(subsystem: subsystem, category: "panel")
 }
 
 /// A failed Core Audio call.

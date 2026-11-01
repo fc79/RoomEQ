@@ -11,6 +11,7 @@ struct ExclusionsView: View {
     let controller: AudioEngineController
 
     @Environment(ConfirmationPresenter.self) private var confirmations
+    @Environment(\.fileChooser) private var fileChooser
     @State private var note: InlineNote?
 
     var body: some View {
@@ -122,9 +123,8 @@ struct ExclusionsView: View {
         controller.refreshCandidateApps()
     }
 
-    /// Opens the app chooser without blocking (`begin`, not `runModal`); the
-    /// app is activated first, otherwise the panel could open behind other
-    /// windows (RoomEQ is a menu-bar-only app).
+    /// Opens the app chooser without blocking, keeping the menu bar panel
+    /// open meanwhile (`FileChooser`, StatusItemController.swift).
     private func chooseApp() {
         let panel = NSOpenPanel()
         panel.title = "Scegli un'app da escludere"
@@ -135,12 +135,11 @@ struct ExclusionsView: View {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.application]
         panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
-        NSApp.activate()
         // The environment must not be read inside the completion handler
         // (the panel may have closed meanwhile): take what it needs now.
         let presenter = confirmations
-        panel.begin { [self] response in
-            guard response == .OK, let url = panel.url else { return }
+        fileChooser(panel) { [self] url in
+            guard let url else { return }
             guard let app = controller.appInfo(forBundleURL: url) else {
                 note = .error("Questa app non ha un identificativo valido: non posso escluderla.")
                 return

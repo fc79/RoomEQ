@@ -15,6 +15,7 @@ struct FiltersSectionView: View {
 
     @State private var importWarningsExpanded = false
     @Environment(ConfirmationPresenter.self) private var confirmations
+    @Environment(\.fileChooser) private var fileChooser
 
     var body: some View {
         CollapsibleSection(
@@ -152,9 +153,8 @@ struct FiltersSectionView: View {
         }
     }
 
-    /// Opens the file chooser without blocking (`begin`, not `runModal`).
-    /// The app is activated first, otherwise the panel could open behind
-    /// other windows (RoomEQ is a menu-bar-only app).
+    /// Opens the file chooser without blocking, keeping the menu bar panel
+    /// open meanwhile (`FileChooser`, StatusItemController.swift).
     private func chooseREWFile() {
         let panel = NSOpenPanel()
         panel.title = "Importa filtri da REW"
@@ -166,9 +166,8 @@ struct FiltersSectionView: View {
         // Text files first, but any file can be chosen.
         panel.allowedContentTypes = [.plainText, .data]
         panel.allowsOtherFileTypes = true
-        NSApp.activate()
-        panel.begin { [controller] response in
-            guard response == .OK, let url = panel.url else { return }
+        fileChooser(panel) { [controller] url in
+            guard let url else { return }
             controller.importREWFile(url: url)
         }
     }
