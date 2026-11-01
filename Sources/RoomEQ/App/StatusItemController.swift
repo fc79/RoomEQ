@@ -25,8 +25,7 @@
 //    open (see `runFileChooser`), so what the chooser leads to (an inline
 //    confirmation, an error note) is seen right away.
 // The icon and its accessibility label follow `controller.menuBarState`
-// through Observation. Activation and closing are logged under the "panel"
-// category (temporary diagnostics).
+// through Observation.
 
 import AppKit
 import Observation
@@ -109,7 +108,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func showPopover() {
         guard let button = statusItem.button else { return }
         refreshBeforeShowing()
-        let wasActive = NSApp.isActive
         activateApp()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         // Keyboard to the panel (the popover window may not take it alone).
@@ -117,14 +115,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         // Icon highlighted while the panel is open, like a menu.
         button.highlight(true)
         installOutsideClickMonitor()
-        Log.panel.notice("""
-            open: active before=\(wasActive, privacy: .public) \
-            after=\(NSApp.isActive, privacy: .public) \
-            key=\(self.popoverWindow?.isKeyWindow ?? false, privacy: .public)
-            """)
         // Activation is asynchronous: check again on the next run loop turn.
         DispatchQueue.main.async { [weak self] in
-            self?.makePopoverKey(reason: "next turn")
+            self?.makePopoverKey()
         }
     }
 
@@ -140,18 +133,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     /// Makes the popover window key if it is shown and is not yet.
-    private func makePopoverKey(reason: String) {
-        guard popover.isShown, let window = popoverWindow else { return }
-        let wasKey = window.isKeyWindow
-        if !wasKey { window.makeKey() }
-        Log.panel.notice("""
-            \(reason, privacy: .public): active=\(NSApp.isActive, privacy: .public) \
-            key before=\(wasKey, privacy: .public) after=\(window.isKeyWindow, privacy: .public)
-            """)
+    private func makePopoverKey() {
+        guard popover.isShown, let window = popoverWindow, !window.isKeyWindow else { return }
+        window.makeKey()
     }
 
     @objc private func appDidBecomeActive(_ notification: Notification) {
-        makePopoverKey(reason: "didBecomeActive")
+        makePopoverKey()
     }
 
     /// Things that can change outside the app while the panel is closed.
@@ -192,11 +180,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         guard outsideClickMonitor == nil else { return }
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
-        ) { [weak self] event in
-            let type = event.type.rawValue
+        ) { [weak self] _ in
             // Hop to the main actor explicitly instead of assuming the
             // handler's thread.
-            Task { @MainActor in self?.clickedInOtherApp(eventType: type) }
+            Task { @MainActor in self?.clickedInOtherApp() }
         }
     }
 
@@ -207,14 +194,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         }
     }
 
-    private func clickedInOtherApp(eventType: UInt) {
+    private func clickedInOtherApp() {
         // A file chooser may live partly in another process: its clicks must
         // not close the popover.
         guard popover.isShown, !isChoosingFile else { return }
-        Log.panel.notice("""
-            global monitor: click in another app (event type \(eventType, privacy: .public)), \
-            active=\(NSApp.isActive, privacy: .public), closing
-            """)
         closePopover()
     }
 
