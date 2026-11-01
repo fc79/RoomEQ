@@ -21,6 +21,7 @@ mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 cp "${BIN_DIR}/${APP_NAME}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 cp "Resources/Info.plist" "${APP_DIR}/Contents/Info.plist"
 plutil -lint "${APP_DIR}/Contents/Info.plist" >/dev/null
+cp "Resources/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
 
 echo "==> Signing (ad-hoc)…"
 # Ad-hoc signature: no developer certificate needed. Note that macOS ties
