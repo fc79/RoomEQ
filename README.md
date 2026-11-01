@@ -17,7 +17,7 @@ RoomEQ is for people who measure their listening room with [REW](https://www.roo
 - **Presets.** Save, rename, duplicate and delete named sets of filters plus preamp.
 - **REW import.** Load the text file REW exports (Export filter settings as text, Generic equalizer).
 - **Low latency.** The latency shown in the status line is the total output latency, estimated by the app. It includes the latency of the output device itself, which is there even without RoomEQ. On the author's interface it is about 6 ms with a 64-frame buffer. Your result depends on your device and buffer size; the panel shows the estimate for yours.
-- **Safe failure.** RoomEQ is designed so that, if it quits or crashes, the apps' audio returns to normal on its own: the apps are muted only while RoomEQ is running.
+- **Safe failure.** If RoomEQ quits or crashes, the apps' audio returns to normal on its own: the apps are muted only while RoomEQ is running (checked by force-quitting RoomEQ with `kill -9` during playback).
 - **English and Italian.** The interface follows the macOS language.
 
 ## Requirements

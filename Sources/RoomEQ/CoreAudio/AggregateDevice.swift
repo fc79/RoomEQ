@@ -12,7 +12,7 @@
 // (coreaudiod) destroying them when the process exits — including a crash or
 // kill -9, where none of our clean-up code runs (the tapped apps are then
 // unmuted, and our IOProc on the output device dies with the process).
-// Verify in the live test: kill -9 RoomEQ while running -> apps audible again.
+// Checked on hardware (2026-11-01): kill -9 RoomEQ while playing -> apps audible again.
 
 import CoreAudio
 import Foundation

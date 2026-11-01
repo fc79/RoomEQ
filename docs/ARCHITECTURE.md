@@ -129,9 +129,8 @@ RoomEQ detects it and stops (§3.8). It does not compensate.
   chosen output stream in that stream's own format (all channels, no
   mixdown, no rate conversion).
 - **Mute behavior.** `.mutedWhenTapped`: apps are silenced only while
-  RoomEQ reads the tap. By design, if RoomEQ stops or crashes, their audio
-  goes to the speakers directly again (see §3.10 for what is and is not
-  verified).
+  RoomEQ reads the tap. If RoomEQ stops or crashes, their audio goes to the
+  speakers directly again (verified with `kill -9`, see §3.10).
 - **Self-exclusion is mandatory.** RoomEQ's output goes to the very device
   being tapped, so without the exclusion it would capture itself (instant
   feedback). `ProcessTap.ownProcessObject()` translates RoomEQ's PID into
@@ -360,11 +359,10 @@ If stopping or destroying an IOProc fails, the shared state (`RenderState`,
 Clean shutdown also runs on Quit (`applicationWillTerminate`) and on
 SIGINT/SIGTERM (`DispatchSourceSignal` in `AppDelegate`). These call
 `AudioEngine.stopSynchronously`, which waits at most 2 s. On a crash or
-`kill -9`, the design relies on the HAL destroying the private tap and
-aggregate when the process exits; `.mutedWhenTapped` should then unmute the
-apps. The comment in `AggregateDevice.swift` lists this as a check for live
-testing (kill RoomEQ while it is running and confirm that the apps become
-audible again). That check is not yet recorded in this document as done.
+`kill -9`, the HAL destroys the private tap and aggregate when the process exits and
+`.mutedWhenTapped` unmutes the apps. This was checked on hardware on
+1 November 2026: `kill -9` of RoomEQ during playback, and the apps kept
+playing directly to the device.
 
 ## 4. DSP
 
@@ -931,9 +929,9 @@ includes the Core Audio wrappers, tap and aggregate creation, the real
 IOProcs, `EngineSession`, `AudioEngine`, `AudioEngineController` (state
 machine, retries, restarts), and the UI. These are verified by hand on
 hardware. Some code comments record such checks: for example, the clock
-measurement of the tap-only aggregate. The `kill -9` check listed in
-`AggregateDevice.swift` (apps audible again after RoomEQ is killed) is a
-planned live test and is not recorded here as done.
+measurement of the tap-only aggregate. Another is the `kill -9` check
+in `AggregateDevice.swift` (apps audible again after RoomEQ is killed),
+done on 1 November 2026.
 
 ## 13. Diagnostics, hidden defaults, known limitations
 
@@ -968,8 +966,7 @@ commands too.
 - The latency figure is an estimate: the tapped apps' own buffering is not
   known.
 - Crash cleanup relies on the HAL removing the private tap and aggregate
-  when the process exits (by design; the live `kill -9` check is still to be
-  recorded, §3.10).
+  when the process exits (checked with `kill -9`, §3.10).
 - The login item is tied to the app's path and ad-hoc signature, so a
   rebuild or a copy outside `/Applications` may need re-enabling.
 - `activate(ignoringOtherApps:)` is deprecated; to revisit if Apple removes

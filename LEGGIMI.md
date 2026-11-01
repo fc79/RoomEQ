@@ -33,7 +33,7 @@ RoomEQ è pensato per chi misura la propria stanza d'ascolto con [REW](https://w
 - **Preset.** Salva, rinomina, duplica ed elimina insiemi di filtri con il loro preamp, ognuno con un nome.
 - **Importazione da REW.** Carica il file di testo esportato da REW (Export filter settings as text, equalizzatore Generic).
 - **Bassa latenza.** Il valore mostrato nella riga di stato è la latenza **totale** d'uscita, stimata dall'app. Comprende la latenza propria della scheda audio, che c'è anche senza RoomEQ. Sulla scheda dell'autore è circa 6 ms con un buffer di 64 frame. Il tuo risultato dipende dalla tua scheda e dal buffer; il pannello mostra la stima per la tua.
-- **Sicurezza in caso di guasto.** RoomEQ è progettato perché, se si chiude o va in crash, l'audio delle app torni normale da solo: le app sono silenziate solo finché RoomEQ è in funzione.
+- **Sicurezza in caso di guasto.** Se RoomEQ si chiude o va in crash, l'audio delle app torna normale da solo: le app sono silenziate solo finché RoomEQ è in funzione (verificato chiudendo RoomEQ di forza con `kill -9` durante la riproduzione).
 - **Italiano e inglese.** L'interfaccia segue la lingua di macOS.
 
 ## Requisiti
@@ -73,7 +73,7 @@ Al primo avvio RoomEQ non ha filtri, ha un solo preset vuoto chiamato «Senza no
 
 ## Come funziona, in un paragrafo
 
-RoomEQ chiede a Core Audio un «process tap» sull'uscita attuale di macOS. Il tap cattura l'audio di tutte le app tranne quelle escluse (e RoomEQ stesso) e le silenzia sulla scheda finché RoomEQ sta leggendo. RoomEQ fa passare l'audio catturato dall'equalizzatore e riproduce il risultato sulla stessa scheda. Non c'è nessun dispositivo audio virtuale e nessuna conversione della frequenza di campionamento. RoomEQ è progettato perché, se si chiude o va in crash, il tap sparisca e le app tornino a suonare direttamente sulla scheda, senza che RoomEQ debba fare nulla.
+RoomEQ chiede a Core Audio un «process tap» sull'uscita attuale di macOS. Il tap cattura l'audio di tutte le app tranne quelle escluse (e RoomEQ stesso) e le silenzia sulla scheda finché RoomEQ sta leggendo. RoomEQ fa passare l'audio catturato dall'equalizzatore e riproduce il risultato sulla stessa scheda. Non c'è nessun dispositivo audio virtuale e nessuna conversione della frequenza di campionamento. Se RoomEQ si chiude o va in crash, il tap sparisce e le app tornano a suonare direttamente sulla scheda, senza che RoomEQ debba fare nulla.
 
 ## L'icona nella barra dei menu
 

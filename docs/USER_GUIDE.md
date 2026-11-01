@@ -17,7 +17,7 @@ Interface labels below match the English interface. If your Mac is set to Italia
 
 ## How it works in one paragraph
 
-RoomEQ asks Core Audio for a "process tap" on the current macOS output device. The tap captures the audio of all apps except the ones you excluded (and RoomEQ itself), and silences them on the device while RoomEQ is reading. RoomEQ runs the captured audio through the EQ and plays the result on the same device. There is no virtual audio device and no sample-rate conversion. RoomEQ is designed so that, if it quits or crashes, the tap disappears and the apps play directly to the device again, without RoomEQ having to do anything.
+RoomEQ asks Core Audio for a "process tap" on the current macOS output device. The tap captures the audio of all apps except the ones you excluded (and RoomEQ itself), and silences them on the device while RoomEQ is reading. RoomEQ runs the captured audio through the EQ and plays the result on the same device. There is no virtual audio device and no sample-rate conversion. If RoomEQ quits or crashes, the tap disappears and the apps play directly to the device again, without RoomEQ having to do anything.
 
 ## The menu bar icon
 
