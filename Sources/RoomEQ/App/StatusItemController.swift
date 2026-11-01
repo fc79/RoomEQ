@@ -8,20 +8,29 @@
 // itself, both ways, with the arrow kept under the icon.
 //
 // Behaviour:
-//  - a click on the icon opens the popover, a second click closes it; a
-//    click anywhere else closes it too (.transient);
-//  - opening activates the app, so the popover gets the keyboard (preset name
-//    fields, Cmd-Q for "Esci");
+//  - a click on the icon opens the popover, a second click closes it;
+//  - opening activates the app for real (`activateApp()`, see there why not
+//    `NSApp.activate()`) and makes the popover window key, again when the
+//    activation arrives late (didBecomeActive): otherwise the first click in
+//    the panel (e.g. on a pop-up menu) is spent making the window key, and
+//    the panel gets no keyboard (preset name fields, Cmd-Q for "Esci");
+//  - a click anywhere else closes it: in our own app through `.transient`,
+//    in other apps (windows, desktop, other menu bar icons) through a global
+//    mouse monitor installed while the popover is open, which works even if
+//    the app did not become active (`.transient` alone would then miss those
+//    clicks);
 //  - just before opening, what may have changed outside the app is refreshed
 //    (login item status, candidate apps to exclude);
 //  - while a file chooser opened from the panel is up, the popover stays
-//    open (see `FileChooser`), so what the chooser leads to (an inline
+//    open (see `runFileChooser`), so what the chooser leads to (an inline
 //    confirmation, an error note) is seen right away.
 // The icon and its accessibility label follow `controller.menuBarState`
-// through Observation.
+// through Observation. Activation and closing are logged under the "panel"
+// category (temporary diagnostics).
 
 import AppKit
 import Observation
+import os
 import SwiftUI
 
 @MainActor
@@ -29,6 +38,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let controller: AudioEngineController
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
+    /// Global monitor for clicks in other apps; set only while the popover
+    /// is shown.
+    private var outsideClickMonitor: Any?
+    /// True while a file chooser opened from the panel is up: the popover
+    /// must stay open meanwhile.
+    private var isChoosingFile = false
 
     init(controller: AudioEngineController) {
         self.controller = controller
@@ -52,6 +67,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             button.action = #selector(togglePopover(_:))
         }
         observeIcon()
+
+        // Activation can arrive after `showPopover` returned: the popover
+        // window is made key at that moment.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appDidBecomeActive(_:)),
+            name: NSApplication.didBecomeActiveNotification, object: nil)
     }
 
     // MARK: Icon
@@ -79,7 +100,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     @objc private func togglePopover(_ sender: Any?) {
         if popover.isShown {
-            popover.close()
+            closePopover()
         } else {
             showPopover()
         }
@@ -88,12 +109,49 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func showPopover() {
         guard let button = statusItem.button else { return }
         refreshBeforeShowing()
-        NSApp.activate()
+        let wasActive = NSApp.isActive
+        activateApp()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         // Keyboard to the panel (the popover window may not take it alone).
-        popover.contentViewController?.view.window?.makeKey()
+        popoverWindow?.makeKey()
         // Icon highlighted while the panel is open, like a menu.
         button.highlight(true)
+        installOutsideClickMonitor()
+        Log.panel.notice("""
+            open: active before=\(wasActive, privacy: .public) \
+            after=\(NSApp.isActive, privacy: .public) \
+            key=\(self.popoverWindow?.isKeyWindow ?? false, privacy: .public)
+            """)
+        // Activation is asynchronous: check again on the next run loop turn.
+        DispatchQueue.main.async { [weak self] in
+            self?.makePopoverKey(reason: "next turn")
+        }
+    }
+
+    private func closePopover() {
+        popover.close()
+        // popoverDidClose does it too; repeated here in case close() is not
+        // followed by the delegate call (tearDown is idempotent).
+        tearDownAfterClose()
+    }
+
+    private var popoverWindow: NSWindow? {
+        popover.contentViewController?.view.window
+    }
+
+    /// Makes the popover window key if it is shown and is not yet.
+    private func makePopoverKey(reason: String) {
+        guard popover.isShown, let window = popoverWindow else { return }
+        let wasKey = window.isKeyWindow
+        if !wasKey { window.makeKey() }
+        Log.panel.notice("""
+            \(reason, privacy: .public): active=\(NSApp.isActive, privacy: .public) \
+            key before=\(wasKey, privacy: .public) after=\(window.isKeyWindow, privacy: .public)
+            """)
+    }
+
+    @objc private func appDidBecomeActive(_ notification: Notification) {
+        makePopoverKey(reason: "didBecomeActive")
     }
 
     /// Things that can change outside the app while the panel is closed.
@@ -114,7 +172,50 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        tearDownAfterClose()
+    }
+
+    private func tearDownAfterClose() {
         statusItem.button?.highlight(false)
+        removeOutsideClickMonitor()
+    }
+
+    // MARK: Clicks in other apps
+
+    /// `.transient` only sees clicks that reach this app, or the app losing
+    /// active status; if the app never became active, a click in another app
+    /// would leave the popover open. A global monitor receives copies of the
+    /// mouse events sent to other apps (mouse events need no accessibility
+    /// permission). Clicks in our own windows (the icon, the panel, a file
+    /// chooser) are not delivered to it.
+    private func installOutsideClickMonitor() {
+        guard outsideClickMonitor == nil else { return }
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] event in
+            let type = event.type.rawValue
+            // Hop to the main actor explicitly instead of assuming the
+            // handler's thread.
+            Task { @MainActor in self?.clickedInOtherApp(eventType: type) }
+        }
+    }
+
+    private func removeOutsideClickMonitor() {
+        if let monitor = outsideClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            outsideClickMonitor = nil
+        }
+    }
+
+    private func clickedInOtherApp(eventType: UInt) {
+        // A file chooser may live partly in another process: its clicks must
+        // not close the popover.
+        guard popover.isShown, !isChoosingFile else { return }
+        Log.panel.notice("""
+            global monitor: click in another app (event type \(eventType, privacy: .public)), \
+            active=\(NSApp.isActive, privacy: .public), closing
+            """)
+        closePopover()
     }
 
     // MARK: File choosers
@@ -122,18 +223,21 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// Runs a file chooser without blocking (`begin`, not `runModal`). A
     /// transient popover closes when another window is used (the chooser
     /// too): it is made application-defined meanwhile, transient again
-    /// afterwards, and gets the keyboard back if still open.
+    /// afterwards, and gets the keyboard back if still open. The global
+    /// click monitor is ignored meanwhile too (`isChoosingFile`).
     private func runFileChooser(_ panel: NSOpenPanel, completion: @escaping @MainActor (URL?) -> Void) {
         popover.behavior = .applicationDefined
+        isChoosingFile = true
         // A menu-bar-only app is not active by itself: without this the
         // chooser could open behind other apps' windows.
-        NSApp.activate()
+        activateApp()
         panel.begin { [weak self] response in
             MainActor.assumeIsolated {
                 if let self {
+                    self.isChoosingFile = false
                     self.popover.behavior = .transient
                     if self.popover.isShown {
-                        self.popover.contentViewController?.view.window?.makeKey()
+                        self.popoverWindow?.makeKey()
                     }
                 }
                 completion(response == .OK ? panel.url : nil)
@@ -158,7 +262,7 @@ struct FileChooser: Sendable {
     }
 
     static let standalone = FileChooser { panel, completion in
-        NSApp.activate()
+        activateApp()
         panel.begin { response in
             MainActor.assumeIsolated { completion(response == .OK ? panel.url : nil) }
         }
@@ -168,3 +272,30 @@ struct FileChooser: Sendable {
 extension EnvironmentValues {
     @Entry var fileChooser: FileChooser = .standalone
 }
+
+// MARK: Activation
+
+/// Activates the app even if another app is frontmost.
+///
+/// `NSApp.activate()` (macOS 14+) is cooperative: Apple's documentation says
+/// it "doesn't guarantee app activation". A menu-bar-only app opened from its
+/// icon is then often left inactive, its popover window not key: the first
+/// click in the panel only made the window key (a pop-up menu needed two
+/// clicks) and `.transient` missed clicks in other apps. The deprecated
+/// `activate(ignoringOtherApps: true)` still exists and, per the
+/// documentation, with `true` "the app activates regardless". It is called
+/// through `ForcedActivation` so the deprecation warning is not repeated at
+/// every call site. To revisit if Apple removes it.
+@MainActor
+func activateApp() {
+    (NSApp as ForcedActivation).activate(ignoringOtherApps: true)
+}
+
+/// Exposes NSApplication's deprecated `activate(ignoringOtherApps:)` without
+/// a deprecation warning at the call site (see `activateApp()`).
+@MainActor
+private protocol ForcedActivation {
+    func activate(ignoringOtherApps flag: Bool)
+}
+
+extension NSApplication: ForcedActivation {}
