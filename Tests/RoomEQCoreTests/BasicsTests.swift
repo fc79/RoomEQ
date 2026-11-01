@@ -4,7 +4,7 @@ import Testing
 @Suite("Latency math")
 struct LatencyTests {
     @Test func splitBreakdownDoesNotDoubleCountTheDelay() {
-        // Quantum at 64: delay 220 frames (already contains safeties and
+        // An interface at 64: delay 220 frames (already contains safeties and
         // buffers), device latency 32, no tap or stream latency.
         let components = LatencyComponents(
             delayFrames: 220, outputDeviceFrames: 32, bufferFrames: 64, captureSafetyOffsetFrames: 17,

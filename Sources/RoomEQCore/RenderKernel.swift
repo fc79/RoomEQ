@@ -11,7 +11,8 @@
 //   3. for each chunk: copy the tap's L/R into the dry scratch buffers
 //      (input peak); take a new EQ filter set from the mailbox if one is
 //      waiting (the bands start ramping to it); run the EQ (DSPProcessor)
-//      from dry into wet; crossfade dry/wet (bypass = EQ off), apply the
+//      from dry into wet; crossfade dry/wet (bypass = EQ off; the app never
+//      sets it, see RenderState.bypass), apply the
 //      preamp (fixed-time ramp, never above unity), replace NaN/Inf with
 //      silence, count clipping, measure the output peak, clamp to [-1, 1]
 //      and write L/R into the selected output channel pair;

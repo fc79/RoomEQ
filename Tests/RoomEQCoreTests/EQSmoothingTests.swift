@@ -48,7 +48,7 @@ struct EQSmoothingTests {
     /// No sample-to-sample jump beyond what a sine of the larger of the two
     /// steady-state levels has (1 % margin), for a high-Q change at its Fc.
     @Test func changeOnASineHasNoJump() {
-        let bands = EQBand.defaultBands()
+        let bands = REWFixture.bands()
         var edited = bands
         edited[1].gain = 0  // F2 (76.6 Hz, Q 14.3): -6.8 dB -> 0 dB
         let input = DSPTest.sine(frequency: 76.6, sampleRate: rate, count: Int(rate * 1.5))
@@ -69,7 +69,7 @@ struct EQSmoothingTests {
     /// Rapid successive publications (slider drag) through the kernel: the
     /// band follows, and the LAST value is the one finally reached.
     @Test func rapidChangesEndOnTheLastValue() {
-        var bands = EQBand.defaultBands()
+        var bands = REWFixture.bands()
         let handle = DSPTest.makeHandle(sampleRate: rate, filters: sections(bands))
         let input = DSPTest.sine(frequency: 76.6, sampleRate: rate, count: Int(rate * 2))
         var lastPublished: [FilterSection] = []
@@ -92,7 +92,7 @@ struct EQSmoothingTests {
     }
 
     @Test func publishingTheSameSetTwiceIsIgnored() {
-        let initial = sections(EQBand.defaultBands())
+        let initial = sections(REWFixture.bands())
         let handle = DSPTest.makeHandle(sampleRate: rate, filters: initial)
         #expect(!handle.publishFilters(initial))
         let other = sections([EQBand(frequency: 1000, gain: -3, q: 1)])
@@ -106,7 +106,7 @@ struct EQSmoothingTests {
     /// A set published while bands are still ramping is taken at once and
     /// the bands turn towards it from where they are.
     @Test func setPublishedDuringARampIsReached() {
-        let handle = DSPTest.makeHandle(sampleRate: rate, filters: sections(EQBand.defaultBands()))
+        let handle = DSPTest.makeHandle(sampleRate: rate, filters: sections(REWFixture.bands()))
         let silence = [Float](repeating: 0, count: 256)
         let second = sections([EQBand(frequency: 500, gain: -4, q: 2)])
         let third = sections([EQBand(frequency: 800, gain: -2, q: 1)])
@@ -125,7 +125,7 @@ struct EQSmoothingTests {
     /// A removed band ramps out, drains and frees its slot; re-adding it
     /// while it is still ramping out continues from where it is (no jump).
     @Test func bandsRampOutAndBackIn() {
-        let bands = EQBand.defaultBands()
+        let bands = REWFixture.bands()
         var processor = DSPProcessor(sampleRate: rate, maximumFrames: 1024, sections: sections(bands))
         let input = DSPTest.sine(frequency: 58.8, sampleRate: rate, count: Int(rate))
         var output = DSPTest.run(&processor, Array(input[..<24_000])).0
@@ -207,7 +207,7 @@ struct EQSmoothingTests {
     /// After a long silence no filter state is subnormal (anti-denormal offset
     /// for normal bands, identity bands skipped once drained).
     @Test func noDenormalsAfterLongSilence() {
-        let bands = EQBand.defaultBands() + [
+        let bands = REWFixture.bands() + [
             EQBand(frequency: 15_000, gain: -12, q: 0.1),  // fast-decaying low-Q band
             EQBand(frequency: 1000, gain: 0, q: 1),  // identity band
             EQBand(frequency: 300, gain: 0.01, q: 2),  // almost identity
@@ -234,7 +234,7 @@ struct EQSmoothingTests {
     /// The filters keep running while the EQ is off, so turning it back on
     /// lands exactly on the warm EQ output.
     @Test func bypassKeepsTheFiltersWarm() {
-        let filters = sections(EQBand.defaultBands())
+        let filters = sections(REWFixture.bands())
         let reference = DSPTest.makeHandle(sampleRate: rate, filters: filters)  // EQ always on
         let toggled = DSPTest.makeHandle(sampleRate: rate, filters: filters)
         let input = DSPTest.sine(frequency: 58.8, sampleRate: rate, count: Int(rate * 2))
@@ -256,7 +256,7 @@ struct EQSmoothingTests {
     }
 
     @Test func initialSetIsActiveImmediately() {
-        let filters = sections(EQBand.defaultBands())
+        let filters = sections(REWFixture.bands())
         let handle = DSPTest.makeHandle(sampleRate: rate, filters: filters)
         #expect(!handle.eqIsRamping)
         #expect(handle.eqActiveTargets == filters)

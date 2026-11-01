@@ -6,7 +6,7 @@ import Testing
 private let own = "com.federicociapi.RoomEQ"
 
 private func settingsWithTwoPresets() throws -> AppSettings {
-    var settings = AppSettings.defaults()
+    var settings = REWFixture.settings()
     settings.bands[0].gain = -3
     try settings.saveCurrentAsNewPreset(name: "Cuffie")
     return settings
@@ -14,18 +14,91 @@ private func settingsWithTwoPresets() throws -> AppSettings {
 
 @Suite("Presets")
 struct PresetTests {
-    @Test func firstLaunchHasStudioActiveAndUnmodified() {
-        let settings = AppSettings.defaults()
+    /// First launch is neutral: no filters, preamp 0, one empty preset
+    /// ("Senza nome", active, unmodified), the correction OFF.
+    @Test func firstLaunchIsNeutral() {
+        let loaded = AppSettings.load(current: nil, legacy: nil, ownBundleID: own)
+        #expect(loaded.notice == nil && loaded.backups.isEmpty && !loaded.migrated && !loaded.upgraded)
+        let settings = loaded.settings
+        #expect(settings.bands.isEmpty && settings.preampDecibels == 0)
+        #expect(settings.presets.map(\.name) == [PresetNames.untitled])
+        #expect(settings.presets[0].bands.isEmpty && settings.presets[0].preampDecibels == 0)
+        #expect(settings.activePresetID == settings.presets[0].id)
+        #expect(!settings.isActivePresetModified && !settings.hasUnsavedChanges)
+        #expect(settings.excludedApps.isEmpty)  // no app excluded by default
+        #expect(!settings.isCorrectionOn)  // nothing to correct until filters are imported
+        #expect(settings.suggestedNewPresetName == "Senza nome 2")
+    }
+
+    /// The first REW import marks the empty preset modified; "Salva" stores
+    /// the filters in it.
+    @Test func firstImportIsSavedIntoTheEmptyPreset() throws {
+        var settings = AppSettings.defaults()
+        settings.bands = REWFixture.bands()
+        #expect(settings.isActivePresetModified && settings.hasUnsavedChanges)
+        try settings.saveCurrentToActivePreset()
+        #expect(!settings.hasUnsavedChanges && settings.presets[0].bands.count == 4)
+    }
+
+    /// The fixture has the shape of a stage-3 migration: the filters as
+    /// working state and active preset "Studio", Ableton Live excluded (as
+    /// stage 3 always did), correction on.
+    @Test func fixtureHasStudioActiveAndUnmodified() {
+        let settings = REWFixture.settings()
         #expect(settings.presets.map(\.name) == ["Studio"])
         #expect(settings.activePresetID == settings.presets[0].id)
         #expect(!settings.isActivePresetModified)
-        #expect(settings.bands.map(\.frequency) == EQBand.defaultBands().map(\.frequency))
+        #expect(settings.bands.map(\.frequency) == REWFixture.bands().map(\.frequency))
         #expect(settings.excludedApps.map(\.bundleID) == ["com.ableton.live"])
-        #expect(settings.isCorrectionOn)  // the correction is on at first launch
+        #expect(settings.isCorrectionOn)
+    }
+
+    /// A stored document keeps loading as before the neutral first launch:
+    /// missing filters give an empty list, a missing switch is ON.
+    @Test func storedDocumentWithoutSwitchStaysOn() throws {
+        var object = try JSONSerialization.jsonObject(with: try REWFixture.settings().encoded()) as! [String: Any]
+        object.removeValue(forKey: "isCorrectionOn")
+        let loaded = AppSettings.load(
+            current: try JSONSerialization.data(withJSONObject: object), legacy: nil, ownBundleID: own)
+        #expect(loaded.settings.isCorrectionOn)
+        #expect(loaded.settings.presets.map(\.name) == ["Studio"] && loaded.settings.bands.count == 4)
+    }
+
+    /// A stored list of excluded apps is kept as it is (existing
+    /// installations keep their exclusions); only a document without one
+    /// gets the empty default.
+    @Test func storedExclusionsAreKept() throws {
+        let stored = REWFixture.settings()
+        let kept = AppSettings.load(current: try stored.encoded(), legacy: nil, ownBundleID: own)
+        #expect(kept.settings.excludedApps.map(\.bundleID) == ["com.ableton.live"] && kept.notice == nil)
+
+        var emptied = stored
+        emptied.excludedApps = []
+        let empty = AppSettings.load(current: try emptied.encoded(), legacy: nil, ownBundleID: own)
+        #expect(empty.settings.excludedApps.isEmpty)
+
+        var object = try JSONSerialization.jsonObject(with: try stored.encoded()) as! [String: Any]
+        object.removeValue(forKey: "excludedApps")
+        let missing = AppSettings.load(
+            current: try JSONSerialization.data(withJSONObject: object), legacy: nil, ownBundleID: own)
+        #expect(missing.settings.excludedApps.isEmpty && missing.notice == nil)
+    }
+
+    /// A stored document whose presets are all unreadable keeps its working
+    /// state in one "Senza nome" preset, named as at first launch.
+    @Test func unreadablePresetsBecomeUntitled() throws {
+        var object = try JSONSerialization.jsonObject(with: try REWFixture.settings().encoded()) as! [String: Any]
+        object["presets"] = ["rotto"]
+        let loaded = AppSettings.load(
+            current: try JSONSerialization.data(withJSONObject: object), legacy: nil, ownBundleID: own)
+        #expect(loaded.settings.presets.map(\.name) == [PresetNames.untitled])
+        #expect(loaded.settings.presets[0].bands.count == 4 && loaded.settings.bands.count == 4)
+        #expect(loaded.settings.activePresetID == loaded.settings.presets[0].id)
+        #expect(loaded.backups.count == 1)
     }
 
     @Test func modifiedFlagFollowsTheSoundNotTheIDs() throws {
-        var settings = AppSettings.defaults()
+        var settings = REWFixture.settings()
         settings.bands[1].gain += 1
         #expect(settings.isActivePresetModified)
         settings.bands[1].gain -= 1
@@ -81,7 +154,7 @@ struct PresetTests {
     }
 
     @Test func duplicateNames() throws {
-        var settings = AppSettings.defaults()
+        var settings = REWFixture.settings()
         let studio = settings.presets[0].id
         let first = try settings.duplicatePreset(id: studio)
         let second = try settings.duplicatePreset(id: studio)
@@ -251,9 +324,10 @@ struct AppSettingsDocumentTests {
         #expect(!loaded.migrated && !loaded.upgraded)
     }
 
-    /// Stage 3's "EQ off" is not kept: version 4 never bypasses.
+    /// Stage 3's "EQ off" is not kept: version 4 never bypasses. Stage 3's
+    /// built-in exclusion of Ableton Live is kept (the sound does not change).
     @Test func migratesStage3Losslessly() throws {
-        var bands = EQBand.defaultBands()
+        var bands = REWFixture.bands()
         bands[1].isEnabled = false
         let old = EQSettings(bands: bands, preampDecibels: -3.5, isEQEnabled: false)
         let loaded = AppSettings.load(current: nil, legacy: try old.encoded(), ownBundleID: own)
@@ -271,8 +345,9 @@ struct AppSettingsDocumentTests {
         let loaded = AppSettings.load(current: nil, legacy: garbage, ownBundleID: own)
         #expect(loaded.backups == [.init(sourceKey: "EQSettings", data: garbage)])
         #expect(loaded.notice?.hasPrefix("Le impostazioni salvate non erano leggibili") == true)
-        #expect(loaded.settings.presets.map(\.name) == ["Studio"])
-        #expect(loaded.settings.bands.count == 4)
+        // Nothing readable: the neutral state, as at first launch.
+        #expect(loaded.settings.presets.map(\.name) == [PresetNames.untitled])
+        #expect(loaded.settings.bands.isEmpty && !loaded.settings.isCorrectionOn)
 
         let partial = Data(#"{"version":1,"bands":[{"frequency":80,"gain":-3,"q":4},{"frequency":"x"}],"preampDecibels":-1,"isEQEnabled":true}"#.utf8)
         let fromPartial = AppSettings.load(current: nil, legacy: partial, ownBundleID: own)
@@ -290,8 +365,9 @@ struct AppSettingsDocumentTests {
         #expect(loaded.notice?.contains("recuperato i filtri della versione precedente") == true)
 
         let alone = AppSettings.load(current: current, legacy: nil, ownBundleID: own)
-        #expect(alone.backups.count == 1 && alone.settings.presets.map(\.name) == ["Studio"])
-        #expect(alone.notice == "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho caricato i filtri iniziali.")
+        #expect(alone.backups.count == 1 && alone.settings.presets.map(\.name) == [PresetNames.untitled])
+        #expect(alone.settings.bands.isEmpty && !alone.settings.isCorrectionOn)
+        #expect(alone.notice == "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e sono ripartito senza filtri, con la correzione spenta.")
     }
 
     @Test func partialDocumentKeepsWhatIsReadable() throws {
@@ -321,7 +397,7 @@ struct AppSettingsDocumentTests {
     }
 
     @Test func futureVersionIsReadForKnownFields() throws {
-        var settings = AppSettings.defaults()
+        var settings = REWFixture.settings()
         settings.isCorrectionOn = false
         var object = try JSONSerialization.jsonObject(with: try settings.encoded()) as! [String: Any]
         object["version"] = 9
@@ -332,10 +408,10 @@ struct AppSettingsDocumentTests {
     }
 
     @Test func sanitizingMakesItConsistent() {
-        let preset = EQPreset(name: "Studio", bands: EQBand.defaultBands(), preampDecibels: 3)
+        let preset = EQPreset(name: "Studio", bands: REWFixture.bands(), preampDecibels: 3)
         let twin = EQPreset(id: preset.id, name: " studio ", bands: [], preampDecibels: -50)
         var settings = AppSettings(
-            bands: EQBand.defaultBands(), preampDecibels: 0, presets: [preset, twin],
+            bands: REWFixture.bands(), preampDecibels: 0, presets: [preset, twin],
             activePresetID: UUID(), presetAssignments: ["a": preset.id, "b": UUID(), "": preset.id],
             excludedApps: [
                 ExcludedAppRecord(bundleID: own, name: "RoomEQ"), ExcludedAppRecord(bundleID: "com.ableton.live", name: "Live"),
@@ -349,9 +425,9 @@ struct AppSettingsDocumentTests {
         #expect(settings.presetAssignments == ["a": preset.id])
         #expect(settings.excludedApps.map(\.bundleID) == ["com.ableton.live"])
 
-        var empty = AppSettings.defaults()
+        var empty = REWFixture.settings()
         empty.presets = []
-        #expect(empty.sanitized(ownBundleID: own).presets.map(\.name) == ["Studio"])
+        #expect(empty.sanitized(ownBundleID: own).presets.map(\.name) == [PresetNames.untitled])
     }
 }
 
@@ -403,14 +479,14 @@ struct SettingsVersion4Tests {
     /// The switch is restored as the user left it.
     @Test(arguments: [true, false])
     func switchIsRemembered(on: Bool) throws {
-        var settings = AppSettings.defaults()
+        var settings = REWFixture.settings()
         settings.isCorrectionOn = on
         let loaded = AppSettings.load(current: try settings.encoded(), legacy: nil, ownBundleID: own)
         #expect(loaded.settings.isCorrectionOn == on && loaded.backups.isEmpty)
     }
 
     @Test func unreadableSwitchIsOnAndReported() throws {
-        var object = try JSONSerialization.jsonObject(with: try AppSettings.defaults().encoded()) as! [String: Any]
+        var object = try JSONSerialization.jsonObject(with: try REWFixture.settings().encoded()) as! [String: Any]
         object["isCorrectionOn"] = "sì"
         let loaded = AppSettings.load(
             current: try JSONSerialization.data(withJSONObject: object), legacy: nil, ownBundleID: own)
@@ -421,7 +497,7 @@ struct SettingsVersion4Tests {
 
     /// Old keys found in a version-4 document (hand-edited) change nothing.
     @Test func oldKeysAreIgnored() throws {
-        var settings = AppSettings.defaults()
+        var settings = REWFixture.settings()
         settings.isCorrectionOn = false
         var object = try JSONSerialization.jsonObject(with: try settings.encoded()) as! [String: Any]
         object["isEQEnabled"] = "rotto"
@@ -434,7 +510,7 @@ struct SettingsVersion4Tests {
 
     /// No version at all: treated as an older document (backed up, converted).
     @Test func missingVersionIsUpgraded() throws {
-        var object = try JSONSerialization.jsonObject(with: try AppSettings.defaults().encoded()) as! [String: Any]
+        var object = try JSONSerialization.jsonObject(with: try REWFixture.settings().encoded()) as! [String: Any]
         object.removeValue(forKey: "version")
         let data = try JSONSerialization.data(withJSONObject: object)
         let loaded = AppSettings.load(current: data, legacy: nil, ownBundleID: own)
@@ -445,7 +521,7 @@ struct SettingsVersion4Tests {
 @Suite("Exclusion rules")
 struct ExclusionRuleTests {
     @Test func validation() throws {
-        let existing = ExclusionRules.defaultApps
+        let existing = [ExcludedAppRecord(bundleID: "com.ableton.live", name: "Ableton Live")]
         #expect(try ExclusionRules.validateNew(" com.apple.Music ", existing: existing, ownBundleID: own) == "com.apple.Music")
         #expect(throws: ExclusionError.ownApp) { try ExclusionRules.validateNew(own, existing: existing, ownBundleID: own) }
         #expect(throws: ExclusionError.ownApp) {
@@ -463,7 +539,7 @@ struct ExclusionRuleTests {
         #expect(try ExclusionRules.validateNew("roomeqwizard.launcher", existing: [], ownBundleID: own) == "roomeqwizard.launcher")
         #expect(ExclusionRules.warning(forBundleID: "roomeqwizard.launcher") == "Escludendo REW, le misure non passeranno da RoomEQ")
         #expect(ExclusionRules.warning(forBundleID: "com.ableton.live") == nil)
-        #expect(!ExclusionRules.defaultApps.contains { ExclusionRules.isREW($0.bundleID) })
+        #expect(ExclusionRules.defaultApps.isEmpty)  // nothing excluded by default, REW included
     }
 }
 

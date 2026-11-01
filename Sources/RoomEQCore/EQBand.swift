@@ -2,7 +2,7 @@
 //
 // Value type shared by the UI, the persistence and the REW import. The
 // filter math lives in Biquad.swift / EQDesign.swift; this file only holds
-// the parameters, their limits and the default filter set.
+// the parameters and their limits.
 
 import Foundation
 
@@ -81,19 +81,10 @@ public struct EQBand: Codable, Sendable, Equatable, Hashable, Identifiable {
     // MARK: Defaults
 
     /// A neutral band for "add band": 1 kHz, 0 dB, Q 1.
+    /// (There are no built-in filters: a new user starts with none and
+    /// imports them from REW, see `AppSettings.defaults()`.)
     public static func neutral() -> EQBand {
         EQBand(frequency: 1000, gain: 0, q: 1)
-    }
-
-    /// The user's REW measurement (Generic equaliser, PK filters), used when
-    /// nothing is saved and by "reset to default filters". New IDs each call.
-    public static func defaultBands() -> [EQBand] {
-        [
-            EQBand(frequency: 58.80, gain: -9.90, q: 10.664),
-            EQBand(frequency: 76.60, gain: -6.80, q: 14.316),
-            EQBand(frequency: 140.0, gain: -15.90, q: 4.267),
-            EQBand(frequency: 192.0, gain: -5.40, q: 3.628),
-        ]
     }
 }
 

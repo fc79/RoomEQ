@@ -28,9 +28,10 @@ public struct EQSettings: Codable, Sendable, Equatable {
         self.isEQEnabled = isEQEnabled
     }
 
-    /// Used when nothing is saved: the user's REW filters, preamp 0 dB, EQ on.
+    /// The neutral state, used when a stage-3 document is unreadable: no
+    /// filters, preamp 0 dB (EQ on/off is ignored by version 4).
     public static func defaults() -> EQSettings {
-        EQSettings(bands: EQBand.defaultBands(), preampDecibels: 0, isEQEnabled: true)
+        EQSettings(bands: [], preampDecibels: 0, isEQEnabled: true)
     }
 
     /// The settings made safe to use: preamp inside its range (NaN -> 0 dB),
@@ -84,8 +85,8 @@ public struct EQSettings: Codable, Sendable, Equatable {
                 }
             }
         } else {
-            bands = EQBand.defaultBands()
-            warnings.append("Elenco dei filtri salvato assente o illeggibile: caricati i filtri iniziali")
+            bands = []
+            warnings.append("Elenco dei filtri salvato assente o illeggibile: nessun filtro caricato")
         }
         if bands.count > EQBand.maximumCount {
             warnings.append("Più di \(EQBand.maximumCount) filtri salvati: tenuti i primi \(EQBand.maximumCount)")

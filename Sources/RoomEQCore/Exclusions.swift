@@ -1,9 +1,11 @@
 // Rules for the list of apps excluded from the tap.
 //
 // RoomEQ itself is ALWAYS excluded (the engine adds it, see ProcessTap) and
-// never appears in the list. REW is not excluded by default (its sweeps must
-// go through RoomEQ to measure the corrected system); excluding it is
-// allowed, with a warning.
+// never appears in the list. Nothing else is excluded by default: the list
+// is empty at first launch and the user adds the apps that must bypass the
+// correction (e.g. a DAW with its own room correction). Excluding REW is
+// allowed, with a warning (its sweeps must go through RoomEQ to measure the
+// corrected system).
 
 import Foundation
 
@@ -22,8 +24,9 @@ public enum ExclusionError: LocalizedError, Equatable, Sendable {
 }
 
 public enum ExclusionRules {
-    /// Excluded on first launch.
-    public static let defaultApps = [ExcludedAppRecord(bundleID: "com.ableton.live", name: "Ableton Live")]
+    /// Excluded on first launch: none. (Stored documents keep their own
+    /// list; see `AppSettings` for documents without one.)
+    public static let defaultApps: [ExcludedAppRecord] = []
 
     public static let rewWarning = String(localized: "Escludendo REW, le misure non passeranno da RoomEQ")
 

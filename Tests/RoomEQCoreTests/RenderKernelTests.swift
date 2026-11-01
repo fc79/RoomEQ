@@ -282,6 +282,24 @@ struct RenderKernelTests {
         }
     }
 
+    /// First launch: no filters. Switching the correction on must play the
+    /// audio unchanged (flat), with no warnings and no invalid cycles.
+    @Test func noFiltersPassAudioThroughUnchanged() {
+        let settings = AppSettings.defaults()
+        let design = EQDesign(bands: settings.bands, sampleRate: 48_000)
+        #expect(design.sections.isEmpty && design.warnings.isEmpty)
+        #expect(EQCurve.maximumBoostDecibels(design: design) == 0)
+        let gain = Preamp.linearGain(decibels: settings.preampDecibels)!
+        let handle = DSPTest.makeHandle(sampleRate: 48_000, filters: design.sections, gain: gain)
+        handle.publishWorkingState(bands: settings.bands, preampDecibels: settings.preampDecibels)
+        let input = DSPTest.sine(frequency: 1000, sampleRate: 48_000, amplitude: 0.8, count: 4096)
+        let output = DSPTest.render(handle, input, block: 64)
+        let error = zip(input, output).map { Double(abs($0 - $1)) }.max() ?? 1
+        #expect(error < 1e-7)
+        let meters = handle.readMeters()
+        #expect(meters.invalidCycles == 0 && meters.nonFiniteSamples == 0 && meters.clippedSamples == 0)
+    }
+
     @Test func overloadCounter() {
         let handle = makeHandle(output: interleaved10)
         handle.recordOverload()

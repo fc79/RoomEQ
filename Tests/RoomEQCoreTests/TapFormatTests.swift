@@ -4,7 +4,7 @@ import Testing
 @Suite("Tap format helpers")
 struct TapFormatTests {
     @Test func sourceInSingleStream() throws {
-        // Quantum: one 10-channel output stream, preferred 1/2.
+        // An interface with one 10-channel output stream, preferred 1/2.
         #expect(try TapSourceSelection.locate(preferred: (1, 2), streamChannelCounts: [10]).get()
             == TapSource(stream: 0, left: 0, right: 1))
         #expect(try TapSourceSelection.locate(preferred: (3, 4), streamChannelCounts: [10]).get()

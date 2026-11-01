@@ -34,8 +34,8 @@ struct REWImportTests {
             [1000, 0, 1],
         ])
         #expect(result.bands.map(\.isEnabled) == [true, true, true, true, false])
-        // The first four are exactly the built-in default filters.
-        #expect(values(Array(result.bands.prefix(4))) == values(EQBand.defaultBands()))
+        // The first four are exactly the REW fixture used by the other tests.
+        #expect(values(Array(result.bands.prefix(4))) == values(REWFixture.bands()))
         #expect(Set(result.bands.map(\.id)).count == 5)
     }
 

@@ -42,7 +42,7 @@ struct MeasurementCase: Sendable, CustomStringConvertible {
     static func all() -> [MeasurementCase] {
         let id = UUID()
         func band(_ f: Double, _ g: Double, _ q: Double) -> EQBand { EQBand(id: id, frequency: f, gain: g, q: q) }
-        let defaults = EQBand.defaultBands()
+        let defaults = REWFixture.bands()
         let replacement = [
             EQBand(frequency: 45, gain: -8, q: 8), EQBand(frequency: 90, gain: -6, q: 12),
             EQBand(frequency: 150, gain: -10, q: 5), EQBand(frequency: 300, gain: 4, q: 3),

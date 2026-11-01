@@ -92,6 +92,10 @@ public struct RenderState: ~Copyable {
     public let targetGain: Atomic<Float>
     /// When true (EQ off) the output crossfades to the unprocessed (dry)
     /// signal. The DSP chain keeps running so switching back is click-free.
+    /// NOT USED BY THE APP: it always creates the state with `bypass: false`
+    /// and never calls `setBypass` (switching the correction off stops the
+    /// engine instead). Kept, and covered by the unit tests, as a
+    /// click-free dry/wet switch of the kernel.
     public let bypass: Atomic<Bool>
     /// Latest-slot index + dirty flag of the filter-set triple buffer.
     public let filterMailbox: Atomic<Int>
@@ -361,7 +365,8 @@ public final class RenderStateHandle: @unchecked Sendable {
     /// The target gain currently set (linear).
     public var targetGain: Float { pointer.pointee.targetGain.load(ordering: .relaxed) }
 
-    /// `true` = EQ off (dry signal), `false` = EQ on.
+    /// `true` = EQ off (dry signal), `false` = EQ on. Not used by the app
+    /// (see `RenderState.bypass`).
     public func setBypass(_ enabled: Bool) {
         pointer.pointee.bypass.store(enabled, ordering: .relaxed)
     }

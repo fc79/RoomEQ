@@ -4,10 +4,10 @@
 //
 //   Filter Settings file
 //   Room EQ V5.31
-//   Dated: 31-ott-2026 12.00.00
+//   Dated: 15-gen-2026 18.30.00
 //   Equaliser: Generic
 //   Average 1
-//   Filter  1: ON  PK       Fc   58.80 Hz  Gain  -9.90 dB  Q 10.664
+//   Filter  1: ON  PK       Fc   63.00 Hz  Gain  -8.00 dB  Q  6.000
 //   Filter  5: ON  None
 //   Filter  6: OFF PK       Fc   1000 Hz   Gain   0.00 dB  Q  1.000
 //
@@ -18,9 +18,12 @@
 // are dropped before any ON one); warning if the equaliser
 // is not "Generic". Never crashes: anything unreadable becomes a warning.
 //
-// Note on Q: the bands are later built as RBJ-cookbook peaking filters.
-// That REW's "Generic" PK filters use the same Q definition is an
-// assumption to be confirmed with a measurement sweep.
+// Note on Q: the bands are later built as RBJ-cookbook peaking filters,
+// with REW's Q value used as is. REW's "Generic" PK filters use the same Q
+// definition: verified on 1 November 2026 with an electrical loopback
+// measurement (A/B, correction on vs off), where the measured difference
+// matched the theoretical RBJ curve within ~0.05 dB, also on the skirts of
+// the filters (where a different Q definition would show first).
 
 import Foundation
 

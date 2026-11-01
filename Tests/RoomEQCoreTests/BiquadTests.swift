@@ -13,24 +13,25 @@ private func directMagnitudeDecibels(_ c: BiquadCoefficients, frequency: Double,
     return 10 * log10((nRe * nRe + nIm * nIm) / (dRe * dRe + dIm * dIm))
 }
 
-private let defaultBands = EQBand.defaultBands()
+private let rewBands = REWFixture.bands()
 private let testRates: [Double] = [44_100, 48_000, 96_000]
 
 @Suite("Biquad design")
 struct BiquadDesignTests {
-    @Test func defaultBandsAreTheUsersREWFilters() {
-        let bands = EQBand.defaultBands()
+    /// The fixture is the REW measurement the other tests rely on.
+    @Test func fixtureIsTheREWMeasurement() {
+        let bands = REWFixture.bands()
         #expect(bands.map(\.frequency) == [58.80, 76.60, 140.0, 192.0])
         #expect(bands.map(\.gain) == [-9.90, -6.80, -15.90, -5.40])
         #expect(bands.map(\.q) == [10.664, 14.316, 4.267, 3.628])
         #expect(bands.allSatisfy { $0.isEnabled })
     }
 
-    /// Requirement: for each default band at 44.1/48/96 kHz the analytic
+    /// Requirement: for each REW fixture band at 44.1/48/96 kHz the analytic
     /// magnitude of the computed coefficients at Fc equals the gain (0.1 dB).
     @Test(arguments: testRates + [192_000])
     func magnitudeAtCentreEqualsGain(sampleRate: Double) throws {
-        for band in defaultBands {
+        for band in rewBands {
             let c = try #require(BiquadCoefficients.peaking(
                 frequency: band.frequency, gainDecibels: band.gain, q: band.q, sampleRate: sampleRate))
             let response = c.magnitudeDecibels(atFrequency: band.frequency, sampleRate: sampleRate)
@@ -60,8 +61,8 @@ struct BiquadDesignTests {
     }
 
     @Test(arguments: testRates + [192_000])
-    func defaultBandsAreStable(sampleRate: Double) throws {
-        for band in defaultBands {
+    func rewBandsAreStable(sampleRate: Double) throws {
+        for band in rewBands {
             let c = try #require(BiquadCoefficients.peaking(
                 frequency: band.frequency, gainDecibels: band.gain, q: band.q, sampleRate: sampleRate))
             #expect(c.isStable)
@@ -84,10 +85,10 @@ struct BiquadDesignTests {
 @Suite("EQ design validation")
 struct EQDesignTests {
     @Test func allDefaultBandsBecomeSectionsInOrder() {
-        let design = EQDesign(bands: defaultBands, sampleRate: 48_000)
+        let design = EQDesign(bands: rewBands, sampleRate: 48_000)
         #expect(design.sections.count == 4)
         #expect(design.issues.isEmpty && design.warnings.isEmpty)
-        let ids = defaultBands.map { FilterSection.idParts($0.id) }
+        let ids = rewBands.map { FilterSection.idParts($0.id) }
         #expect(design.sections.map(\.bandIDHigh) == ids.map(\.high))
         #expect(design.sections.map(\.bandIDLow) == ids.map(\.low))
         // Ramp targets in log units.
@@ -97,7 +98,7 @@ struct EQDesignTests {
     }
 
     @Test func disabledBandsAreLeftOutWithoutWarning() {
-        var bands = defaultBands
+        var bands = rewBands
         bands[1].isEnabled = false
         let design = EQDesign(bands: bands, sampleRate: 48_000)
         #expect(design.sections.count == 3)
@@ -177,7 +178,7 @@ struct EQFilterProcessingTests {
             EQBand(frequency: 58.8, gain: 10, q: 14), EQBand(frequency: 58.8, gain: -10, q: 14),
             EQBand(frequency: 20, gain: -10, q: 10), EQBand(frequency: 1000, gain: 6, q: 4),
         ]
-        for band in defaultBands + extra {
+        for band in rewBands + extra {
             let design = EQDesign(bands: [band], sampleRate: sampleRate)
             var processor = DSPProcessor(sampleRate: sampleRate, maximumFrames: 512, sections: design.sections)
             let input = DSPTest.sine(frequency: band.frequency, sampleRate: sampleRate, count: Int(sampleRate * 2))
@@ -193,8 +194,8 @@ struct EQFilterProcessingTests {
     /// with all four bands: the level at each Fc equals the combined curve.
     @Test func combinedBandsThroughTheFullKernel() {
         let rate = 48_000.0
-        let design = EQDesign(bands: defaultBands, sampleRate: rate)
-        for band in defaultBands {
+        let design = EQDesign(bands: rewBands, sampleRate: rate)
+        for band in rewBands {
             let handle = DSPTest.makeHandle(sampleRate: rate, filters: design.sections)
             let input = DSPTest.sine(frequency: band.frequency, sampleRate: rate, count: Int(rate * 2))
             let output = DSPTest.render(handle, input, block: 128)
@@ -210,7 +211,7 @@ struct EQFilterProcessingTests {
     /// bands, including Q 14.3 at 192 kHz.
     @Test(arguments: testRates + [192_000])
     func impulseResponseDecays(sampleRate: Double) {
-        for band in defaultBands {
+        for band in rewBands {
             let design = EQDesign(bands: [band], sampleRate: sampleRate)
             var processor = DSPProcessor(sampleRate: sampleRate, maximumFrames: 1024, sections: design.sections)
             var impulse = [Float](repeating: 0, count: Int(sampleRate * 2))
@@ -239,7 +240,7 @@ struct EQFilterProcessingTests {
     /// NaN/Inf input never poisons the filter state.
     @Test func nonFiniteInputDoesNotPoisonTheFilters() {
         let rate = 48_000.0
-        let design = EQDesign(bands: defaultBands, sampleRate: rate)
+        let design = EQDesign(bands: rewBands, sampleRate: rate)
         var processor = DSPProcessor(sampleRate: rate, maximumFrames: 256, sections: design.sections)
         var input = DSPTest.sine(frequency: 100, sampleRate: rate, count: 4800)
         input[1000] = .nan

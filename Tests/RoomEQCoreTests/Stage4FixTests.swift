@@ -9,7 +9,7 @@ struct Stage4FixTests {
     /// Finding 1 (seam): the working state is published WITH its preamp, so
     /// applying a preset (or an automatic switch) also moves the gain.
     @Test func applyingAPresetPublishesItsPreamp() throws {
-        var settings = AppSettings.defaults()
+        var settings = REWFixture.settings()
         settings.preampDecibels = -6
         try settings.saveCurrentAsNewPreset(name: "Basso")
         try settings.applyPreset(id: settings.presets[0].id)  // Studio, 0 dB
@@ -26,7 +26,7 @@ struct Stage4FixTests {
     }
 
     @Test func suggestedNameAndSuffixesRespectTheLimit() throws {
-        var settings = AppSettings.defaults()
+        var settings = REWFixture.settings()
         #expect(settings.suggestedNewPresetName == "Senza nome")
         try settings.saveCurrentAsNewPreset(name: "Senza nome")
         #expect(settings.suggestedNewPresetName == "Senza nome 2")
@@ -45,8 +45,8 @@ struct Stage4FixTests {
 
     /// Finding 4: sanitising keeps remembered edits (base cleared).
     @Test func sanitizingKeepsRememberedEdits() {
-        var settings = AppSettings.defaults()
-        settings.editsByDevice["usb"] = DeviceEdits(presetID: UUID(), bands: EQBand.defaultBands(), preampDecibels: -1)
+        var settings = REWFixture.settings()
+        settings.editsByDevice["usb"] = DeviceEdits(presetID: UUID(), bands: REWFixture.bands(), preampDecibels: -1)
         settings.deviceNames = ["usb": "Cuffie", "vecchio": "Non serve più"]
         let clean = settings.sanitized(ownBundleID: own)
         #expect(clean.editsByDevice["usb"]?.presetID == nil)
@@ -56,7 +56,7 @@ struct Stage4FixTests {
 
     /// Finding 10: every lenient fallback is reported, so a backup is taken.
     @Test func lenientFallbacksAreReported() throws {
-        let settings = AppSettings.defaults()
+        let settings = REWFixture.settings()
         var object = try JSONSerialization.jsonObject(with: try settings.encoded()) as! [String: Any]
         var preset = (object["presets"] as! [[String: Any]])[0]
         preset["id"] = "non-un-uuid"
@@ -121,7 +121,7 @@ struct Stage4FixTests {
 
     /// Buffer size and per-output channel pair are persisted.
     @Test func bufferAndChannelPairArePersisted() throws {
-        var settings = AppSettings.defaults()
+        var settings = REWFixture.settings()
         #expect(settings.bufferFrames == 64 && settings.outputPairs.isEmpty)
         settings.bufferFrames = 128
         settings.outputPairs = ["usb-10ch": 4]

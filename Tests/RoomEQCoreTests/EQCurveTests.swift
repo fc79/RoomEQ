@@ -17,7 +17,7 @@ struct EQCurveTests {
     }
 
     @Test func cutsOnlyGiveNoBoostAndNoSuggestedPreamp() {
-        let boost = maximumBoost(EQBand.defaultBands())
+        let boost = maximumBoost(REWFixture.bands())
         #expect(boost == 0)
         #expect(EQCurve.suggestedPreampDecibels(forMaximumBoost: boost) == 0)
         #expect(EQCurve.suggestedPreampDecibels(forMaximumBoost: boost).sign == .plus)  // not "-0"
@@ -54,7 +54,7 @@ struct EQCurveTests {
     }
 
     @Test func curveMatchesTheSumOfTheBands() {
-        let bands = EQBand.defaultBands()
+        let bands = REWFixture.bands()
         let design = EQDesign(bands: bands, sampleRate: 44_100)
         let frequencies = EQCurve.logFrequencies(count: 50)
         #expect(frequencies.count == 50)
@@ -74,15 +74,16 @@ struct EQCurveTests {
 
 @Suite("EQ settings persistence")
 struct EQSettingsTests {
-    @Test func defaultsAreTheREWFiltersWithPreamp0AndEQOn() {
+    /// Neutral: no built-in filters.
+    @Test func defaultsHaveNoFiltersPreamp0AndEQOn() {
         let settings = EQSettings.defaults()
-        #expect(settings.bands.map(\.frequency) == [58.80, 76.60, 140.0, 192.0])
+        #expect(settings.bands.isEmpty)
         #expect(settings.preampDecibels == 0)
         #expect(settings.isEQEnabled)
     }
 
     @Test func roundTrip() throws {
-        var bands = EQBand.defaultBands()
+        var bands = REWFixture.bands()
         bands[2].isEnabled = false
         let settings = EQSettings(bands: bands, preampDecibels: -3.5, isEQEnabled: false)
         let loaded = EQSettings.load(try settings.encoded())
@@ -150,14 +151,15 @@ struct EQSettingsTests {
         #expect(loaded.status == .partial)
         #expect(loaded.settings.preampDecibels == 0)
         #expect(loaded.settings.isEQEnabled)
-        #expect(loaded.settings.bands.map(\.frequency) == EQBand.defaultBands().map(\.frequency))
+        #expect(loaded.settings.bands.isEmpty)  // neutral: no filters
+        #expect(loaded.warnings.contains("Elenco dei filtri salvato assente o illeggibile: nessun filtro caricato"))
     }
 
     @Test func garbageIsUnreadable() {
         for text in ["not json", "[1, 2]", "\"string\"", ""] {
             let loaded = EQSettings.load(Data(text.utf8))
             #expect(loaded.status == .unreadable && loaded.needsBackup, "\(text)")
-            #expect(loaded.settings.bands.count == 4)
+            #expect(loaded.settings.bands.isEmpty)
         }
     }
 }

@@ -7,7 +7,7 @@ private let own = "com.federicociapi.RoomEQ"
 /// Studio on the speakers, "Cuffie" on the headphones, "no correction" on
 /// the TV (rules always apply); current output: the speakers.
 private func setup() throws -> (AppSettings, studio: UUID, headphones: UUID) {
-    var settings = AppSettings.defaults()
+    var settings = REWFixture.settings()
     settings.bands[0].gain = -3
     try settings.saveCurrentAsNewPreset(name: "Cuffie")
     let studio = settings.presets[0].id, headphones = settings.presets[1].id

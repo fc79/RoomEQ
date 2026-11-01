@@ -1,7 +1,7 @@
 // The Core Audio process tap that captures the system mix.
 //
 // A DEVICE tap: it receives what every app (except the excluded ones —
-// Ableton Live, RoomEQ itself, anything else listed) sends to one output
+// RoomEQ itself, plus the apps the user listed) sends to one output
 // stream of the output device, in that stream's own format (no mixdown, no
 // sample-rate conversion). It is read through the capture aggregate (see
 // AggregateDevice.swift). RoomEQ's own process MUST be excluded: our output
@@ -124,8 +124,8 @@ final class ProcessTap {
         // Only visible to this process; Core Audio removes it when we exit.
         description.isPrivate = true
         // Apps are silenced only while we read the tap: if RoomEQ stops or
-        // crashes, their audio goes back to the speakers directly.
-        // (The tap diagnostic uses .unmuted so it can never silence anything.)
+        // crashes, their audio goes back to the speakers directly. (The
+        // engine always uses the default, `.mutedWhenTapped`.)
         description.muteBehavior = muteBehavior
         if #available(macOS 26.0, *) {
             // Excluded by bundle ID, so apps launched later should be excluded

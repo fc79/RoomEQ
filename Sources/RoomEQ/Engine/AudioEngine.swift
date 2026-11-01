@@ -4,8 +4,9 @@
 //   - main thread: the controller; calls the public methods below, receives
 //     completions and events (always delivered on main);
 //   - engine queue (serial): ALL Core Audio setup/teardown. These calls can
-//     block for a while (creating aggregates, starting IO, the ~0.7 s
-//     warm-up), so they never run on the main thread;
+//     block for a while (creating aggregates, starting IO, the warm-up:
+//     0.15 s settle + 0.4 s measuring windows, at most 1 s, see
+//     EngineSession), so they never run on the main thread;
 //   - listener queue (serial): Core Audio property listeners. They never
 //     block: they only forward a signal to the engine queue;
 //   - HAL real-time IO threads (capture aggregate and output device): only

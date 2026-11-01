@@ -14,7 +14,7 @@
 //     s2 = b2 x - a2 y
 // TDF-II needs 2 state values per channel and is the usual floating-point
 // choice. The difficult case is low Fc / high Q at high sample rates (at
-// 192 kHz, 58.8 Hz the poles sit ~2e-6 from z = 1): Double keeps ~10 more
+// 192 kHz, ~60 Hz the poles sit ~2e-6 from z = 1): Double keeps ~10 more
 // significant digits than Float there. No algorithmic delay (pure IIR).
 //
 // Click-free changes: every band has a slot whose parameters (ln Fc, gain

@@ -19,8 +19,8 @@
 //
 // Version 4 (one switch, rules always on):
 //   * `isCorrectionOn` (the "Correzione" switch as the user left it,
-//     restored at launch) replaces `autoStartEngineOnLaunch`. Missing (older
-//     documents, first launch): on.
+//     restored at launch) replaces `autoStartEngineOnLaunch`. Missing from
+//     a stored (older) document: on. First launch: off (see below).
 //   * `isEQEnabled` is gone: the correction is never bypassed while on (an
 //     older "EQ off" comes back on).
 //   * `isPresetPerOutputEnabled` is gone: the per-output rules always apply;
@@ -39,8 +39,26 @@
 //
 // Migration: without a stage-4 document, the stage-3 "EQSettings" document
 // is read (lossy, as in stage 3) and becomes the working state AND the
-// preset "Studio" (so nothing is marked modified). The stage-3 key is left
-// untouched (a free backup).
+// preset "Studio" (so nothing is marked modified). Stage 3 always excluded
+// Ableton Live (built in, no list): the migration keeps it excluded, so the
+// sound does not change. The stage-3 key is left untouched (a free backup:
+// it is also the fallback when the stage-4 document becomes unreadable, and
+// then gives back the same preset and exclusion as the first migration).
+// Stage-3 documents only exist on installations that ran a stage-3 build;
+// a new installation never takes this path.
+//
+// First launch (nothing saved), and settings that cannot be read at all:
+// the NEUTRAL state (`defaults()`): no filters, preamp 0 dB, one empty
+// preset named "Senza nome" ("Untitled"), no excluded apps, the
+// "Correzione" switch OFF. The
+// user imports the filters from REW, then switches the correction on.
+// Documents that can be read keep their values: a field missing from a
+// stored document is filled as before (e.g. the switch is on when absent),
+// so existing installations are not affected by the neutral first launch.
+// The excluded apps are always written, so a stored document keeps its own
+// list; only a list missing or unreadable (never written by RoomEQ) falls
+// back to the empty one. A stored document without any readable preset
+// gets one "Senza nome" preset holding the working state.
 
 import Foundation
 
@@ -89,8 +107,13 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public static let currentVersion = 4
     /// UserDefaults key of this document.
     public static let storageKey = "RoomEQSettings"
-    /// Name of the preset created at first launch / migration.
-    public static let firstPresetName = "Studio"
+    /// Name of the preset created by the stage-3 migration (kept as stage-4
+    /// builds always created it, see the header). Elsewhere a missing
+    /// preset is named `PresetNames.untitled` ("Senza nome" / "Untitled").
+    public static let migratedPresetName = "Studio"
+    /// Excluded apps after the stage-3 migration: stage 3 always excluded
+    /// Ableton Live (built in), so it stays excluded.
+    public static let migratedExcludedApps = [ExcludedAppRecord(bundleID: "com.ableton.live", name: "Ableton Live")]
 
     public var version: Int
 
@@ -126,7 +149,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
     // Launch.
     /// The "Correzione" switch as the user last set it: on = RoomEQ corrects
-    /// (and starts by itself at launch), off = nothing runs. Default on.
+    /// (and starts by itself at launch), off = nothing runs. Off at first
+    /// launch (`defaults()`); on when a stored document lacks it.
     public var isCorrectionOn: Bool
     /// The user has asked for "open at login" at least once (to tell
     /// "never registered" from "registered but not found").
@@ -165,18 +189,31 @@ public struct AppSettings: Codable, Sendable, Equatable {
         self.outputPairs = outputPairs
     }
 
-    /// First launch: the user's REW filters, also saved as preset "Studio".
+    /// First launch, and the fallback when nothing saved is readable: the
+    /// neutral state. No filters, preamp 0 dB, the correction OFF (nothing
+    /// to correct until the user imports filters from REW).
+    ///
+    /// One empty preset, active and unmodified, because the preset logic
+    /// needs at least one (`sanitized()` would create one, the last preset
+    /// cannot be deleted): importing REW filters then marks it modified and
+    /// "Salva" stores them in it (or "Salva come…" under a chosen name), as
+    /// for any other preset. It is named like a preset saved without a name
+    /// ("Senza nome" / "Untitled"), in the language of the first launch.
     public static func defaults() -> AppSettings {
-        migrating(EQSettings.defaults())
+        let preset = EQPreset(name: PresetNames.untitled, bands: [], preampDecibels: 0)
+        return AppSettings(
+            bands: [], preampDecibels: 0, presets: [preset], activePresetID: preset.id, isCorrectionOn: false)
     }
 
     /// Stage-3 settings -> stage 4: working state = the old settings, and
-    /// the same bands/preamp as preset "Studio" (active, not modified).
-    /// Stage 3's EQ on/off is dropped (version 4: never bypassed).
+    /// the same bands/preamp as preset "Studio" (active, not modified);
+    /// Ableton Live excluded, as in stage 3. Stage 3's EQ on/off is dropped
+    /// (version 4: never bypassed).
     public static func migrating(_ old: EQSettings) -> AppSettings {
-        let preset = EQPreset(name: firstPresetName, bands: old.bands, preampDecibels: old.preampDecibels)
+        let preset = EQPreset(name: migratedPresetName, bands: old.bands, preampDecibels: old.preampDecibels)
         return AppSettings(
-            bands: old.bands, preampDecibels: old.preampDecibels, presets: [preset], activePresetID: preset.id)
+            bands: old.bands, preampDecibels: old.preampDecibels, presets: [preset], activePresetID: preset.id,
+            excludedApps: migratedExcludedApps)
     }
 
     public func encoded() throws -> Data {
@@ -236,7 +273,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
             cleanPresets.append(preset)
         }
         if cleanPresets.isEmpty {
-            let preset = EQPreset(name: Self.firstPresetName, bands: result.bands, preampDecibels: result.preampDecibels)
+            let preset = EQPreset(name: PresetNames.untitled, bands: result.bands, preampDecibels: result.preampDecibels)
             cleanPresets = [preset]
             result.activePresetID = preset.id
         }
@@ -275,7 +312,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         let partialNotice = String(
             localized: "Parte delle impostazioni salvate non era leggibile: ne ho conservato una copia e ho caricato il resto.")
         let defaultsNotice = String(
-            localized: "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho caricato i filtri iniziali.")
+            localized: "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e sono ripartito senza filtri, con la correzione spenta.")
 
         if let current {
             if let (settings, problems, version) = decodeLeniently(current) {
@@ -307,8 +344,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
             } else if loaded.status == .partial {
                 notice = partialNotice
             }
+            // Nothing readable in it either: the neutral state, not a migration.
+            let settings = loaded.status == .unreadable ? defaults() : migrating(loaded.settings)
             return AppSettingsLoad(
-                settings: migrating(loaded.settings).sanitized(ownBundleID: ownBundleID), warnings: warnings,
+                settings: settings.sanitized(ownBundleID: ownBundleID), warnings: warnings,
                 backups: backups, notice: notice, migrated: true, upgraded: false)
         }
 
@@ -333,8 +372,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
             settings.presets = presets
             settings.activePresetID = stored.activePresetID
         } else {
-            // No readable presets: the working state becomes "Studio" again.
-            settings.presets = [EQPreset(name: firstPresetName, bands: settings.bands, preampDecibels: settings.preampDecibels)]
+            // No readable presets: the working state becomes a "Senza nome"
+            // preset (named as at first launch).
+            settings.presets = [EQPreset(name: PresetNames.untitled, bands: settings.bands, preampDecibels: settings.preampDecibels)]
             settings.activePresetID = settings.presets[0].id
         }
         if let value = stored.presetAssignments { settings.presetAssignments = value }
@@ -344,8 +384,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         settings.lastOutputDeviceUID = stored.lastOutputDeviceUID
         if let value = stored.excludedApps { settings.excludedApps = value }
         // Absent in documents before version 4 (whatever their old
-        // auto-start was): on, as at first launch.
-        if let value = stored.isCorrectionOn { settings.isCorrectionOn = value }
+        // auto-start was), or unreadable: on, as these documents always had
+        // it (independent of the neutral first launch, which is off).
+        settings.isCorrectionOn = stored.isCorrectionOn ?? true
         if let value = stored.loginItemRequested { settings.loginItemRequested = value }
         if let value = stored.bufferFrames { settings.bufferFrames = value }
         if let value = stored.outputPairs { settings.outputPairs = value }

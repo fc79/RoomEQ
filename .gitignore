@@ -5,3 +5,6 @@ build/
 .swiftpm/
 DerivedData/
 .claude/settings.local.json
+
+# Note personali dell'autore (non pubblicate)
+NOTE-STUDIO.md

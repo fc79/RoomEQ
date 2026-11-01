@@ -23,7 +23,8 @@
 // engine runs with the filters; off = nothing runs (tap, aggregate and
 // IOProcs released, audio straight to the device, no added latency). There
 // is no bypass mode any more. The switch is remembered and restored at
-// launch (default on). Quitting ("Esci") does not change it.
+// launch (off at first launch: no filters yet, see `AppSettings.defaults()`).
+// Quitting ("Esci") does not change it.
 //
 // Errors are kept per area so the panel can show each one next to the
 // control that caused it: `lastError` (engine), `outputError` (output,
@@ -197,7 +198,8 @@ final class AudioEngineController {
     /// Applied with a 15 ms ramp.
     var preampDecibels: Double { settings.preampDecibels }
     static let preampRange = Preamp.range
-    /// Largest boost of the combined EQ curve between 20 Hz and 20 kHz
+    /// Largest boost of the combined EQ curve between 10 Hz (the lowest
+    /// allowed Fc) and 20 kHz (`EQDesign.boostSearchFrequencies`)
     /// (0 when the curve never goes above 0 dB).
     private(set) var maxCurveBoostDecibels: Double = 0
     /// Preamp that would keep the curve at or below 0 dB (-maxBoost rounded
@@ -362,7 +364,7 @@ final class AudioEngineController {
         refreshExcludedApps()
         updateEQ()
         if loaded.migrated {
-            Log.app.notice("Settings migrated from stage 3 (preset «\(AppSettings.firstPresetName, privacy: .public)»)")
+            Log.app.notice("Settings migrated from stage 3 (preset «\(AppSettings.migratedPresetName, privacy: .public)»)")
             writeSettings()  // the new document exists from now on
         } else if loaded.upgraded {
             Log.app.notice("Settings converted to version \(AppSettings.currentVersion)")
@@ -413,7 +415,7 @@ final class AudioEngineController {
     // MARK: The "Correzione" switch
 
     /// One-line localized status for the panel, e.g. "Correzione attiva ·
-    /// «Quantum» · 6,3 ms", "Correzione spenta", "In pausa: nessuna
+    /// Studio Interface · 6,3 ms", "Correzione spenta", "In pausa: nessuna
     /// correzione per «…»", "Avvio…", "Attendo che l'uscita «…» sia
     /// pronta…"; after an error "Correzione non attiva" (the detail is in
     /// `lastError`).
@@ -1468,8 +1470,8 @@ extension AudioEngineController {
 
     /// Sets the nominal sample rate of the macOS default output (explicit
     /// user action only; RoomEQ never changes it by itself). WARNING for the
-    /// UI: this changes the rate for EVERY app using that device, Ableton
-    /// included. RoomEQ never converts rates: the running engine rebuilds
+    /// UI: this changes the rate for EVERY app using that device, excluded
+    /// apps included. RoomEQ never converts rates: the running engine rebuilds
     /// at the new rate (tap, device and capture all follow), the filters are
     /// recomputed; if that first start fails because the HAL is still
     /// settling, it is retried once. Refused while RoomEQ is starting or

@@ -9,7 +9,9 @@
   Quotes: «» in Italian, “” in English.
 
   Checked at every build by tools/check-localizations.swift (missing keys,
-  mismatched specifiers). Italian needs no table: the key is the text.
+  mismatched specifiers). Italian needs no translation, the key is the
+  text: Resources/it.lproj/Localizable.strings is intentionally empty and
+  only stops the lookup from falling back to this table.
 */
 
 /* Panel and sections */
@@ -115,7 +117,7 @@
 "Canali" = "Channels";
 "Canali %@" = "Channels %@";
 "Frequenza di campionamento" = "Sample rate";
-"Vale per tutte le app, compreso Ableton." = "Applies to every app, Ableton included.";
+"Vale per tutte le app, anche quelle escluse." = "Applies to every app, excluded ones included.";
 "Cambiare la frequenza di campionamento a %@?" = "Change Sample Rate to %@?";
 "RoomEQ si riavvia per un istante." = "RoomEQ restarts for a moment.";
 "Cambia" = "Change";
@@ -205,7 +207,7 @@
 
 /* Settings */
 "Parte delle impostazioni salvate non era leggibile: ne ho conservato una copia e ho caricato il resto." = "Part of the saved settings could not be read: a copy was kept and the rest was loaded.";
-"Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho caricato i filtri iniziali." = "The saved settings could not be read: a copy was kept and the initial filters were loaded.";
+"Le impostazioni salvate non erano leggibili: ne ho conservato una copia e sono ripartito senza filtri, con la correzione spenta." = "The saved settings could not be read: a copy was kept and RoomEQ started over with no filters and the correction off.";
 "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho recuperato i filtri della versione precedente." = "The saved settings could not be read: a copy was kept and the filters of the previous version were recovered.";
 "Impossibile salvare le impostazioni: %@" = "Could not save the settings: %@";
 

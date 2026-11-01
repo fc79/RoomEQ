@@ -18,7 +18,7 @@ public enum CorrectionStatusText {
     /// Retrying once after a sample-rate change.
     public static let retryAfterRateChange = String(localized: "Riprovo dopo il cambio di frequenza…")
 
-    /// "Correzione attiva · Quantum · 6,3 ms" (no guillemets here, unlike the
+    /// "Correzione attiva · Studio Interface · 6,3 ms" (no guillemets here, unlike the
     /// other sentences; parts without a value are left out).
     public static func active(outputName: String?, latencyMilliseconds: Double?) -> String {
         var parts = [String(localized: "Correzione attiva")]
@@ -29,22 +29,22 @@ public enum CorrectionStatusText {
         return parts.joined(separator: " · ")
     }
 
-    /// "In pausa: nessuna correzione per «Altoparlanti MacBook»".
+    /// "In pausa: nessuna correzione per «MacBook Speakers»".
     public static func paused(outputName: String?) -> String {
         guard let outputName, !outputName.isEmpty else { return String(localized: "In pausa: nessuna correzione per questa uscita") }
         return String(localized: "In pausa: nessuna correzione per «\(outputName)»")
     }
 
-    /// "Attendo che l'uscita «Quantum» sia pronta…" (no output yet: "Attendo un'uscita audio…").
+    /// "Attendo che l'uscita «Studio Interface» sia pronta…" (no output yet: "Attendo un'uscita audio…").
     public static func waiting(outputName: String?) -> String {
         guard let outputName, !outputName.isEmpty else { return String(localized: "Attendo un'uscita audio…") }
         return String(localized: "Attendo che l'uscita «\(outputName)» sia pronta…")
     }
 
-    /// "Riprendo su «Quantum»…" (automatic resume after a pause).
+    /// "Riprendo su «Studio Interface»…" (automatic resume after a pause).
     public static func resuming(outputName: String) -> String { String(localized: "Riprendo su «\(outputName)»…") }
 
-    /// "«Quantum» scollegato, passo all'uscita di macOS…".
+    /// "«Studio Interface» scollegato, passo all'uscita di macOS…".
     public static func deviceLost(name: String) -> String {
         String(localized: "«\(name)» scollegato, passo all'uscita di macOS…")
     }

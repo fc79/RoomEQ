@@ -51,7 +51,7 @@ struct ClipIndicatorTests {
     /// waveform's shape (phase), so peaks of a signal close to 0 dBFS can
     /// rise above it although no frequency is boosted.
     @Test func allCutEQCanRaisePeaksAboveFullScale() {
-        let cuts = EQDesign(bands: EQBand.defaultBands(), sampleRate: rate).sections
+        let cuts = EQDesign(bands: REWFixture.bands(), sampleRate: rate).sections
         let handle = DSPTest.makeHandle(sampleRate: rate, filters: cuts)
         // 58,8 Hz-ish square wave at -0,4 dBFS (cuts at 58,8 / 76,6 / 140 / 192 Hz).
         let input: [Float] = (0..<96_000).map { sin(2 * Double.pi * 70 * Double($0) / rate) >= 0 ? 0.955 : -0.955 }

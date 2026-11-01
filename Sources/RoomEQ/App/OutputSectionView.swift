@@ -1,4 +1,4 @@
-// The "Uscita e scheda" section (collapsible, summary "Quantum LT 16 · 44,1 kHz · buffer 64"):
+// The "Uscita e scheda" section (collapsible, summary "Studio Interface · 48 kHz · buffer 64"):
 // macOS output device, channel pair (only on devices with more than 2
 // channels), sound-card sample rate and buffer size. Output errors are shown
 // here, dismissible.
@@ -30,7 +30,7 @@ struct OutputSectionView: View {
         }
     }
 
-    /// "Quantum LT 16 · 44,1 kHz · buffer 64" (device, sample rate, buffer; parts
+    /// "Studio Interface · 48 kHz · buffer 64" (device, sample rate, buffer; parts
     /// that are unknown are left out).
     private var summary: String {
         var parts: [String] = []
@@ -64,7 +64,7 @@ struct OutputSectionView: View {
         }
     }
 
-    /// "Scarlett 2i2 (USB · 48 kHz)".
+    /// "Studio Interface (USB · 48 kHz)".
     private static func title(of option: OutputDeviceOption) -> String {
         var details = [option.transportName]
         if let rate = option.nominalSampleRate { details.append(AudioFormatText.kilohertz(rate)) }
@@ -117,7 +117,7 @@ struct OutputSectionView: View {
                 .fixedSize()
                 .disabled(isBusy || controller.availableSampleRates.isEmpty)
             }
-            Text("Vale per tutte le app, compreso Ableton.")
+            Text("Vale per tutte le app, anche quelle escluse.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -127,7 +127,7 @@ struct OutputSectionView: View {
         confirmations.present(
             InlineConfirmation(
                 title: "Cambiare la frequenza di campionamento a \(AudioFormatText.kilohertz(rate))?",
-                message: String(localized: "Vale per tutte le app, compreso Ableton.")
+                message: String(localized: "Vale per tutte le app, anche quelle escluse.")
                     + (controller.isRunning ? " " + String(localized: "RoomEQ si riavvia per un istante.") : ""),
                 options: [.standard("Cambia") { [controller] in controller.setDeviceSampleRate(rate) }]))
     }
