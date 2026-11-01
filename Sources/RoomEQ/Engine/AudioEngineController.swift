@@ -604,12 +604,6 @@ final class AudioEngineController {
         return band
     }
 
-    /// Back to the user's REW measurement filters (preamp unchanged). Marks the active preset as modified (not saved into it).
-    func resetToDefaultFilters() {
-        settings.bands = EQBand.defaultBands()
-        workingStateChanged()
-    }
-
     /// Combined EQ response in dB at each frequency (Hz), for drawing.
     /// Uses `eqSampleRate` (running session's rate, else the default output's).
     /// Bands that are disabled or not processable are not included.
@@ -1216,7 +1210,7 @@ extension AudioEngineController {
     /// TRUE WHEN REPLACING THE CURRENT SOUND WOULD LOSE WORK: modified vs the
     /// active preset, or no active preset and the sound matches no preset
     /// (e.g. after deleting the active one). The UI must ask before
-    /// `applyPreset`, `importREWFile`, `resetToDefaultFilters`; "Salva" with
+    /// `applyPreset`, `importREWFile`; "Salva" with
     /// no active preset must go to "Salva come…".
     var hasUnsavedChanges: Bool { settings.hasUnsavedChanges }
     /// A free name ("Senza nome", "Senza nome 2"…) for saving without asking.

@@ -1,6 +1,5 @@
 // The list of filters (one compact row each, inline editing; a warning about
-// a filter is shown under that filter) with the "Aggiungi filtro" and
-// "Torna ai filtri iniziali" buttons.
+// a filter is shown under that filter) with the "Aggiungi filtro" button.
 
 import RoomEQCore
 import SwiftUI
@@ -10,7 +9,6 @@ struct EQBandsList: View {
 
     /// The band whose editor is open (one at a time).
     @State private var editingID: EQBand.ID?
-    @Environment(ConfirmationPresenter.self) private var confirmations
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -37,31 +35,17 @@ struct EQBandsList: View {
 
     private var buttons: some View {
         let isFull = controller.bands.count >= EQBand.maximumCount
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Button {
-                    if let band = controller.addBand() { editingID = band.id }
-                } label: {
-                    Label("Aggiungi filtro", systemImage: "plus")
-                }
-                .disabled(isFull)
-                Spacer()
-                Text("\(controller.bands.count) di \(EQBand.maximumCount) filtri")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+        return HStack {
+            Button {
+                if let band = controller.addBand() { editingID = band.id }
+            } label: {
+                Label("Aggiungi filtro", systemImage: "plus")
             }
-            Button("Torna ai filtri iniziali") {
-                confirmations.present(
-                    InlineConfirmation(
-                        title: "Tornare ai filtri iniziali?",
-                        message: "I filtri attuali saranno sostituiti con i 4 filtri iniziali della misura REW.",
-                        options: [
-                            .destructive("Torna ai filtri iniziali") {
-                                editingID = nil
-                                controller.resetToDefaultFilters()
-                            }
-                        ]))
-            }
+            .disabled(isFull)
+            Spacer()
+            Text("\(controller.bands.count) di \(EQBand.maximumCount) filtri")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 }
