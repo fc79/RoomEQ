@@ -1,4 +1,4 @@
-// Compact plot of the combined EQ response (dB) over a log frequency axis.
+// Compact plot of the combined correction response (dB) over a log frequency axis.
 
 import RoomEQCore
 import SwiftUI
@@ -13,9 +13,9 @@ struct EQCurveGraph: View {
         // Read here (not inside the Canvas closure) so that the view is
         // refreshed when the curve changes.
         let response = controller.curveResponse(frequencies: Self.frequencies)
-        EQCurveCanvas(frequencies: Self.frequencies, response: response, dimmed: !controller.isEQEnabled)
+        EQCurveCanvas(frequencies: Self.frequencies, response: response, dimmed: !controller.isRunning)
             .frame(height: 110)
-            .accessibilityLabel("Grafico della curva di correzione EQ")
+            .accessibilityLabel("Grafico della curva di correzione")
     }
 }
 

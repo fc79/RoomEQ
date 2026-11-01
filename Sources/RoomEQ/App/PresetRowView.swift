@@ -1,14 +1,22 @@
-// Preset management inside the EQ section: Salva, Salva come…, and the "…"
-// menu (Rinomina, Duplica, Elimina). Naming happens inline (no sheet: sheets
-// and alerts open separate windows and close the menu-bar panel) with live
-// validation; the delete confirmation is the panel's inline card.
+// The single "Preset" row under the header: a menu with the active preset's
+// name (and an orange ● when there are unsaved changes), plus a "Salva"
+// button that appears only when there is something to save.
 //
-// Switching preset is in the quick row (EQQuickRow.swift).
+// The menu lists the presets (✓ on the active one), then "Salva come…",
+// "Rinomina…", "Duplica" and "Elimina…". Naming happens inline (no sheet:
+// sheets and alerts open separate windows and close the menu-bar panel) with
+// live validation; confirmations are the panel's inline card.
+//
+// Switching preset replaces the working sound: when there is unsaved work
+// (`hasUnsavedChanges`: edits to the active preset, or a sound that is in no
+// preset, e.g. after deleting the active one) the user is asked first (save
+// and switch / switch without saving / cancel). With no active preset,
+// "save" creates a new preset with a free name ("Senza nome"…).
 
 import RoomEQCore
 import SwiftUI
 
-struct PresetControls: View {
+struct PresetRowView: View {
     let controller: AudioEngineController
 
     private enum Editor: Equatable {
@@ -24,8 +32,14 @@ struct PresetControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            buttonsRow
+            presetRow
             if editor != nil { nameEditor }
+            if let message = controller.lastAutomaticPresetSwitch {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             InlineNoteView(note: note)
         }
         .task(id: note?.id) {
@@ -36,39 +50,112 @@ struct PresetControls: View {
         }
     }
 
-    // MARK: Buttons
+    // MARK: The row
 
-    private var buttonsRow: some View {
-        HStack(spacing: 6) {
-            Text("Preset").font(.callout)
-            Spacer()
-            Button("Salva") {
-                // No active preset (e.g. deleted): saving means "Salva come…".
-                if controller.activePreset == nil { startEditing(.saveAs) } else { saveToActive() }
+    private var presetRow: some View {
+        HStack(spacing: 8) {
+            Text("Preset").font(.callout).foregroundStyle(.secondary)
+            Menu {
+                presetMenuItems
+            } label: {
+                HStack(spacing: 4) {
+                    Text(controller.activePreset?.name ?? "Nessun preset")
+                    if controller.hasUnsavedChanges {
+                        Text("●").foregroundStyle(.orange).accessibilityLabel("modificato")
+                    }
+                }
             }
-                .disabled(!controller.hasUnsavedChanges)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("Preset")
+            if controller.hasUnsavedChanges {
+                Button("Salva") {
+                    // No active preset (e.g. deleted): saving means "Salva come…".
+                    if controller.activePreset == nil { startEditing(.saveAs) } else { saveToActive() }
+                }
                 .help(controller.activePreset == nil
                     ? "Salva il suono attuale come nuovo preset" : "Salva le modifiche nel preset attuale")
-            Button("Salva come…") { startEditing(.saveAs) }
-                .help("Salva il suono attuale come nuovo preset")
-            Menu {
-                Button("Rinomina…") {
-                    if let active = controller.activePreset { startEditing(.rename(active.id)) }
-                }
-                .disabled(controller.activePreset == nil)
-                Button("Duplica") { duplicateActive() }
-                    .disabled(controller.activePreset == nil)
-                Divider()
-                Button("Elimina…", role: .destructive) { requestDelete() }
-                    .disabled(controller.activePreset == nil || controller.presets.count < 2)
-            } label: {
-                Image(systemName: "ellipsis.circle")
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Altre azioni sul preset")
-            .accessibilityLabel("Altre azioni sul preset")
+        }
+    }
+
+    @ViewBuilder
+    private var presetMenuItems: some View {
+        ForEach(controller.presets) { preset in
+            Button {
+                requestSwitch(to: preset)
+            } label: {
+                if preset.id == controller.activePresetID {
+                    Label(preset.name, systemImage: "checkmark")
+                } else {
+                    Text(preset.name)
+                }
+            }
+        }
+        Divider()
+        Button("Salva come…") { startEditing(.saveAs) }
+        Button("Rinomina…") {
+            if let active = controller.activePreset { startEditing(.rename(active.id)) }
+        }
+        .disabled(controller.activePreset == nil)
+        Button("Duplica") { duplicateActive() }
+            .disabled(controller.activePreset == nil)
+        Button("Elimina…", role: .destructive) { requestDelete() }
+            .disabled(controller.activePreset == nil || controller.presets.count < 2)
+    }
+
+    // MARK: Switching preset
+
+    private func requestSwitch(to preset: EQPreset) {
+        note = nil
+        guard controller.hasUnsavedChanges else {
+            if preset.id != controller.activePresetID { apply(preset) }
+            return
+        }
+        let active = controller.activePreset
+        var options: [InlineConfirmation.Option] = []
+        let message: String
+        if let active {
+            message = "Le modifiche non salvate a «\(active.name)» andranno perse. Continuare?"
+            if preset.id == active.id {
+                // Picking the preset being edited: only discards the edits.
+                options = [.destructive("Scarta modifiche") { apply(preset) }]
+            } else {
+                options = [
+                    .standard("Salva e cambia") { saveThenApply(preset) },
+                    .destructive("Cambia senza salvare") { apply(preset) },
+                ]
+            }
+        } else {
+            message =
+                "Il suono attuale non è salvato in nessun preset e andrà perso. "
+                + "Puoi salvarlo come «\(controller.suggestedNewPresetName)». Continuare?"
+            options = [
+                .standard("Salva come nuovo preset e cambia") { saveThenApply(preset) },
+                .destructive("Cambia senza salvare") { apply(preset) },
+            ]
+        }
+        confirmations.present(InlineConfirmation(title: "Modifiche non salvate", message: message, options: options))
+    }
+
+    private func apply(_ preset: EQPreset) {
+        do {
+            try controller.applyPreset(id: preset.id)
+        } catch {
+            note = .error(error.localizedDescription)
+        }
+    }
+
+    private func saveThenApply(_ preset: EQPreset) {
+        do {
+            if controller.activePreset == nil {
+                let saved = try controller.saveCurrentAsNewPreset(name: controller.suggestedNewPresetName)
+                note = .info("Suono salvato come «\(saved.name)»")
+            } else {
+                try controller.saveCurrentToActivePreset()
+            }
+            try controller.applyPreset(id: preset.id)
+        } catch {
+            note = .error(error.localizedDescription)
         }
     }
 
@@ -191,7 +278,7 @@ struct PresetControls: View {
     private func deleteMessage(for preset: EQPreset) -> String {
         var text = "«\(preset.name)» non sarà più disponibile. Il suono attuale non cambia."
         if controller.presetAssignments.values.contains(preset.id) {
-            text += " Verrà tolto anche dalle assegnazioni per uscita."
+            text += " Verrà tolto anche dalle regole per uscita."
         }
         return text
     }

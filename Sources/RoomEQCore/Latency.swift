@@ -74,7 +74,7 @@ public struct LatencyBreakdown: Sendable, Equatable {
 
     /// Converts frames to milliseconds at `sampleRate` (0 if the rate is unknown).
     public func milliseconds(_ frames: Int) -> Double {
-        sampleRate > 0 ? Double(frames) * 1000 / sampleRate : 0
+        AudioFormatText.isKnownRate(sampleRate) ? Double(frames) * 1000 / sampleRate : 0
     }
 
     public var roomEQMilliseconds: Double { milliseconds(roomEQFrames) }
@@ -82,11 +82,13 @@ public struct LatencyBreakdown: Sendable, Equatable {
     public var totalMilliseconds: Double { milliseconds(totalFrames) }
 
     /// One-line Italian summary for the UI, e.g.
-    /// "Stima 5.7 ms (RoomEQ 5.0 + uscita 0.7) a 44100 Hz".
+    /// "Stima 5,7 ms (RoomEQ 5,0 + uscita 0,7) a 44,1 kHz"; "—" when the
+    /// sample rate is unknown (no milliseconds can be computed).
     public var summary: String {
-        String(
-            format: "Stima %.1f ms (RoomEQ %.1f + uscita %.1f) a %.0f Hz",
-            totalMilliseconds, roomEQMilliseconds, outputMilliseconds, sampleRate)
+        guard AudioFormatText.isKnownRate(sampleRate) else { return "—" }
+        let number = AudioFormatText.oneDecimal
+        return "Stima \(number(totalMilliseconds)) ms (RoomEQ \(number(roomEQMilliseconds)) + uscita "
+            + "\(number(outputMilliseconds))) a \(AudioFormatText.kilohertz(sampleRate))"
     }
 
     /// Detailed breakdown in frames, for logs and diagnostics.

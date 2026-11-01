@@ -1,5 +1,6 @@
-// The list of EQ bands (one compact row each, inline editing) with the
-// "Aggiungi filtro" / "Ripristina filtri iniziali" buttons.
+// The list of filters (one compact row each, inline editing; a warning about
+// a filter is shown under that filter) with the "Aggiungi filtro" and
+// "Torna ai filtri iniziali" buttons.
 
 import RoomEQCore
 import SwiftUI
@@ -49,13 +50,13 @@ struct EQBandsList: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            Button("Ripristina filtri iniziali") {
+            Button("Torna ai filtri iniziali") {
                 confirmations.present(
                     InlineConfirmation(
-                        title: "Ripristinare i filtri iniziali?",
+                        title: "Tornare ai filtri iniziali?",
                         message: "I filtri attuali saranno sostituiti con i 4 filtri iniziali della misura REW.",
                         options: [
-                            .destructive("Ripristina") {
+                            .destructive("Torna ai filtri iniziali") {
                                 editingID = nil
                                 controller.resetToDefaultFilters()
                             }

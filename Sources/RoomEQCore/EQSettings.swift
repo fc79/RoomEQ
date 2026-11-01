@@ -36,6 +36,13 @@ public struct EQSettings: Codable, Sendable, Equatable {
     /// The settings made safe to use: preamp inside its range (NaN -> 0 dB),
     /// at most 16 bands, no band with non-finite values, no duplicate IDs.
     public func sanitized() -> EQSettings {
+        EQSettings(
+            bands: Self.sanitizedBands(bands), preampDecibels: Self.sanitizedPreamp(preampDecibels),
+            isEQEnabled: isEQEnabled)
+    }
+
+    /// At most 16 bands, none with non-finite values, no duplicate IDs.
+    public static func sanitizedBands(_ bands: [EQBand]) -> [EQBand] {
         var seen = Set<UUID>()
         var cleanBands: [EQBand] = []
         for band in bands where band.isFinite && cleanBands.count < EQBand.maximumCount {
@@ -44,9 +51,11 @@ public struct EQSettings: Codable, Sendable, Equatable {
             seen.insert(band.id)
             cleanBands.append(band)
         }
-        return EQSettings(
-            bands: cleanBands, preampDecibels: Preamp.clamp(preampDecibels) ?? 0, isEQEnabled: isEQEnabled)
+        return cleanBands
     }
+
+    /// Preamp inside its range (NaN -> 0 dB).
+    public static func sanitizedPreamp(_ decibels: Double) -> Double { Preamp.clamp(decibels) ?? 0 }
 
     public func encoded() throws -> Data {
         let encoder = JSONEncoder()
@@ -82,7 +91,7 @@ public struct EQSettings: Codable, Sendable, Equatable {
             warnings.append("Più di \(EQBand.maximumCount) filtri salvati: tenuti i primi \(EQBand.maximumCount)")
         }
         if stored.preampDecibels == nil { warnings.append("Preamp salvato assente o illeggibile: 0 dB") }
-        if stored.isEQEnabled == nil { warnings.append("Stato EQ salvato assente o illeggibile: EQ attivo") }
+        // EQ on/off is not reported: version 4 of the settings ignores it.
         let settings = EQSettings(
             bands: bands, preampDecibels: stored.preampDecibels ?? 0, isEQEnabled: stored.isEQEnabled ?? true
         ).sanitized()

@@ -1,10 +1,11 @@
 // Everything RoomEQ persists (stage 4), in one versioned JSON document.
 //
-// Contents: the working EQ state (bands, preamp, EQ on/off), the presets,
-// per-output preset assignments and "no correction" outputs (+ remembered
-// device names and unsaved edits per device), excluded apps, auto-start, buffer size, output channel
-// pair per device. The login item's state is NOT here (macOS, SMAppService,
-// is its source of truth); only whether the user ever asked for it.
+// Contents: the working EQ state (bands, preamp), the presets, per-output
+// preset assignments and "no correction" outputs (+ remembered device names
+// and unsaved edits per device), excluded apps, the "Correzione" switch,
+// buffer size, output channel pair per device. The login item's state is
+// NOT here (macOS, SMAppService, is its source of truth); only whether the
+// user ever asked for it.
 //
 // Limitation: outputs are identified by their Core Audio UID. A device
 // whose UID changes (some USB devices when moved to another port) is seen
@@ -14,7 +15,19 @@
 // unbounded growth).
 //
 // Version 3 adds `noCorrectionOutputs` (version 2 documents read as before,
-// with none); an older build reading a version-3 document keeps a backup.
+// with none); an older build reading a newer document keeps a backup.
+//
+// Version 4 (one switch, rules always on):
+//   * `isCorrectionOn` (the "Correzione" switch as the user left it,
+//     restored at launch) replaces `autoStartEngineOnLaunch`. Missing (older
+//     documents, first launch): on.
+//   * `isEQEnabled` is gone: the correction is never bypassed while on (an
+//     older "EQ off" comes back on).
+//   * `isPresetPerOutputEnabled` is gone: the per-output rules always apply;
+//     assignments, "no correction" outputs and remembered edits are kept
+//     as they are and become active.
+// The three old keys are ignored when read. A document older than version 4
+// is backed up once (`AppSettingsLoad.upgraded`) before it is converted.
 //
 // Same philosophy as stage 3 (EQSettings.swift): loading is LOSSY and
 // forward-compatible. Every field is read on its own; a field that is
@@ -31,7 +44,7 @@
 
 import Foundation
 
-/// A named EQ setting. EQ on/off is NOT part of a preset (it stays global).
+/// A named EQ setting (bands and preamp).
 public struct EQPreset: Codable, Sendable, Equatable, Hashable, Identifiable {
     public var id: UUID
     public var name: String
@@ -73,7 +86,7 @@ public struct ExcludedAppRecord: Codable, Sendable, Equatable, Hashable {
 }
 
 public struct AppSettings: Codable, Sendable, Equatable {
-    public static let currentVersion = 3
+    public static let currentVersion = 4
     /// UserDefaults key of this document.
     public static let storageKey = "RoomEQSettings"
     /// Name of the preset created at first launch / migration.
@@ -84,20 +97,17 @@ public struct AppSettings: Codable, Sendable, Equatable {
     // Working state (what is playing).
     public var bands: [EQBand]
     public var preampDecibels: Double
-    public var isEQEnabled: Bool
 
     // Presets.
     public var presets: [EQPreset]
     /// Preset the working state comes from (nil after deleting it).
     public var activePresetID: UUID?
 
-    // Per-output presets.
-    public var isPresetPerOutputEnabled: Bool
+    // Per-output presets (always applied, see Presets.swift).
     /// Output device UID -> preset ID.
     public var presetAssignments: [String: UUID]
-    /// Output device UIDs set to "no correction": with per-output presets
-    /// on, RoomEQ pauses on them (see `EngineMode`). Never also in
-    /// `presetAssignments`.
+    /// Output device UIDs set to "no correction": RoomEQ pauses on them
+    /// (see `EngineMode`). Never also in `presetAssignments`.
     public var noCorrectionOutputs: Set<String>
     /// Output device UID -> last known name (for devices not connected).
     public var deviceNames: [String: String]
@@ -106,15 +116,18 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var editsByDevice: [String: DeviceEdits]
     /// The output the working state belongs to (to detect changes, also
     /// across launches): the macOS default output last seen, passing over
-    /// outputs with "no correction" while the option is on. It can still be
-    /// one with "no correction" (rule set while in use, or option off then).
+    /// outputs with "no correction". It can still be one with "no
+    /// correction" (rule set while in use, or recorded by version 3 with the
+    /// per-output option off).
     public var lastOutputDeviceUID: String?
 
     // Exclusions (RoomEQ itself is always excluded in addition, never listed).
     public var excludedApps: [ExcludedAppRecord]
 
     // Launch.
-    public var autoStartEngineOnLaunch: Bool
+    /// The "Correzione" switch as the user last set it: on = RoomEQ corrects
+    /// (and starts by itself at launch), off = nothing runs. Default on.
+    public var isCorrectionOn: Bool
     /// The user has asked for "open at login" at least once (to tell
     /// "never registered" from "registered but not found").
     public var loginItemRequested: Bool
@@ -128,27 +141,25 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public static let defaultBufferFrames = 64
 
     public init(
-        bands: [EQBand], preampDecibels: Double, isEQEnabled: Bool, presets: [EQPreset], activePresetID: UUID?,
-        isPresetPerOutputEnabled: Bool = false, presetAssignments: [String: UUID] = [:],
+        bands: [EQBand], preampDecibels: Double, presets: [EQPreset], activePresetID: UUID?,
+        presetAssignments: [String: UUID] = [:],
         noCorrectionOutputs: Set<String> = [], deviceNames: [String: String] = [:], editsByDevice: [String: DeviceEdits] = [:],
         lastOutputDeviceUID: String? = nil, excludedApps: [ExcludedAppRecord] = ExclusionRules.defaultApps,
-        autoStartEngineOnLaunch: Bool = false, loginItemRequested: Bool = false,
+        isCorrectionOn: Bool = true, loginItemRequested: Bool = false,
         bufferFrames: Int = AppSettings.defaultBufferFrames, outputPairs: [String: Int] = [:]
     ) {
         version = Self.currentVersion
         self.bands = bands
         self.preampDecibels = preampDecibels
-        self.isEQEnabled = isEQEnabled
         self.presets = presets
         self.activePresetID = activePresetID
-        self.isPresetPerOutputEnabled = isPresetPerOutputEnabled
         self.presetAssignments = presetAssignments
         self.noCorrectionOutputs = noCorrectionOutputs
         self.deviceNames = deviceNames
         self.editsByDevice = editsByDevice
         self.lastOutputDeviceUID = lastOutputDeviceUID
         self.excludedApps = excludedApps
-        self.autoStartEngineOnLaunch = autoStartEngineOnLaunch
+        self.isCorrectionOn = isCorrectionOn
         self.loginItemRequested = loginItemRequested
         self.bufferFrames = bufferFrames
         self.outputPairs = outputPairs
@@ -161,11 +172,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
     /// Stage-3 settings -> stage 4: working state = the old settings, and
     /// the same bands/preamp as preset "Studio" (active, not modified).
+    /// Stage 3's EQ on/off is dropped (version 4: never bypassed).
     public static func migrating(_ old: EQSettings) -> AppSettings {
         let preset = EQPreset(name: firstPresetName, bands: old.bands, preampDecibels: old.preampDecibels)
         return AppSettings(
-            bands: old.bands, preampDecibels: old.preampDecibels, isEQEnabled: old.isEQEnabled, presets: [preset],
-            activePresetID: preset.id)
+            bands: old.bands, preampDecibels: old.preampDecibels, presets: [preset], activePresetID: preset.id)
     }
 
     public func encoded() throws -> Data {
@@ -182,17 +193,15 @@ public struct AppSettings: Codable, Sendable, Equatable {
         try c.encode(version, forKey: .version)
         try c.encode(bands, forKey: .bands)
         try c.encode(preampDecibels, forKey: .preampDecibels)
-        try c.encode(isEQEnabled, forKey: .isEQEnabled)
         try c.encode(presets, forKey: .presets)
         try c.encodeIfPresent(activePresetID, forKey: .activePresetID)
-        try c.encode(isPresetPerOutputEnabled, forKey: .isPresetPerOutputEnabled)
         try c.encode(presetAssignments, forKey: .presetAssignments)
         try c.encode(noCorrectionOutputs.sorted(), forKey: .noCorrectionOutputs)
         try c.encode(deviceNames, forKey: .deviceNames)
         try c.encode(editsByDevice, forKey: .editsByDevice)
         try c.encodeIfPresent(lastOutputDeviceUID, forKey: .lastOutputDeviceUID)
         try c.encode(excludedApps, forKey: .excludedApps)
-        try c.encode(autoStartEngineOnLaunch, forKey: .autoStartEngineOnLaunch)
+        try c.encode(isCorrectionOn, forKey: .isCorrectionOn)
         try c.encode(loginItemRequested, forKey: .loginItemRequested)
         try c.encode(bufferFrames, forKey: .bufferFrames)
         try c.encode(outputPairs, forKey: .outputPairs)
@@ -206,8 +215,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
     /// existing presets, a clean exclusion list without RoomEQ itself.
     public func sanitized(ownBundleID: String) -> AppSettings {
         func clean(_ bands: [EQBand], _ preamp: Double) -> (bands: [EQBand], preamp: Double) {
-            let settings = EQSettings(bands: bands, preampDecibels: preamp, isEQEnabled: true).sanitized()
-            return (settings.bands, settings.preampDecibels)
+            (EQSettings.sanitizedBands(bands), EQSettings.sanitizedPreamp(preamp))
         }
         var result = self
         result.version = Self.currentVersion
@@ -267,11 +275,14 @@ public struct AppSettings: Codable, Sendable, Equatable {
             "Parte delle impostazioni salvate non era leggibile: ne ho conservato una copia e ho caricato il resto."
 
         if let current {
-            if let (settings, problems) = decodeLeniently(current) {
-                if !problems.isEmpty { backups.append(.init(sourceKey: storageKey, data: current)) }
+            if let (settings, problems, version) = decodeLeniently(current) {
+                // Older format: keep it as it was before it is converted
+                // (fields were dropped on purpose, see the header).
+                let upgraded = (version ?? 0) < currentVersion
+                if !problems.isEmpty || upgraded { backups.append(.init(sourceKey: storageKey, data: current)) }
                 return AppSettingsLoad(
                     settings: settings.sanitized(ownBundleID: ownBundleID), warnings: problems, backups: backups,
-                    notice: problems.isEmpty ? nil : partialNotice, migrated: false)
+                    notice: problems.isEmpty ? nil : partialNotice, migrated: false, upgraded: upgraded)
             }
             // Unreadable: keep it, then fall back to the stage-3 document.
             backups.append(.init(sourceKey: storageKey, data: current))
@@ -294,7 +305,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
             }
             return AppSettingsLoad(
                 settings: migrating(loaded.settings).sanitized(ownBundleID: ownBundleID), warnings: warnings,
-                backups: backups, notice: notice, migrated: true)
+                backups: backups, notice: notice, migrated: true, upgraded: false)
         }
 
         return AppSettingsLoad(
@@ -302,12 +313,12 @@ public struct AppSettings: Codable, Sendable, Equatable {
             notice: current == nil
                 ? nil
                 : "Le impostazioni salvate non erano leggibili: ne ho conservato una copia e ho caricato i filtri iniziali.",
-            migrated: false)
+            migrated: false, upgraded: false)
     }
 
-    /// Nil if `data` is not a settings object at all; otherwise the settings
-    /// and what could not be read.
-    static func decodeLeniently(_ data: Data) -> (AppSettings, [String])? {
+    /// Nil if `data` is not a settings object at all; otherwise the settings,
+    /// what could not be read, and the stored version (nil if unreadable).
+    static func decodeLeniently(_ data: Data) -> (AppSettings, [String], Int?)? {
         guard let stored = try? JSONDecoder().decode(StoredAppSettings.self, from: data) else { return nil }
         var settings = AppSettings.defaults()
         var problems = stored.problems
@@ -316,7 +327,6 @@ public struct AppSettings: Codable, Sendable, Equatable {
         }
         if let bands = stored.bands { settings.bands = bands }
         if let preamp = stored.preampDecibels { settings.preampDecibels = preamp }
-        if let enabled = stored.isEQEnabled { settings.isEQEnabled = enabled }
         if let presets = stored.presets {
             settings.presets = presets
             settings.activePresetID = stored.activePresetID
@@ -325,18 +335,19 @@ public struct AppSettings: Codable, Sendable, Equatable {
             settings.presets = [EQPreset(name: firstPresetName, bands: settings.bands, preampDecibels: settings.preampDecibels)]
             settings.activePresetID = settings.presets[0].id
         }
-        if let value = stored.isPresetPerOutputEnabled { settings.isPresetPerOutputEnabled = value }
         if let value = stored.presetAssignments { settings.presetAssignments = value }
         if let value = stored.noCorrectionOutputs { settings.noCorrectionOutputs = Set(value) }
         if let value = stored.deviceNames { settings.deviceNames = value }
         if let value = stored.editsByDevice { settings.editsByDevice = value }
         settings.lastOutputDeviceUID = stored.lastOutputDeviceUID
         if let value = stored.excludedApps { settings.excludedApps = value }
-        if let value = stored.autoStartEngineOnLaunch { settings.autoStartEngineOnLaunch = value }
+        // Absent in documents before version 4 (whatever their old
+        // auto-start was): on, as at first launch.
+        if let value = stored.isCorrectionOn { settings.isCorrectionOn = value }
         if let value = stored.loginItemRequested { settings.loginItemRequested = value }
         if let value = stored.bufferFrames { settings.bufferFrames = value }
         if let value = stored.outputPairs { settings.outputPairs = value }
-        return (settings, problems)
+        return (settings, problems, stored.version)
     }
 
     /// Outputs that are listed (and keep their name) even when unplugged:
@@ -370,6 +381,9 @@ public struct AppSettingsLoad: Sendable {
     public var notice: String?
     /// True when the stage-3 document was converted.
     public var migrated: Bool
+    /// True when a stage-4 document older than `AppSettings.currentVersion`
+    /// was converted (its raw data is in `backups`): save the new format.
+    public var upgraded: Bool
 }
 
 // MARK: - Lenient decoding
@@ -381,26 +395,26 @@ private struct StoredAppSettings: Decodable {
     var version: Int?
     var bands: [EQBand]?
     var preampDecibels: Double?
-    var isEQEnabled: Bool?
     var presets: [EQPreset]?
     var activePresetID: UUID?
-    var isPresetPerOutputEnabled: Bool?
     var presetAssignments: [String: UUID]?
     var noCorrectionOutputs: [String]?
     var deviceNames: [String: String]?
     var editsByDevice: [String: DeviceEdits]?
     var lastOutputDeviceUID: String?
     var excludedApps: [ExcludedAppRecord]?
-    var autoStartEngineOnLaunch: Bool?
+    var isCorrectionOn: Bool?
     var loginItemRequested: Bool?
     var bufferFrames: Int?
     var outputPairs: [String: Int]?
     var problems: [String] = []
 
+    // Version-3 keys no longer read (see the header): isEQEnabled,
+    // isPresetPerOutputEnabled, autoStartEngineOnLaunch.
     enum CodingKeys: String, CodingKey {
-        case version, bands, preampDecibels, isEQEnabled, presets, activePresetID, isPresetPerOutputEnabled
+        case version, bands, preampDecibels, presets, activePresetID
         case presetAssignments, noCorrectionOutputs, deviceNames, editsByDevice, lastOutputDeviceUID, excludedApps
-        case autoStartEngineOnLaunch, loginItemRequested, bufferFrames, outputPairs
+        case isCorrectionOn, loginItemRequested, bufferFrames, outputPairs
     }
 
     init(from decoder: Decoder) throws {
@@ -422,7 +436,6 @@ private struct StoredAppSettings: Decodable {
             problems += list.compactMap(\.problem).map { "Filtro: \($0)" }
         }
         preampDecibels = field(Double.self, .preampDecibels, "Preamp")
-        isEQEnabled = field(Bool.self, .isEQEnabled, "Stato EQ")
         if let list = field([LenientPreset].self, .presets, "Elenco dei preset") {
             presets = list.compactMap(\.preset)
             if presets!.count < list.count { problems.append("\(list.count - presets!.count) preset illeggibili ignorati") }
@@ -433,7 +446,6 @@ private struct StoredAppSettings: Decodable {
             activePresetID = UUID(uuidString: text)
             if activePresetID == nil { problems.append("Preset attivo illeggibile") }
         }
-        isPresetPerOutputEnabled = field(Bool.self, .isPresetPerOutputEnabled, "Opzione preset per uscita")
         if let raw = field([String: String].self, .presetAssignments, "Associazioni preset-uscita") {
             presetAssignments = raw.compactMapValues(UUID.init(uuidString:))
             if presetAssignments!.count < raw.count { problems.append("Associazioni preset-uscita illeggibili ignorate") }
@@ -456,7 +468,7 @@ private struct StoredAppSettings: Decodable {
             if excludedApps!.count < list.count { problems.append("App escluse illeggibili ignorate") }
             problems += list.compactMap(\.problem)
         }
-        autoStartEngineOnLaunch = field(Bool.self, .autoStartEngineOnLaunch, "Avvio automatico")
+        isCorrectionOn = field(Bool.self, .isCorrectionOn, "Stato della correzione")
         loginItemRequested = field(Bool.self, .loginItemRequested, "Apertura al login")
         bufferFrames = field(Int.self, .bufferFrames, "Dimensione del buffer")
         outputPairs = field([String: Int].self, .outputPairs, "Canali di uscita")

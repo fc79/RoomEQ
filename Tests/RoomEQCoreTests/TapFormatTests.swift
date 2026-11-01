@@ -52,4 +52,26 @@ struct TapFormatTests {
         #expect(SampleRateGuard.violation(tapRate: 44100, deviceRate: 44100, captureRate: 48000) != nil)
         #expect(SampleRateGuard.violation(tapRate: 0, deviceRate: 44100, captureRate: 44100) != nil)
     }
+
+    /// Unknown rates (NaN, infinite, 0, negative, absurd) never crash and
+    /// are named as unknown; the capture rate is named too.
+    @Test func unknownRatesAreSafe() {
+        for bad in [Double.nan, .infinity, -.infinity, 0, -48_000, 1e300] {
+            #expect(AudioFormatText.kilohertz(bad) == "—", "\(bad)")
+            #expect(AudioFormatText.kilohertzOrUnknown(bad) == "sconosciuta", "\(bad)")
+            #expect(AudioFormatText.change(from: bad, to: 48_000) == "48 kHz", "\(bad)")
+            #expect(AudioFormatText.change(from: 44_100, to: bad) == "—", "\(bad)")
+            #expect(LatencyBreakdown(components: LatencyComponents(delayFrames: 64), sampleRate: bad).summary == "—")
+            #expect(LatencyBreakdown(components: LatencyComponents(delayFrames: 64), sampleRate: bad).totalMilliseconds == 0)
+        }
+        for bad in [Double.nan, .infinity, -.infinity, 1e300, -1e300] {
+            #expect(AudioFormatText.oneDecimal(bad) == "—", "\(bad)")
+        }
+        #expect(
+            SampleRateGuard.violation(tapRate: .nan, deviceRate: 48_000, captureRate: .infinity)
+                == "Frequenza di campionamento sconosciuta (tap sconosciuta, dispositivo 48 kHz, "
+                + "cattura sconosciuta): RoomEQ non si avvia.")
+        #expect(SampleRateGuard.violation(tapRate: 48_000, deviceRate: 48_000, captureRate: 0)?.contains("cattura sconosciuta") == true)
+        #expect(SampleRateGuard.violation(tapRate: 48_000, deviceRate: .nan, captureRate: 48_000) != nil)
+    }
 }

@@ -83,15 +83,13 @@ enum LaunchAtLoginStatus: Equatable, Sendable {
     case unavailable
 }
 
-/// Three states (plus transitions) for the menu-bar icon.
+/// States for the menu-bar icon.
 enum MenuBarState: Equatable, Sendable {
-    /// Engine off: audio goes straight to the speakers.
+    /// "Correzione" off: audio goes straight to the speakers.
     case stopped
     case starting
-    /// Running with the EQ on.
+    /// The correction is applied.
     case active
-    /// Running with the EQ off (original sound through RoomEQ).
-    case bypassed
     /// Stopped because of an error (`lastError`).
     case failed
     /// Switched on, paused: the current output has "no correction"

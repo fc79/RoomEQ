@@ -1,13 +1,17 @@
-// "Impostazioni": open at login and start RoomEQ when it opens.
+// The "Avvio" section (collapsible, summary "All'accesso" / "Manuale"):
+// open RoomEQ at login, with the macOS hint and its (dismissible) error.
 
 import RoomEQCore
 import SwiftUI
 
-struct SettingsSectionView: View {
+struct StartupSectionView: View {
     let controller: AudioEngineController
 
     var body: some View {
-        PanelDisclosure(title: "Impostazioni") {
+        CollapsibleSection(
+            title: "Avvio", summary: controller.launchAtLogin ? "All'accesso" : "Manuale",
+            hasError: controller.launchAtLoginError != nil, storageKey: "startup"
+        ) {
             Toggle(
                 "Apri all'accesso",
                 isOn: Binding(get: { controller.launchAtLogin }, set: { controller.setLaunchAtLogin($0) })
@@ -22,18 +26,9 @@ struct SettingsSectionView: View {
             if controller.launchAtLoginStatus == .requiresApproval {
                 Button("Apri Elementi login") { controller.openLoginItemsSettings() }
             }
-
-            Toggle(
-                "Accendi RoomEQ all'apertura",
-                isOn: Binding(
-                    get: { controller.autoStartEngineOnLaunch },
-                    set: { controller.setAutoStartEngineOnLaunch($0) })
-            )
-            .toggleStyle(.switch)
-            Text("All'apertura dell'app la correzione parte da sola, senza premere l'interruttore in alto.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if let error = controller.launchAtLoginError {
+                DismissibleMessage(text: error) { controller.clearLaunchAtLoginError() }
+            }
         }
     }
 

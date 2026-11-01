@@ -14,9 +14,20 @@
 //
 // Settings (stage 4): one versioned document (`AppSettings`, RoomEQCore)
 // holds the working EQ state, presets, per-output assignments, exclusions
-// and auto-start; saved to UserDefaults (debounced 0,5 s, flushed on quit),
-// loaded leniently at launch (migrating the stage-3 "EQSettings"); anything
-// unreadable is backed up before it can be overwritten.
+// and the "Correzione" switch; saved to UserDefaults (debounced 0,5 s,
+// flushed on quit), loaded leniently at launch (migrating the stage-3
+// "EQSettings"); anything unreadable is backed up before it can be
+// overwritten.
+//
+// One switch, "Correzione" (`isCorrectionOn`, `setCorrectionOn`): on = the
+// engine runs with the filters; off = nothing runs (tap, aggregate and
+// IOProcs released, audio straight to the device, no added latency). There
+// is no bypass mode any more. The switch is remembered and restored at
+// launch (default on). Quitting ("Esci") does not change it.
+//
+// Errors are kept per area so the panel can show each one next to the
+// control that caused it: `lastError` (engine), `outputError` (output,
+// channels, sample rate), `launchAtLoginError`, `saveError`.
 // One file on purpose: the extensions at the bottom (Presets, Exclusions,
 // System) are in the same file so that all state can be `private(set)`
 // (views can read it, never write it).
@@ -32,21 +43,21 @@
 // them for the actual rate.
 //
 // Automatic pause ("Nessuna correzione", see OutputAssignment.swift in
-// RoomEQCore): with per-output presets on and the macOS default output set
-// to "no correction", the engine is stopped completely (`.paused`: no tap,
-// no aggregate, no IOProc) while the main switch stays on; RoomEQ resumes
+// RoomEQCore): with the macOS default output set to "no correction" (the
+// per-output rules always apply), the engine is stopped completely
+// (`.paused`: no tap, no aggregate, no IOProc) while the switch stays on; RoomEQ resumes
 // on its own when the default output has correction again. Pausing and
 // resuming are neither errors nor automatic restarts. The default-output
 // listener lives here (`prepare`), not in the session, so it works while
 // paused. Every launch goes through `launch(on:)`, which pauses instead
 // when the rules say so; `applyOutputMode` handles the other direction.
-// The user's intention (`isSwitchedOn`) is kept apart from `state`: it
+// The user's intention (`isCorrectionOn`) is kept apart from `state`: it
 // survives errors, so after a failed start a change of the macOS output
 // still pauses (no correction) or tries again (correction); only the
-// switch (`stop()`) turns it off.
+// switch (`setCorrectionOn(false)`) turns it off.
 //
-// Retry window (`startRetryDeadline`, 30 s): opened by the auto-start at
-// login, an automatic resume, and a change of the macOS output (also while
+// Retry window (`startRetryDeadline`, 30 s): opened by the start at launch
+// (switch left on; also at login), an automatic resume, and a change of the macOS output (also while
 // running, or after a lost device). A device just switched on or plugged in
 // often has irregular IO for a moment, so inside the window a failed start
 // is NOT an error: RoomEQ stays `.starting` ("Attendo che l'uscita … sia
@@ -89,22 +100,31 @@ final class AudioEngineController {
     // MARK: Status
 
     private(set) var state: EngineState = .stopped
-    /// Short, human-readable (Italian) status line.
-    private(set) var status = "Fermo"
-    /// Last error or notice, nil when everything is fine.
+    /// Engine error (start failed, too many restarts…), Italian; nil when
+    /// everything is fine. The panel shows it in red; with `.failed`,
+    /// `statusLine` only says "Correzione non attiva". It can also hold a
+    /// short notice while the correction goes on (a device was unplugged, a
+    /// replaced session had failed): notices clear themselves after
+    /// `engineNoticeDuration`. Errors of the settings are elsewhere
+    /// (`outputError`, `launchAtLoginError`, `saveError`).
     private(set) var lastError: String?
+    /// Text of the transition in progress, shown by `statusLine` while
+    /// `.starting` / `.stopping` (see `CorrectionStatusText`).
+    private var transitionStatus = CorrectionStatusText.starting
     /// True when the last start failed in a way that looks like macOS
     /// refusing audio capture (privacy permission). `lastError` then holds an
     /// Italian explanation with the System Settings path.
     private(set) var audioCapturePermissionLikelyDenied = false
 
     var isRunning: Bool { state == .running }
-    /// The main switch: the user's intention, set by `start()` (also the
-    /// auto-start) and cleared only by `stop()` / quitting. Stays on while
-    /// paused and after an error (`.failed`, `lastError` explains it): the
-    /// switch shows "on" until the user turns it off. Use this (not
-    /// `isRunning`) for the on/off toggle.
-    private(set) var isSwitchedOn = false
+    /// The "Correzione" switch: the user's intention, set by
+    /// `setCorrectionOn` (and at launch, restored) and cleared only by
+    /// `setCorrectionOn(false)` / quitting. Stays on while starting, paused
+    /// and after an error (`.failed`, `lastError` explains it): the switch
+    /// shows "on" until the user turns it off. Use this (not `isRunning`)
+    /// for the toggle; disable the toggle while `state == .stopping`.
+    private(set) var isCorrectionOn = false
+    // Invariant: `.failed` only with the switch on (`fail` checks it).
     /// Name of the output RoomEQ is paused for (nil unless `.paused`).
     var pausedOutputName: String? { state == .paused ? pausedDeviceName : nil }
 
@@ -138,9 +158,11 @@ final class AudioEngineController {
 
     // MARK: Readouts
 
+    /// Sample rate and latency of the RUNNING session (nil otherwise: no
+    /// latency is shown while the correction is off, paused or failed).
     private(set) var sampleRate: Double?
     private(set) var latency: LatencyBreakdown?
-    /// e.g. "Stima 5,7 ms (ingresso … + buffer … + anello … + uscita …)".
+    /// e.g. "Stima 5,7 ms (RoomEQ 5,0 + uscita 0,7) a 44,1 kHz" ("—" when unknown).
     var latencySummary: String { latency?.summary ?? "—" }
     /// Meters, refreshed ~25 times per second while running. Peaks are the
     /// maximum since the previous refresh; counters are cumulative per run.
@@ -171,12 +193,8 @@ final class AudioEngineController {
 
     /// The EQ bands in processing order (at most `EQBand.maximumCount`).
     var bands: [EQBand] { settings.bands }
-    /// EQ on (processed signal) or off (original signal, 10 ms crossfade).
-    /// The filters keep running while off, so switching is click-free.
-    /// Global: not part of presets.
-    var isEQEnabled: Bool { settings.isEQEnabled }
     /// Output preamp in dB, `preampRange` (-24…0): attenuation only.
-    /// Applied (15 ms ramp) with the EQ on and off.
+    /// Applied with a 15 ms ramp.
     var preampDecibels: Double { settings.preampDecibels }
     static let preampRange = Preamp.range
     /// Largest boost of the combined EQ curve between 20 Hz and 20 kHz
@@ -200,7 +218,8 @@ final class AudioEngineController {
     private(set) var settingsNotice: String?
 
     /// Result of the last REW import: warnings (skipped filters, other
-    /// equaliser…), a one-line summary on success, an error otherwise.
+    /// equaliser…), a one-line summary on success, an error otherwise
+    /// (cleared by a successful import or `clearImportError()`).
     private(set) var lastImportWarnings: [String] = []
     private(set) var lastImportSummary: String?
     private(set) var lastImportError: String?
@@ -211,9 +230,16 @@ final class AudioEngineController {
 
     /// Everything persisted (read-only for views: use the documented API).
     private(set) var settings: AppSettings
-    /// Last error of a settings action (output, sample rate, login item,
-    /// exclusions, saving), Italian; nil when fine. `clearSettingsError()` resets it.
-    private(set) var lastSettingsError: String?
+    /// Error of the last output action (choosing the macOS output, channel
+    /// pair, sample rate), Italian; nil when fine. Show it next to the
+    /// output controls; `clearOutputError()` resets it.
+    private(set) var outputError: String?
+    /// Error of the last "open at login" change, Italian; nil when fine.
+    /// `clearLaunchAtLoginError()` resets it.
+    private(set) var launchAtLoginError: String?
+    /// The settings could not be saved, Italian; nil when fine. Cleared by
+    /// the next successful save or `clearSaveError()`.
+    private(set) var saveError: String?
     /// Rates the output device offers (standard rates inside its ranges).
     private(set) var availableSampleRates: [Double] = []
     /// True while a sample-rate change requested by the user is in progress.
@@ -272,6 +298,12 @@ final class AudioEngineController {
     /// Pause between attempts (each attempt takes about 1 s more itself).
     static let startRetryDelay: TimeInterval = 1.5
     @ObservationIgnored private var automaticNoteClear: DispatchWorkItem?
+    /// Clears an engine notice (see `lastError`).
+    @ObservationIgnored private var engineNoticeClear: DispatchWorkItem?
+    static let engineNoticeDuration: TimeInterval = 15
+    /// Launch generation of the session start in flight (waiting for
+    /// `engine.start`): in flight iff it equals `launchGeneration`.
+    @ObservationIgnored private var launchInFlightGeneration: Int?
     @ObservationIgnored private var iconCache: [String: NSImage] = [:]
     /// Cumulative clip counters at the last reset (see `clipStatus`).
     @ObservationIgnored private var clipBaseline = ClipCounters.zero
@@ -283,7 +315,8 @@ final class AudioEngineController {
     /// RoomEQ's bundle ID (always excluded, never listed).
     static let ownBundleID = Bundle.main.bundleIdentifier ?? "com.federicociapi.RoomEQ"
     /// Incremented whenever pending launches become unwanted (new launch,
-    /// stop, failure). A start completing with an old generation is stopped.
+    /// stop, pause, failure). A start completing with an old generation is
+    /// stopped.
     @ObservationIgnored private var launchGeneration = 0
     @ObservationIgnored private var meterTimer: Timer?
     @ObservationIgnored private var deviceListeners: [PropertyListener] = []
@@ -314,7 +347,8 @@ final class AudioEngineController {
             existing: existing, adding: loaded.backups, timestamp: Int(Date().timeIntervalSince1970))
         for (key, data) in plan.writes {
             userDefaults.set(data, forKey: key)
-            Log.app.error("Saved settings not fully readable; raw data kept in \(key, privacy: .public)")
+            // Unreadable parts, or an older format about to be converted.
+            Log.app.notice("Saved settings kept as they were in \(key, privacy: .public)")
         }
         for key in plan.deletions { userDefaults.removeObject(forKey: key) }
         if !loaded.warnings.isEmpty {
@@ -330,6 +364,9 @@ final class AudioEngineController {
         if loaded.migrated {
             Log.app.notice("Settings migrated from stage 3 (preset «\(AppSettings.firstPresetName, privacy: .public)»)")
             writeSettings()  // the new document exists from now on
+        } else if loaded.upgraded {
+            Log.app.notice("Settings converted to version \(AppSettings.currentVersion)")
+            writeSettings()  // the old one is in a backup
         }
     }
 
@@ -340,12 +377,17 @@ final class AudioEngineController {
         prepared = true
         engine.eventHandler = { [weak self] event in self?.handle(event) }
         refreshLaunchAtLoginStatus()
-        if settings.autoStartEngineOnLaunch {
-            // At login the HAL / the output device may not be ready yet:
-            // keep trying for up to 30 s.
-            startRetryDeadline = Date().addingTimeInterval(Self.startRetryWindow)
+        refreshDevices()
+        if settings.isCorrectionOn {
+            // The switch as the user left it. At login the HAL / the output
+            // device may not be ready yet: inside the window a failed start
+            // (or no output yet) is retried (`retryWithinWindow`), never
+            // counted as an automatic restart.
+            Log.app.info("Correction on at launch")
+            isCorrectionOn = true
+            openRetryWindow()
+            start()
         }
-        refreshDevices { [weak self] in self?.attemptStartRetry() }
         // HAL listener registration can block briefly: done off the main
         // thread; the handlers run on main.
         deviceQueue.async { [weak self] in
@@ -368,37 +410,56 @@ final class AudioEngineController {
         }
     }
 
-    /// Auto-start at launch: starts once a default output exists (checked
-    /// every 2 s until `startRetryDeadline`); a start that then fails is
-    /// retried by `retryWithinWindow`. Never counted as automatic restarts.
-    private func attemptStartRetry() {
-        guard let deadline = startRetryDeadline else { return }
-        guard Date() < deadline else {
-            startRetryDeadline = nil
-            Log.app.error("Start retries gave up after 30 s")
-            return
+    // MARK: The "Correzione" switch
+
+    /// One-line Italian status for the panel, e.g. "Correzione attiva ·
+    /// «Quantum» · 6,3 ms", "Correzione spenta", "In pausa: nessuna
+    /// correzione per «…»", "Avvio…", "Attendo che l'uscita «…» sia
+    /// pronta…"; after an error "Correzione non attiva" (the detail is in
+    /// `lastError`).
+    var statusLine: String {
+        switch state {
+        case .running:
+            return CorrectionStatusText.active(
+                outputName: activeOutputDevice?.name, latencyMilliseconds: latency?.totalMilliseconds)
+        case .stopped: return CorrectionStatusText.off
+        case .paused: return CorrectionStatusText.paused(outputName: pausedDeviceName)
+        case .failed: return CorrectionStatusText.notActive
+        case .starting, .stopping: return transitionStatus
         }
-        guard state == .stopped || state == .failed else { return }
-        guard systemOutputDevice != nil else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                self?.refreshDevices { [weak self] in self?.attemptStartRetry() }
-            }
-            return
+    }
+
+    /// The switch: on starts the correction (or tries again after an
+    /// error), off stops it completely. Remembered for the next launch.
+    /// Ignored while `.stopping` (disable the toggle meanwhile).
+    /// The only place (with the restore at launch) where the switch is
+    /// turned on or off, so the saved setting always matches it.
+    func setCorrectionOn(_ on: Bool) {
+        guard state != .stopping else { return }
+        if settings.isCorrectionOn != on {
+            settings.isCorrectionOn = on
+            saveSettings()
         }
-        Log.app.info("Auto-start at launch")
-        start()
+        isCorrectionOn = on
+        on ? start() : stop()
+    }
+
+    /// After an error (`.failed`, switch on): tries to start again.
+    func retry() {
+        guard state == .failed else { return }
+        setCorrectionOn(true)
     }
 
     // MARK: Start / stop
 
-    func start() {
-        guard state == .stopped || state == .failed else { return }
-        isSwitchedOn = true
+    /// Starts with the switch on (`setCorrectionOn`, launch, retries).
+    private func start() {
+        guard isCorrectionOn, state == .stopped || state == .failed else { return }
         automaticRestarts.removeAll()
         audioCapturePermissionLikelyDenied = false
         lastError = nil
         state = .starting
-        status = "Avvio…"
+        transitionStatus = CorrectionStatusText.starting
         let generation = invalidatePendingLaunches()
         refreshDevices { [weak self] in
             guard let self, self.state == .starting, self.launchGeneration == generation else { return }
@@ -407,35 +468,34 @@ final class AudioEngineController {
                 if !self.retryWithinWindow(after: noOutput) { self.fail(noOutput) }
                 return
             }
-            self.launch(on: device, statusText: "Avvio su \(device.name)…")
+            self.launch(on: device, statusText: CorrectionStatusText.starting)
         }
     }
 
     /// Stops the engine. Also works from `.failed` (makes sure nothing is
     /// left) and `.paused` (switches off).
-    func stop() {
+    private func stop() {
         guard state == .running || state == .starting || state == .failed || state == .paused else { return }
-        isSwitchedOn = false
         startRetryDeadline = nil
         rateChangeRetryAvailable = false
+        replacedSessionID = nil  // a late failure of it must not count now
+        replacedSessionDate = nil
+        automaticRestarts.removeAll()
+        audioCapturePermissionLikelyDenied = false
         invalidatePendingLaunches()
         clearActiveSession()
         state = .stopping
-        status = "Arresto…"
+        transitionStatus = CorrectionStatusText.stopping
         lastError = nil
         engine.stop { [weak self] in
             guard let self, self.state == .stopping else { return }
             self.state = .stopped
-            self.status = "Fermo"
         }
     }
 
-    func toggle() {
-        isSwitchedOn ? stop() : start()
-    }
-
     /// Synchronous shutdown for app termination and SIGINT/SIGTERM: returns
-    /// once the IOProcs, the aggregate and the tap are destroyed.
+    /// once the IOProcs, the aggregate and the tap are destroyed. The saved
+    /// switch is left as it is (restored at the next launch).
     func shutdown() {
         flushPendingSave()
         // shutdown() may be followed by exit(0) (signals): make sure the
@@ -445,9 +505,8 @@ final class AudioEngineController {
         invalidatePendingLaunches()
         clearActiveSession()
         engine.stopSynchronously()
-        isSwitchedOn = false
+        isCorrectionOn = false
         state = .stopped
-        status = "Fermo"
         Log.app.info("Engine shut down")
     }
 
@@ -456,12 +515,12 @@ final class AudioEngineController {
     /// Applied live (validated against the active device).
     func setOutputChannelPair(_ pair: OutputChannelPair) {
         guard availableChannelPairs.contains(pair) else {
-            lastError = "Canali \(pair) non disponibili su questo dispositivo"
+            outputError = "Canali \(pair) non disponibili su questo dispositivo"
             return
         }
         if let renderState {
             guard renderState.setOutputPair(pair) else {
-                lastError = "Canali \(pair) non disponibili sul dispositivo in uso"
+                outputError = "Canali \(pair) non disponibili sul dispositivo in uso"
                 return
             }
             engine.refreshLatency()
@@ -508,14 +567,6 @@ final class AudioEngineController {
         if clipStatus != .none { clipStatus = .none }
     }
 
-    /// EQ on/off (10 ms crossfade to/from the original signal).
-    func setEQEnabled(_ enabled: Bool) {
-        guard enabled != isEQEnabled else { return }
-        settings.isEQEnabled = enabled
-        renderState?.setBypass(!enabled)
-        saveSettings()
-    }
-
     /// Updates the band with the same ID (unknown IDs are ignored). Only
     /// the fields that differ from the current band are taken, each clamped
     /// to `EQBand.frequencyRange` / `gainRange` / `qRange` (non-finite
@@ -553,8 +604,7 @@ final class AudioEngineController {
         return band
     }
 
-    /// Back to the user's REW measurement filters (preamp and EQ on/off
-    /// unchanged). Marks the active preset as modified (not saved into it).
+    /// Back to the user's REW measurement filters (preamp unchanged). Marks the active preset as modified (not saved into it).
     func resetToDefaultFilters() {
         settings.bands = EQBand.defaultBands()
         workingStateChanged()
@@ -588,6 +638,9 @@ final class AudioEngineController {
             }
         }
     }
+
+    /// Hides the last import error (the panel's ✕).
+    func clearImportError() { lastImportError = nil }
 
     /// Re-reads the device list and the macOS default output on a background
     /// queue and publishes them on the main thread; then runs `completion`.
@@ -664,30 +717,33 @@ final class AudioEngineController {
         }
     }
 
-    /// Pauses or resumes according to the switch and the per-output rule of
+    /// Pauses or resumes according to the switch and the rule of
     /// the macOS default output (`AppSettings.engineMode`). Paused: resumes
     /// on an output with correction. Failed (switch still on): pauses on a
     /// "no correction" output, and tries again only when the default output
     /// itself changed (`outputChanged`: never on mere device-list refreshes,
-    /// which a failing start causes itself). With no default output a pause
-    /// just waits.
+    /// which a failing start causes itself). Starting on the old output (a
+    /// start in flight, or waiting to retry): starts over on the new one;
+    /// a start still reading the devices picks the new output by itself.
+    /// With no default output a pause just waits.
     private func applyOutputMode(outputChanged: Bool) {
         guard let output = systemOutputDevice else { return }
-        switch settings.engineMode(userWantsOn: isSwitchedOn, outputUID: output.uid) {
+        switch settings.engineMode(userWantsOn: isCorrectionOn, outputUID: output.uid) {
         case .off:
             return
         case .paused:
             pause(on: output)
         case .active:
-            // Waiting to retry on the old output: start over on the new one.
-            let newOutputWhileWaiting = outputChanged && isWaitingForRetry
-            guard state == .paused || (state == .failed && outputChanged) || newOutputWhileWaiting else { return }
+            // Starting (or waiting to retry) on the old output: start over
+            // on the new one. `launch` cancels the old attempt (one chain).
+            let newOutputWhileStarting = outputChanged && (isWaitingForRetry || isLaunchInFlight)
+            guard state == .paused || (state == .failed && outputChanged) || newOutputWhileStarting else { return }
             Log.app.info("Resuming on \(output.uid, privacy: .public) (has correction)")
             // A fresh start with a retry window; not an automatic restart.
             openRetryWindow()
             automaticRestarts.removeAll()
             audioCapturePermissionLikelyDenied = false
-            launch(on: output, statusText: "Riprendo su \(output.name)…")
+            launch(on: output, statusText: CorrectionStatusText.resuming(outputName: output.name))
         }
     }
 
@@ -697,15 +753,14 @@ final class AudioEngineController {
     /// and the switch stays on. Not counted as an error or an automatic
     /// restart. Already paused: only the output name changes.
     private func pause(on device: OutputDeviceInfo) {
-        if pausedDeviceName != device.name { pausedDeviceName = device.name }
-        let text = "In pausa: nessuna correzione per \(device.name)"
-        if status != text { status = text }
+        if pausedDeviceName != device.name { pausedDeviceName = device.name }  // shown by `statusLine`
         guard state != .paused else { return }
         Log.app.info("Pausing: no correction for \(device.uid, privacy: .public)")
         startRetryDeadline = nil  // the start request is satisfied (or no longer wanted)
         rateChangeRetryAvailable = false
         replacedSessionID = nil  // a late failure of it must not count now
         replacedSessionDate = nil
+        audioCapturePermissionLikelyDenied = false
         invalidatePendingLaunches()
         clearActiveSession()
         // Queued on the engine queue: a later start always runs after it.
@@ -731,6 +786,7 @@ final class AudioEngineController {
     }
 
     private var isWaitingForRetry: Bool { state == .starting && retryWaitGeneration == launchGeneration }
+    private var isLaunchInFlight: Bool { state == .starting && launchInFlightGeneration == launchGeneration }
 
     /// Inside the retry window, a failed start (or no output yet) is retried
     /// after `startRetryDelay`, staying `.starting` with no error shown (it
@@ -746,9 +802,8 @@ final class AudioEngineController {
             return false
         }
         Log.app.notice("Start failed inside the retry window (\(message, privacy: .public)); retrying")
-        let name = systemOutputDevice?.name
         state = .starting
-        status = name.map { "Attendo che l'uscita «\($0)» sia pronta…" } ?? "Attendo un'uscita audio…"
+        transitionStatus = CorrectionStatusText.waiting(outputName: systemOutputDevice?.name)
         lastError = nil
         let generation = invalidatePendingLaunches()
         retryWaitGeneration = generation
@@ -762,7 +817,7 @@ final class AudioEngineController {
                     if !self.retryWithinWindow(after: noOutput) { self.fail(noOutput) }
                     return
                 }
-                self.launch(on: device, statusText: "Attendo che l'uscita «\(device.name)» sia pronta…")
+                self.launch(on: device, statusText: CorrectionStatusText.waiting(outputName: device.name))
             }
         }
         return true
@@ -775,7 +830,6 @@ final class AudioEngineController {
             bufferFrames: bufferSize,
             excludedBundleIDs: excludedBundleIDs,
             gain: Preamp.linearGain(decibels: preampDecibels) ?? 1,
-            bypass: !isEQEnabled,
             bands: bands,
             processListFallbackEnabled: !userDefaults.bool(forKey: "DisableProcessExclusionFallback"))
     }
@@ -796,6 +850,8 @@ final class AudioEngineController {
         activeSessionID = nil
         activeOutputDevice = nil
         tapFormatDescription = nil
+        sampleRate = nil
+        latency = nil
         ringStatus = .empty
         clipBaseline = .zero  // a new session starts with fresh counters
         if clipStatus != .none { clipStatus = .none }
@@ -818,10 +874,11 @@ final class AudioEngineController {
         }
         clearActiveSession()
         state = .starting
-        status = statusText
+        transitionStatus = statusText
         lastError = nil
         outputChannelPair = rememberedPair(for: device)  // remembered per output device
         let generation = invalidatePendingLaunches()
+        launchInFlightGeneration = generation
         // engine.start stops the current session (if any) before building
         // the new one, on the engine queue.
         engine.start(configuration(for: device)) { [weak self] result in
@@ -830,6 +887,7 @@ final class AudioEngineController {
     }
 
     private func didStart(_ result: Result<SessionInfo, Error>, generation: Int) {
+        if launchInFlightGeneration == generation { launchInFlightGeneration = nil }
         let wanted = generation == launchGeneration && state == .starting
         switch result {
         case .success(let info):
@@ -846,7 +904,6 @@ final class AudioEngineController {
             link = info.link
             // Re-apply live settings changed while the engine was starting.
             info.renderState.setPreamp(decibels: preampDecibels)
-            info.renderState.setBypass(!isEQEnabled)
             if !info.renderState.setOutputPair(outputChannelPair) { outputChannelPair = info.outputPair }
             sampleRate = info.sampleRate
             latency = info.latency
@@ -858,7 +915,7 @@ final class AudioEngineController {
             startRetryDeadline = nil
             rateChangeRetryAvailable = false
             state = .running
-            status = "In funzione su \(info.outputDevice.name) · \(AudioFormatText.kilohertz(info.sampleRate)) · buffer \(info.bufferFrames)"
+            Log.app.info("Running on \(info.outputDevice.uid, privacy: .public), \(info.sampleRate) Hz, buffer \(info.bufferFrames)")
             startMeters()
             // Curve and issues for this session's rate; bands changed while
             // starting are published (an unchanged set is not re-sent).
@@ -887,7 +944,7 @@ final class AudioEngineController {
         rateChangeRetryAvailable = false
         Log.app.notice("Start failed right after a sample-rate change (\(error.localizedDescription, privacy: .public)); retrying once")
         state = .starting
-        status = "Riprovo dopo il cambio di frequenza…"
+        transitionStatus = CorrectionStatusText.retryAfterRateChange
         let generation = invalidatePendingLaunches()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self, self.state == .starting, self.launchGeneration == generation else { return }
@@ -897,7 +954,7 @@ final class AudioEngineController {
                     self.fail("Nessun dispositivo di uscita di macOS disponibile")
                     return
                 }
-                self.launch(on: device, statusText: "Avvio su \(device.name)…")
+                self.launch(on: device, statusText: CorrectionStatusText.starting)
             }
         }
         return true
@@ -916,7 +973,7 @@ final class AudioEngineController {
             let lostUID = activeOutputDevice?.uid
             clearActiveSession()
             state = .starting
-            status = "\(name) scollegato, passo all'uscita di macOS…"
+            transitionStatus = CorrectionStatusText.deviceLost(name: name)
             let generation = invalidatePendingLaunches()
             refreshDevices { [weak self] in
                 guard let self, self.state == .starting, self.launchGeneration == generation else { return }
@@ -925,8 +982,8 @@ final class AudioEngineController {
                     return
                 }
                 self.openRetryWindow()  // the new output may not be ready yet
-                self.launch(on: device, statusText: "Avvio su \(device.name)…")
-                if self.state == .starting { self.lastError = "\(name) è stato scollegato: audio su \(device.name)" }
+                self.launch(on: device, statusText: CorrectionStatusText.starting)
+                if self.state == .starting { self.showEngineNotice("«\(name)» è stato scollegato: audio su «\(device.name)»") }
             }
 
         case .latencyChanged(let sessionID, let latency):
@@ -940,9 +997,11 @@ final class AudioEngineController {
             } else if sessionID == replacedSessionID, let date = replacedSessionDate, Date().timeIntervalSince(date) < 2 {
                 // The session that a restart just replaced had failed: show
                 // it, and count it, so a failure loop can't hide behind
-                // restarts.
+                // restarts. Only while the correction is still wanted and
+                // going on (switched off / paused: nothing to report).
                 Log.app.error("Replaced session \(sessionID) had failed: \(message, privacy: .public)")
-                lastError = "La sessione precedente si era interrotta: \(message)"
+                guard isCorrectionOn, state == .running || state == .starting else { return }
+                showEngineNotice("La sessione precedente si era interrotta: \(message)")
                 if !countAutomaticRestart() { fail("Troppi riavvii automatici (\(message))") }
             }
         }
@@ -980,20 +1039,41 @@ final class AudioEngineController {
             return
         }
         Log.app.info("Restarting engine: \(reason, privacy: .public)")
-        launch(on: device, statusText: "Riavvio (\(reason))…")
+        launch(on: device, statusText: CorrectionStatusText.restarting)
     }
 
     /// Error state. Always stops the engine, so no session can outlive it.
-    /// Ends any retry window (the next start, if any, opens its own).
+    /// Ends any retry window (the next start, if any, opens its own). The
+    /// message goes to `lastError` only (`statusLine`: "Correzione non attiva").
+    /// With the switch off there is no error to show: RoomEQ just stays off
+    /// (`.failed` never exists with the switch off).
     private func fail(_ message: String) {
         Log.app.error("Engine error: \(message, privacy: .public)")
         startRetryDeadline = nil
         invalidatePendingLaunches()
         clearActiveSession()
         engine.stop()
+        guard isCorrectionOn else {
+            if state != .stopping { state = .stopped }  // a stop in progress ends by itself
+            return
+        }
         state = .failed
         lastError = message
-        status = "Errore: \(message)"
+    }
+
+    /// A notice in `lastError` while the correction goes on; cleared after
+    /// `engineNoticeDuration` unless something else replaced it.
+    private func showEngineNotice(_ message: String) {
+        engineNoticeClear?.cancel()
+        lastError = message
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.lastError == message, self.state != .failed else { return }
+                self.lastError = nil
+            }
+        }
+        engineNoticeClear = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.engineNoticeDuration, execute: work)
     }
 
     // MARK: EQ internals
@@ -1049,9 +1129,10 @@ final class AudioEngineController {
         pendingSave = nil
         do {
             userDefaults.set(try settings.encoded(), forKey: AppSettings.storageKey)
+            if saveError != nil { saveError = nil }
         } catch {
             Log.app.error("Saving settings failed: \(error.localizedDescription, privacy: .public)")
-            lastSettingsError = "Impossibile salvare le impostazioni: \(error.localizedDescription)"
+            saveError = "Impossibile salvare le impostazioni: \(error.localizedDescription)"
         }
     }
 
@@ -1144,8 +1225,7 @@ extension AudioEngineController {
     // MARK: Presets — actions (errors: `PresetError`, Italian messages)
 
     /// Loads a preset (replaces the current sound: ask the user first if
-    /// `hasUnsavedChanges`). Click-free (bands and preamp ramp). EQ on/off
-    /// is not touched.
+    /// `hasUnsavedChanges`). Click-free (bands and preamp ramp).
     func applyPreset(id: UUID) throws {
         try settings.applyPreset(id: id)
         showAutomaticNote(nil)
@@ -1202,34 +1282,25 @@ extension AudioEngineController {
     }
 
     // MARK: Per-output presets
+    //
+    // Always applied (no option): when the macOS output changes to a device
+    // with an assigned preset, it is applied automatically (see
+    // `outputDidChange` in RoomEQCore: unsaved edits are remembered per
+    // output and restored when coming back). A preset takes effect at the
+    // next output change (or at once when the output leaves "no
+    // correction"); "no correction" (pause) takes effect at once. Every
+    // output starts with no rule, which does nothing.
 
-    /// Option (default off): when the macOS output changes to a device with
-    /// an assigned preset, apply it automatically (see `outputDidChange` in
-    /// RoomEQCore: unsaved edits are remembered per output and restored when
-    /// coming back). Takes effect at the next output change; "no correction"
-    /// (pause) takes effect at once.
-    var isPresetPerOutputEnabled: Bool { settings.isPresetPerOutputEnabled }
     /// Device UID -> preset ID.
     var presetAssignments: [String: UUID] { settings.presetAssignments }
     /// Device UIDs set to "no correction".
     var noCorrectionOutputs: Set<String> { settings.noCorrectionOutputs }
 
-    /// On: pauses at once if the current output has "no correction"; off:
-    /// resumes if paused.
-    func setPresetPerOutputEnabled(_ enabled: Bool) {
-        guard enabled != settings.isPresetPerOutputEnabled else { return }
-        settings.isPresetPerOutputEnabled = enabled
-        // Start tracking from the current output.
-        settings.startTrackingOutput(systemOutputDevice?.uid)
-        saveSettings()
-        applyOutputMode(outputChanged: false)
-    }
-
     /// Replaces any rule of that output. If it is the current output and
-    /// it had "no correction" (option on), the preset is applied at once,
-    /// always (unsaved changes are remembered per output, never lost) and
-    /// RoomEQ resumes if it was paused; otherwise, as before, it takes
-    /// effect at the next output change.
+    /// it had "no correction", the preset is applied at once, always
+    /// (unsaved changes are remembered per output, never lost) and RoomEQ
+    /// resumes if it was paused; in every other case the preset takes
+    /// effect at the next change to that output.
     func assignPreset(id: UUID, toDeviceUID uid: String) throws {
         let wasNoCorrection = settings.noCorrectionOutputs.contains(uid)
         try settings.assignPreset(id: id, toDeviceUID: uid)
@@ -1237,7 +1308,7 @@ extension AudioEngineController {
     }
 
     /// "Nessuna correzione" for that output (replaces its preset). If it is
-    /// the current output (and the option is on), RoomEQ pauses at once.
+    /// the current output, RoomEQ pauses at once.
     func assignNoCorrection(toDeviceUID uid: String) {
         guard !uid.isEmpty, !settings.noCorrectionOutputs.contains(uid) else { return }
         settings.assignNoCorrection(toDeviceUID: uid)
@@ -1321,7 +1392,7 @@ extension AudioEngineController {
             Log.app.info("Per-output preset applied for \(output.uid, privacy: .public)")
             workingStateChanged()
         case .restoredEdits(let base, let assigned):
-            var note = "Ripristinate le modifiche non salvate per «\(output.name)»"
+            var note = "Modifiche recuperate per «\(output.name)»"
             if let name = presetName(base) { note += " (basate su «\(name)»)" }
             if let name = presetName(assigned) { note += "; il preset assegnato è «\(name)»" }
             showAutomaticNote(note)
@@ -1361,15 +1432,15 @@ extension AudioEngineController {
     /// changes the output for every app) and checks that macOS switched.
     /// The alert/sound-effects output is never touched (macOS can make it
     /// follow the selected output by itself). RoomEQ then follows the new
-    /// output (engine restart if running). Errors in `lastSettingsError`.
+    /// output (engine restart if running). Errors in `outputError`.
     func setSystemOutputDevice(uid: String) {
         guard let device = outputDevices.first(where: { $0.uid == uid }) else {
-            lastSettingsError = "Dispositivo di uscita non trovato"
+            outputError = "Dispositivo di uscita non trovato"
             return
         }
         guard uid != systemOutputDevice?.uid, !isChangingOutputDevice else { return }
         isChangingOutputDevice = true
-        lastSettingsError = nil
+        outputError = nil
         slowDeviceQueue.async { [weak self] in
             var message: String?
             do {
@@ -1381,7 +1452,7 @@ extension AudioEngineController {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.isChangingOutputDevice = false
-                    if let message { self.lastSettingsError = message }
+                    if let message { self.outputError = message }
                     self.refreshDevices()  // the default-output listener refreshes too
                 }
             }
@@ -1401,31 +1472,31 @@ extension AudioEngineController {
     /// at the new rate (tap, device and capture all follow), the filters are
     /// recomputed; if that first start fails because the HAL is still
     /// settling, it is retried once. Refused while RoomEQ is starting or
-    /// stopping. Errors in `lastSettingsError`.
+    /// stopping. Errors in `outputError`.
     func setDeviceSampleRate(_ rate: Double) {
         guard let device = systemOutputDevice else {
-            lastSettingsError = "Nessun dispositivo di uscita di macOS disponibile"
+            outputError = "Nessun dispositivo di uscita di macOS disponibile"
             return
         }
         switch state {
         case .starting:
-            lastSettingsError = "Attendi che RoomEQ finisca di avviarsi"
+            outputError = "Attendi l'avvio della correzione"
             return
         case .stopping:
-            lastSettingsError = "Attendi che RoomEQ finisca di fermarsi"
+            outputError = "Attendi lo spegnimento della correzione"
             return
         case .running, .stopped, .failed, .paused:
             break
         }
         guard SampleRates.contains(availableSampleRates, rate) else {
-            lastSettingsError = "«\(device.name)» non offre \(AudioFormatText.kilohertz(rate))"
+            outputError = "«\(device.name)» non offre \(AudioFormatText.kilohertz(rate))"
             return
         }
         guard !isChangingSampleRate, !(currentSampleRate.map { SampleRates.same($0, rate) } ?? false) else { return }
         let oldRate = currentSampleRate
         let wasRunning = state == .running
         isChangingSampleRate = true
-        lastSettingsError = nil
+        outputError = nil
         pendingRateMessage = nil
         userSampleRateChangeDate = Date()
         rateChangeRetryAvailable = wasRunning
@@ -1452,7 +1523,7 @@ extension AudioEngineController {
                     guard let self else { return }
                     self.isChangingSampleRate = false
                     if let message {
-                        self.lastSettingsError = message
+                        self.outputError = message
                         self.pendingRateMessage = (message, rate, device.uid)
                     }
                     self.userSampleRateChangeDate = Date()
@@ -1480,9 +1551,11 @@ extension AudioEngineController {
         let reached = systemOutputDevice?.uid == pending.uid
             && (systemOutputDevice?.nominalSampleRate.map { SampleRates.same($0, pending.rate) } ?? false)
         guard reached || systemOutputDevice?.uid != pending.uid else { return }
-        if lastSettingsError == pending.message { lastSettingsError = nil }
+        if outputError == pending.message { outputError = nil }
         pendingRateMessage = nil
     }
+
+    func clearOutputError() { outputError = nil }
 
     /// Short reason for a user message (no doubled "operation failed" prefix).
     nonisolated private static func reason(_ error: Error) -> String {
@@ -1651,7 +1724,7 @@ extension AudioEngineController {
 
 // MARK: - System
 //
-// Login item, auto-start, quick EQ toggle and menu-bar state (stage 4).
+// Login item and menu-bar state (stage 4).
 //
 // Login item: SMAppService.mainApp (macOS 13+). macOS records the app by its
 // path and code signature. RoomEQ is ad-hoc signed and rebuilt into ./build,
@@ -1660,32 +1733,18 @@ extension AudioEngineController {
 // /Applications. `launchAtLoginHint` explains what to do.
 
 extension AudioEngineController {
-    // MARK: Quick toggle and menu-bar icon
+    // MARK: Menu-bar icon
 
-    /// EQ on <-> off (click-free crossfade), for the menu bar.
-    func toggleEQ() { setEQEnabled(!isEQEnabled) }
-
-    /// State for a 3-state menu-bar icon (off / EQ on / EQ off) plus
-    /// starting, error and automatic pause.
+    /// State for the menu-bar icon: correction applied, off, starting,
+    /// error, automatic pause.
     var menuBarState: MenuBarState {
         switch state {
         case .stopped, .stopping: return .stopped
         case .starting: return .starting
         case .failed: return .failed
         case .paused: return .paused
-        case .running: return isEQEnabled ? .active : .bypassed
+        case .running: return .active
         }
-    }
-
-    // MARK: Auto-start
-
-    /// Start the engine automatically when RoomEQ opens (default off).
-    var autoStartEngineOnLaunch: Bool { settings.autoStartEngineOnLaunch }
-
-    func setAutoStartEngineOnLaunch(_ enabled: Bool) {
-        guard enabled != settings.autoStartEngineOnLaunch else { return }
-        settings.autoStartEngineOnLaunch = enabled
-        saveSettings()
     }
 
     // MARK: Login item
@@ -1709,10 +1768,10 @@ extension AudioEngineController {
     }
 
     /// Registers / unregisters RoomEQ as a login item (off the main thread;
-    /// `isChangingLaunchAtLogin` meanwhile). Errors in `lastSettingsError`.
+    /// `isChangingLaunchAtLogin` meanwhile). Errors in `launchAtLoginError`.
     func setLaunchAtLogin(_ enabled: Bool) {
         guard !isChangingLaunchAtLogin else { return }
-        lastSettingsError = nil
+        launchAtLoginError = nil
         isChangingLaunchAtLogin = true
         if enabled && !settings.loginItemRequested {
             settings.loginItemRequested = true
@@ -1737,7 +1796,7 @@ extension AudioEngineController {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.isChangingLaunchAtLogin = false
-                    if let message { self.lastSettingsError = message }
+                    if let message { self.launchAtLoginError = message }
                     self.applyLaunchAtLoginStatus(status)
                 }
             }
@@ -1776,7 +1835,9 @@ extension AudioEngineController {
         SMAppService.openSystemSettingsLoginItems()
     }
 
-    func clearSettingsError() { lastSettingsError = nil }
+    func clearLaunchAtLoginError() { launchAtLoginError = nil }
+
+    func clearSaveError() { saveError = nil }
 
     private static var isInApplicationsFolder: Bool {
         let path = Bundle.main.bundleURL.standardizedFileURL.path

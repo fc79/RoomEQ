@@ -14,7 +14,9 @@ struct LatencyTests {
         #expect(latency.outputFrames == 32)
         #expect(latency.totalFrames == 252)
         #expect(abs(latency.totalMilliseconds - 252 / 44.1) < 1e-9)
-        #expect(latency.summary.hasPrefix("Stima 5.7 ms (RoomEQ 5.0 + uscita 0.7)"))
+        #expect(latency.summary == "Stima 5,7 ms (RoomEQ 5,0 + uscita 0,7) a 44,1 kHz")
+        let at48 = LatencyBreakdown(components: LatencyComponents(delayFrames: 288), sampleRate: 48_000)
+        #expect(at48.summary == "Stima 6,0 ms (RoomEQ 6,0 + uscita 0,0) a 48 kHz")
     }
 
     @Test func tapPathLatencyIsAddedAndNothingIsNegative() {

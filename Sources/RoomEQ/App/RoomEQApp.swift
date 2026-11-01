@@ -1,9 +1,9 @@
 // App entry point: a menu-bar-only app (LSUIElement in Info.plist).
 //
 // The panel is `MenuPanelView` (MenuPanelView.swift), made of one view per
-// block (EQQuickRow, EQSectionView, OutputSectionView, OutputPresetsView,
-// ExclusionsView, SettingsSectionView, MetersSectionViews); shared pieces are
-// in PanelComponents.swift.
+// block (PresetRowView, MetersViews, FiltersSectionView, OutputSectionView,
+// OutputRulesView, ExclusionsView, StartupSectionView); shared pieces are in
+// PanelComponents.swift.
 
 import SwiftUI
 
@@ -21,10 +21,10 @@ struct RoomEQApp: App {
     }
 }
 
-/// Menu bar icon with four looks (applied / starting / not applied / error),
-/// so it is clear without opening the panel whether the correction is on
-/// (drawings in MenuBarIcons.swift). The accessibility label tells every
-/// state apart.
+/// Menu bar icon with four looks (correction applied / starting / not
+/// applied or paused / error), so it is clear without opening the panel
+/// whether the correction is on (drawings in MenuBarIcons.swift). The
+/// accessibility label tells every state apart.
 /// A separate view so that it observes the controller.
 struct MenuBarIcon: View {
     let controller: AudioEngineController
@@ -36,12 +36,11 @@ struct MenuBarIcon: View {
 
     private var description: String {
         switch controller.menuBarState {
-        case .stopped: "RoomEQ spento"
-        case .starting: "RoomEQ in avvio"
-        case .active: "RoomEQ attivo, EQ accesa"
-        case .bypassed: "RoomEQ attivo, EQ spenta"
+        case .stopped: "Correzione spenta"
+        case .starting: "Correzione in avvio"
+        case .active: "Correzione attiva"
         case .failed: "RoomEQ: errore"
-        case .paused: "RoomEQ in pausa: nessuna correzione per questa uscita"
+        case .paused: "Correzione in pausa per questa uscita"
         }
     }
 }

@@ -1,5 +1,7 @@
-// The "Uscita" section: macOS output device, channel pair, sound-card sample
-// rate and buffer size.
+// The "Uscita e scheda" section (collapsible, summary "Quantum LT 16 · 44,1 kHz · buffer 64"):
+// macOS output device, channel pair (only on devices with more than 2
+// channels), sound-card sample rate and buffer size. Output errors are shown
+// here, dismissible.
 //
 // Changing the output device changes the macOS default output (RoomEQ
 // follows it). Changing the sample rate changes it for EVERY app using the
@@ -16,12 +18,26 @@ struct OutputSectionView: View {
     private var isBusy: Bool { controller.isChangingOutputDevice || controller.isChangingSampleRate }
 
     var body: some View {
-        PanelSection(title: "Uscita") {
+        CollapsibleSection(
+            title: "Uscita e scheda", summary: summary, hasError: controller.outputError != nil, storageKey: "output") {
+            if let error = controller.outputError {
+                DismissibleMessage(text: error) { controller.clearOutputError() }
+            }
             devicePicker
-            channelsPicker
+            if controller.availableChannelPairs.count >= 2 { channelsPicker }
             sampleRatePicker
             bufferPicker
         }
+    }
+
+    /// "Quantum LT 16 · 44,1 kHz · buffer 64" (device, sample rate, buffer; parts
+    /// that are unknown are left out).
+    private var summary: String {
+        var parts: [String] = []
+        if let name = controller.effectiveOutputDevice?.name { parts.append(name) }
+        if let rate = controller.currentSampleRate { parts.append(AudioFormatText.kilohertz(rate)) }
+        parts.append("buffer \(controller.bufferSize)")
+        return parts.joined(separator: " · ")
     }
 
     // MARK: Device
@@ -45,16 +61,13 @@ struct OutputSectionView: View {
             }
             .labelsHidden()
             .disabled(isBusy || controller.outputDeviceOptions.isEmpty)
-            Text("Cambia l'uscita audio di macOS")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
     }
 
     /// "Scarlett 2i2 (USB · 48 kHz)".
     private static func title(of option: OutputDeviceOption) -> String {
         var details = [option.transportName]
-        if let rate = option.nominalSampleRate { details.append(Format.sampleRate(rate)) }
+        if let rate = option.nominalSampleRate { details.append(AudioFormatText.kilohertz(rate)) }
         details.removeAll { $0.isEmpty }
         return details.isEmpty ? option.name : "\(option.name) (\(details.joined(separator: " · ")))"
     }
@@ -86,25 +99,25 @@ struct OutputSectionView: View {
     private var sampleRatePicker: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                Text("Frequenza scheda").font(.callout)
+                Text("Frequenza di campionamento").font(.callout)
                 Spacer()
                 if controller.isChangingSampleRate { ProgressView().controlSize(.small) }
                 Picker(
-                    "Frequenza scheda",
+                    "Frequenza di campionamento",
                     selection: Binding<Double?>(
                         get: { currentRate },
                         set: { if let rate = $0, rate != currentRate { requestRate(rate) } })
                 ) {
                     if currentRate == nil { Text("—").tag(Double?.none) }
                     ForEach(controller.availableSampleRates, id: \.self) { rate in
-                        Text(Format.sampleRate(rate)).tag(Optional(rate))
+                        Text(AudioFormatText.kilohertz(rate)).tag(Optional(rate))
                     }
                 }
                 .labelsHidden()
                 .fixedSize()
                 .disabled(isBusy || controller.availableSampleRates.isEmpty)
             }
-            Text("Vale per tutte le app che usano questa scheda")
+            Text("Vale per tutte le app, compreso Ableton.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -113,7 +126,7 @@ struct OutputSectionView: View {
     private func requestRate(_ rate: Double) {
         confirmations.present(
             InlineConfirmation(
-                title: "Cambiare la frequenza della scheda a \(Format.sampleRate(rate))?",
+                title: "Cambiare la frequenza di campionamento a \(AudioFormatText.kilohertz(rate))?",
                 message: "Vale per tutte le app, compreso Ableton."
                     + (controller.isRunning ? " RoomEQ si riavvia per un istante." : ""),
                 options: [.standard("Cambia") { [controller] in controller.setDeviceSampleRate(rate) }]))
@@ -129,7 +142,7 @@ struct OutputSectionView: View {
 
     private var bufferPicker: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("Buffer (frame)").font(.callout)
+            Text("Buffer").font(.callout)
             Picker(
                 "Buffer",
                 selection: Binding(

@@ -1,6 +1,6 @@
-// The "EQ" section of the menu panel: preset management, preamp, curve graph,
-// band list, REW import and filter warnings. (EQ on/off and preset switching
-// are in the always-visible quick row, EQQuickRow.swift.)
+// The "Filtri e preamp" section of the menu panel (collapsible, summary
+// "4 filtri · preamp −3,5 dB"): curve graph, preamp, filter list, REW import.
+// Warnings about a filter appear under that filter only (EQBandsList).
 //
 // Pure view over `AudioEngineController` (reads the observable properties,
 // calls its methods).
@@ -10,24 +10,35 @@ import RoomEQCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct EQSectionView: View {
+struct FiltersSectionView: View {
     let controller: AudioEngineController
 
     @State private var importWarningsExpanded = false
     @Environment(ConfirmationPresenter.self) private var confirmations
 
     var body: some View {
-        PanelSection(title: "EQ") {
-            if let notice = controller.settingsNotice {
-                warningLines([notice])
-            }
-            PresetControls(controller: controller)
-            preampBlock
+        CollapsibleSection(
+            title: "Filtri e preamp", summary: summary, hasError: controller.lastImportError != nil, storageKey: "filters") {
             EQCurveGraph(controller: controller)
+            preampBlock
             EQBandsList(controller: controller)
             importBlock
-            filterWarningsBlock
         }
+    }
+
+    /// "4 filtri · preamp −3,5 dB"; with some filters switched off,
+    /// "3 di 4 filtri · preamp −3,5 dB".
+    private var summary: String {
+        let total = controller.bands.count
+        let active = controller.bands.filter(\.isEnabled).count
+        let filters: String
+        switch (total, active) {
+        case (0, _): filters = "Nessun filtro"
+        case (1, _): filters = "1 filtro"
+        case _ where active < total: filters = "\(active) di \(total) filtri"
+        default: filters = "\(total) filtri"
+        }
+        return "\(filters) · preamp \(Format.signedDecibels(controller.preampDecibels))"
     }
 
     // MARK: Preamp
@@ -72,10 +83,6 @@ struct EQSectionView: View {
                     .controlSize(.small)
                     .disabled(abs(controller.preampDecibels - suggested) < 0.05)
             }
-        } else {
-            Text("La curva non amplifica: preamp 0 dB va bene")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -102,14 +109,8 @@ struct EQSectionView: View {
             }
             importWarnings
             if let error = controller.lastImportError {
-                Text(error)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
+                DismissibleMessage(text: error) { controller.clearImportError() }
             }
-            Text("In REW: EQ › Export filter settings as text")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -169,15 +170,6 @@ struct EQSectionView: View {
         panel.begin { [controller] response in
             guard response == .OK, let url = panel.url else { return }
             controller.importREWFile(url: url)
-        }
-    }
-
-    // MARK: Filter warnings
-
-    @ViewBuilder
-    private var filterWarningsBlock: some View {
-        if !controller.filterWarnings.isEmpty {
-            warningLines(controller.filterWarnings)
         }
     }
 }

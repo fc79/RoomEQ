@@ -3,7 +3,7 @@
 // correction is being applied:
 //   applied      (.active)  narrow EQ waves
 //   starting     (.starting) three dots
-//   not applied  (stopped, paused, bypassed) room crossed by a slash
+//   not applied  (stopped, paused) room crossed by a slash
 //   error        (.failed)  exclamation mark
 // Drawn as vectors (sharp at any resolution) and marked as template, so macOS
 // tints them for the light/dark menu bar and the highlighted state.
@@ -20,7 +20,7 @@ enum MenuBarIcons {
             case .active: self = .applied
             case .starting: self = .starting
             case .failed: self = .error
-            case .stopped, .paused, .bypassed: self = .notApplied
+            case .stopped, .paused: self = .notApplied
             }
         }
     }

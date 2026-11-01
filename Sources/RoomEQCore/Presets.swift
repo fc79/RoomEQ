@@ -198,17 +198,7 @@ extension AppSettings {
 
     /// Whether RoomEQ should run, pause or stay off on output `uid`.
     public func engineMode(userWantsOn: Bool, outputUID uid: String?) -> EngineMode {
-        EngineMode.desired(
-            userWantsOn: userWantsOn, perOutputEnabled: isPresetPerOutputEnabled,
-            assignment: uid.flatMap { outputAssignment(forDeviceUID: $0) })
-    }
-
-    /// The per-output option was switched: changes are detected from `uid`
-    /// (the current output) from now on. An output with "no correction" is
-    /// not recorded while the option is on (see `outputDidChange`).
-    public mutating func startTrackingOutput(_ uid: String?) {
-        guard let uid, !(isPresetPerOutputEnabled && noCorrectionOutputs.contains(uid)) else { return }
-        lastOutputDeviceUID = uid
+        EngineMode.desired(userWantsOn: userWantsOn, assignment: uid.flatMap { outputAssignment(forDeviceUID: $0) })
     }
 
     /// What `outputDidChange` did to the working state.
@@ -231,7 +221,7 @@ extension AppSettings {
     }
 
     /// Call whenever the macOS default output may have changed (also at
-    /// launch). Records the new output; with per-output presets enabled:
+    /// launch). Records the new output; then (the rules always apply):
     ///   * the working state is replaced ONLY when the new output has edits
     ///     remembered (they are restored) or an assignment (its preset is
     ///     applied);
@@ -243,22 +233,28 @@ extension AppSettings {
     ///     that output comes back: an automatic switch never loses work
     ///     (edits already remembered for it are kept when there is nothing
     ///     new to remember);
-    ///   * an output set to "no correction" is transparent (`.noCorrection`).
+    ///   * an output set to "no correction" is transparent (`.noCorrection`);
+    ///   * with no recorded output (first launch, or an unreadable record)
+    ///     unsaved changes have no output to be remembered for: they are kept
+    ///     as the working state, the output is recorded and nothing is
+    ///     applied (`.unchanged`); its remembered edits stay remembered.
     /// The recorded output can itself be set to "no correction" (rule set
-    /// while in use, or with the option off): edits are then remembered for
+    /// while in use, or recorded by a version-3 document with the per-output
+    /// option off): edits are then remembered for
     /// it, as the output they were made on, and restored when it comes back
     /// with correction (or see `noCorrectionLifted`).
     public mutating func outputDidChange(to uid: String?) -> OutputSwitch {
         let previous = lastOutputDeviceUID
         guard let uid else { return .unchanged }
-        if isPresetPerOutputEnabled && noCorrectionOutputs.contains(uid) { return .noCorrection }
+        if noCorrectionOutputs.contains(uid) { return .noCorrection }
         guard uid != previous else { return .unchanged }
         lastOutputDeviceUID = uid
-        guard isPresetPerOutputEnabled else { return .unchanged }
 
         let assigned = presetAssignments[uid].flatMap { id in presets.contains { $0.id == id } ? id : nil }
         let restore = editsByDevice[uid]
         guard assigned != nil || restore != nil else { return .unchanged }
+        // Nowhere to keep unsaved changes: never replace them.
+        if previous == nil && hasUnsavedChanges { return .unchanged }
 
         // About to replace the working state: keep its unsaved changes.
         if let previous, hasUnsavedChanges { rememberWorkingState(for: previous) }
@@ -275,15 +271,15 @@ extension AppSettings {
     }
 
     /// Call when the rule of the CURRENT output `uid` (the macOS default)
-    /// has just changed from "no correction" to something else. With the
-    /// option on and a preset assigned, the preset is applied at once,
+    /// has just changed from "no correction" to something else. With a
+    /// preset assigned, the preset is applied at once,
     /// ALWAYS: also when `uid` is the recorded output (rule set while in
     /// use) and even if edits are remembered for `uid` (they stay
     /// remembered, restored when it comes back). Unsaved changes are first
     /// remembered for the recorded output (whose sound they are: `uid`
     /// itself in the first case). Otherwise: like arriving on `uid`.
     public mutating func noCorrectionLifted(onCurrentOutput uid: String) -> OutputSwitch {
-        guard isPresetPerOutputEnabled, case .preset(let id)? = outputAssignment(forDeviceUID: uid) else {
+        guard case .preset(let id)? = outputAssignment(forDeviceUID: uid) else {
             return outputDidChange(to: uid)
         }
         if hasUnsavedChanges { rememberWorkingState(for: lastOutputDeviceUID ?? uid) }

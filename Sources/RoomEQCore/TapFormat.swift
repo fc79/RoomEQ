@@ -51,16 +51,38 @@ public enum AudioFormatText {
         "\(kilohertz(sampleRate)) · \(channels) ch"
     }
 
-    /// "44,1 kHz", "48 kHz", "88,2 kHz".
+    /// "44,1 kHz", "48 kHz", "88,2 kHz"; "—" for an unknown rate (not
+    /// finite, not positive, or absurdly large).
     public static func kilohertz(_ hertz: Double) -> String {
+        guard isKnownRate(hertz) else { return "—" }
         let tenths = Int((hertz / 100).rounded())
         let whole = tenths / 10, fraction = tenths % 10
         return fraction == 0 ? "\(whole) kHz" : "\(whole),\(fraction) kHz"
     }
 
+    /// "5,7" (always one decimal, Italian comma, half away from zero);
+    /// "—" if not finite. No minus sign for values that round to zero.
+    public static func oneDecimal(_ value: Double) -> String {
+        guard value.isFinite, abs(value) < 1e12 else { return "—" }  // `Int` of a huge value would trap
+        let tenths = Int((abs(value) * 10).rounded())
+        let sign = value < 0 && tenths > 0 ? "-" : ""
+        return "\(sign)\(tenths / 10),\(tenths % 10)"
+    }
+
+    /// "6,3 ms".
+    public static func milliseconds(_ value: Double) -> String { "\(oneDecimal(value)) ms" }
+
+    /// A usable sample rate: finite, positive, below 10 MHz.
+    public static func isKnownRate(_ hertz: Double) -> Bool { hertz.isFinite && hertz > 0 && hertz < 10_000_000 }
+
+    /// "44,1 kHz", or "sconosciuta" for an unknown rate (error messages).
+    public static func kilohertzOrUnknown(_ hertz: Double) -> String {
+        isKnownRate(hertz) ? kilohertz(hertz) : "sconosciuta"
+    }
+
     /// "44,1 → 48 kHz" (or just "48 kHz" without a known old rate).
     public static func change(from old: Double?, to new: Double) -> String {
-        guard let old, old > 0 else { return kilohertz(new) }
+        guard let old, isKnownRate(old), isKnownRate(new) else { return kilohertz(new) }
         return kilohertz(old).replacingOccurrences(of: " kHz", with: "") + " → " + kilohertz(new)
     }
 }
@@ -70,9 +92,11 @@ public enum AudioFormatText {
 public enum SampleRateGuard {
     /// nil if everything matches, otherwise the Italian error to show.
     public static func violation(tapRate: Double, deviceRate: Double, captureRate: Double) -> String? {
-        guard tapRate > 0, deviceRate > 0, captureRate > 0 else {
-            return "Frequenza di campionamento sconosciuta (tap \(AudioFormatText.kilohertz(tapRate)), "
-                + "dispositivo \(AudioFormatText.kilohertz(deviceRate))): RoomEQ non si avvia."
+        let known = AudioFormatText.isKnownRate
+        guard known(tapRate), known(deviceRate), known(captureRate) else {
+            let text = AudioFormatText.kilohertzOrUnknown
+            return "Frequenza di campionamento sconosciuta (tap \(text(tapRate)), dispositivo \(text(deviceRate)), "
+                + "cattura \(text(captureRate))): RoomEQ non si avvia."
         }
         if !SampleRates.same(tapRate, deviceRate) {
             return "La frequenza del tap (\(AudioFormatText.kilohertz(tapRate))) non coincide con quella del "

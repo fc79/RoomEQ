@@ -21,7 +21,7 @@ struct PresetTests {
         #expect(!settings.isActivePresetModified)
         #expect(settings.bands.map(\.frequency) == EQBand.defaultBands().map(\.frequency))
         #expect(settings.excludedApps.map(\.bundleID) == ["com.ableton.live"])
-        #expect(!settings.isPresetPerOutputEnabled && !settings.autoStartEngineOnLaunch)
+        #expect(settings.isCorrectionOn)  // the correction is on at first launch
     }
 
     @Test func modifiedFlagFollowsTheSoundNotTheIDs() throws {
@@ -99,20 +99,23 @@ struct OutputPresetTests {
         var settings = try settingsWithTwoPresets()
         let studio = settings.presets[0].id, headphones = settings.presets[1].id
         try settings.applyPreset(id: studio)
-        settings.isPresetPerOutputEnabled = true
         try settings.assignPreset(id: headphones, toDeviceUID: "cuffie")
         try settings.assignPreset(id: studio, toDeviceUID: "casse")
         #expect(settings.outputDidChange(to: "casse") == .appliedPreset(studio))
         return (settings, studio, headphones)
     }
 
-    @Test func optionOffOnlyRecordsTheOutput() throws {
-        var settings = try settingsWithTwoPresets()
-        try settings.assignPreset(id: settings.presets[0].id, toDeviceUID: "cuffie")
-        let before = settings.bands
-        #expect(settings.outputDidChange(to: "cuffie") == .unchanged)
-        #expect(settings.lastOutputDeviceUID == "cuffie" && settings.bands == before)
+    /// The rules always apply (version 4: no option to switch on first).
+    @Test func rulesApplyWithoutAnOption() throws {
+        var settings = try settingsWithTwoPresets()  // active: "Cuffie", unmodified
+        let studio = settings.presets[0].id
+        try settings.assignPreset(id: studio, toDeviceUID: "cuffie")
+        #expect(settings.outputDidChange(to: "cuffie") == .appliedPreset(studio))
+        #expect(settings.lastOutputDeviceUID == "cuffie" && settings.activePresetID == studio)
         #expect(settings.outputDidChange(to: "cuffie") == .unchanged)  // same output: nothing
+        let before = settings.bands
+        #expect(settings.outputDidChange(to: "hdmi") == .unchanged)  // "Nessuna regola": only recorded
+        #expect(settings.lastOutputDeviceUID == "hdmi" && settings.bands == before)
     }
 
     @Test func assignedPresetIsApplied() throws {
@@ -181,6 +184,48 @@ struct OutputPresetTests {
         #expect(settings.bands == edited)
     }
 
+    /// No recorded output yet (first launch, unreadable record) and unsaved
+    /// changes: there is no output to remember them for, so they are never
+    /// replaced by the new output's preset or remembered edits.
+    @Test func unsavedChangesWithoutAPreviousOutputAreKept() throws {
+        var settings = try settingsWithTwoPresets()
+        let studio = settings.presets[0].id, headphones = settings.presets[1].id
+        try settings.assignPreset(id: studio, toDeviceUID: "cuffie")
+        try settings.assignPreset(id: headphones, toDeviceUID: "casse")
+        #expect(settings.lastOutputDeviceUID == nil)
+        settings.bands[0].gain = -1  // unsaved
+        let edited = settings.bands
+        #expect(settings.outputDidChange(to: "cuffie") == .unchanged)
+        #expect(settings.bands == edited && settings.activePresetID == headphones && settings.hasUnsavedChanges)
+        #expect(settings.lastOutputDeviceUID == "cuffie")
+        // From now on they belong to "cuffie": kept when leaving, restored on return.
+        #expect(settings.outputDidChange(to: "casse") == .appliedPreset(headphones))
+        #expect(settings.editsByDevice["cuffie"]?.bands == edited)
+        #expect(settings.outputDidChange(to: "cuffie") == .restoredEdits(presetID: headphones, assignedPresetID: studio))
+        #expect(settings.bands == edited)
+    }
+
+    /// Same with edits remembered for that output: both are kept.
+    @Test func rememberedEditsWithoutAPreviousOutputStayRemembered() throws {
+        var settings = try settingsWithTwoPresets()
+        let studio = settings.presets[0].id
+        let stash = DeviceEdits(presetID: studio, bands: [EQBand(frequency: 90, gain: -2, q: 3)], preampDecibels: -1)
+        settings.editsByDevice["cuffie"] = stash
+        settings.bands[0].gain = -1
+        let edited = settings.bands
+        #expect(settings.outputDidChange(to: "cuffie") == .unchanged)
+        #expect(settings.bands == edited && settings.editsByDevice["cuffie"] == stash)
+    }
+
+    /// Without unsaved changes nothing can be lost: the rule applies.
+    @Test func noPreviousOutputAndNothingUnsavedAppliesTheRule() throws {
+        var settings = try settingsWithTwoPresets()
+        let studio = settings.presets[0].id
+        try settings.assignPreset(id: studio, toDeviceUID: "cuffie")
+        #expect(!settings.hasUnsavedChanges)
+        #expect(settings.outputDidChange(to: "cuffie") == .appliedPreset(studio))
+    }
+
     @Test func deletedPresetAssignmentsAreIgnored() throws {
         var (settings, _, headphones) = try setup()
         settings.presetAssignments["vecchio"] = UUID()
@@ -194,18 +239,19 @@ struct OutputPresetTests {
 struct AppSettingsDocumentTests {
     @Test func roundTrip() throws {
         var settings = try settingsWithTwoPresets()
-        settings.isPresetPerOutputEnabled = true
         settings.presetAssignments = ["usb-1": settings.presets[1].id]
         settings.deviceNames = ["usb-1": "Cuffie USB"]
         settings.editsByDevice = ["usb-1": DeviceEdits(presetID: settings.presets[1].id, bands: settings.bands, preampDecibels: -1)]
         settings.lastOutputDeviceUID = "usb-1"
         settings.excludedApps.append(ExcludedAppRecord(bundleID: "com.apple.Music", name: "Musica"))
-        settings.autoStartEngineOnLaunch = true
+        settings.isCorrectionOn = false
         let loaded = AppSettings.load(current: try settings.encoded(), legacy: nil, ownBundleID: own)
         #expect(loaded.settings == settings)
-        #expect(loaded.backups.isEmpty && loaded.warnings.isEmpty && loaded.notice == nil && !loaded.migrated)
+        #expect(loaded.backups.isEmpty && loaded.warnings.isEmpty && loaded.notice == nil)
+        #expect(!loaded.migrated && !loaded.upgraded)
     }
 
+    /// Stage 3's "EQ off" is not kept: version 4 never bypasses.
     @Test func migratesStage3Losslessly() throws {
         var bands = EQBand.defaultBands()
         bands[1].isEnabled = false
@@ -213,7 +259,7 @@ struct AppSettingsDocumentTests {
         let loaded = AppSettings.load(current: nil, legacy: try old.encoded(), ownBundleID: own)
         #expect(loaded.migrated && loaded.backups.isEmpty && loaded.notice == nil)
         let settings = loaded.settings
-        #expect(settings.bands == bands && settings.preampDecibels == -3.5 && !settings.isEQEnabled)
+        #expect(settings.bands == bands && settings.preampDecibels == -3.5 && settings.isCorrectionOn)
         #expect(settings.presets.map(\.name) == ["Studio"])
         #expect(settings.presets[0].bands == bands && settings.presets[0].preampDecibels == -3.5)
         #expect(settings.activePresetID == settings.presets[0].id && !settings.isActivePresetModified)
@@ -250,7 +296,7 @@ struct AppSettingsDocumentTests {
 
     @Test func partialDocumentKeepsWhatIsReadable() throws {
         var settings = try settingsWithTwoPresets()
-        settings.autoStartEngineOnLaunch = true
+        settings.isCorrectionOn = false
         var object = try JSONSerialization.jsonObject(with: try settings.encoded()) as! [String: Any]
         var presets = object["presets"] as! [Any]
         presets.append("rotto")  // unreadable preset
@@ -267,7 +313,7 @@ struct AppSettingsDocumentTests {
         #expect(loaded.backups.map(\.sourceKey) == ["RoomEQSettings"])
         #expect(loaded.settings.presets.map(\.name) == ["Studio", "Cuffie"])
         #expect(loaded.settings.presets[0].bands.count == 4)
-        #expect(loaded.settings.autoStartEngineOnLaunch)
+        #expect(!loaded.settings.isCorrectionOn)
         #expect(loaded.settings.presetAssignments.isEmpty)
         #expect(loaded.warnings.contains("Associazioni preset-uscita illeggibile"))
         #expect(loaded.warnings.contains("1 preset illeggibili ignorati"))
@@ -276,11 +322,11 @@ struct AppSettingsDocumentTests {
 
     @Test func futureVersionIsReadForKnownFields() throws {
         var settings = AppSettings.defaults()
-        settings.autoStartEngineOnLaunch = true
+        settings.isCorrectionOn = false
         var object = try JSONSerialization.jsonObject(with: try settings.encoded()) as! [String: Any]
         object["version"] = 9
         let loaded = AppSettings.load(current: try JSONSerialization.data(withJSONObject: object), legacy: nil, ownBundleID: own)
-        #expect(loaded.settings.autoStartEngineOnLaunch)
+        #expect(!loaded.settings.isCorrectionOn && !loaded.upgraded)
         #expect(loaded.backups.count == 1)  // so a downgrade never loses the newer data
         #expect(loaded.settings.version == AppSettings.currentVersion)
     }
@@ -289,7 +335,7 @@ struct AppSettingsDocumentTests {
         let preset = EQPreset(name: "Studio", bands: EQBand.defaultBands(), preampDecibels: 3)
         let twin = EQPreset(id: preset.id, name: " studio ", bands: [], preampDecibels: -50)
         var settings = AppSettings(
-            bands: EQBand.defaultBands(), preampDecibels: 0, isEQEnabled: true, presets: [preset, twin],
+            bands: EQBand.defaultBands(), preampDecibels: 0, presets: [preset, twin],
             activePresetID: UUID(), presetAssignments: ["a": preset.id, "b": UUID(), "": preset.id],
             excludedApps: [
                 ExcludedAppRecord(bundleID: own, name: "RoomEQ"), ExcludedAppRecord(bundleID: "com.ableton.live", name: "Live"),
@@ -306,6 +352,93 @@ struct AppSettingsDocumentTests {
         var empty = AppSettings.defaults()
         empty.presets = []
         #expect(empty.sanitized(ownBundleID: own).presets.map(\.name) == ["Studio"])
+    }
+}
+
+@Suite("Settings version 4 (one switch, rules always on)")
+struct SettingsVersion4Tests {
+    /// A version-3 document as last saved by the previous build: EQ off,
+    /// per-output option off with rules, remembered edits, auto-start set.
+    func version3Document(autoStart: Bool) throws -> (data: Data, expected: AppSettings) {
+        var settings = try settingsWithTwoPresets()
+        let studio = settings.presets[0].id, headphones = settings.presets[1].id
+        try settings.assignPreset(id: headphones, toDeviceUID: "cuffie")
+        settings.assignNoCorrection(toDeviceUID: "macbook")
+        settings.editsByDevice["cuffie"] = DeviceEdits(presetID: studio, bands: settings.bands, preampDecibels: -2)
+        settings.deviceNames = ["cuffie": "Cuffie USB", "macbook": "Altoparlanti MacBook"]
+        settings.lastOutputDeviceUID = "macbook"  // recorded while the option was off
+        settings.bufferFrames = 128
+        settings.outputPairs = ["quantum": 2]
+        var object = try JSONSerialization.jsonObject(with: try settings.encoded()) as! [String: Any]
+        object["version"] = 3
+        object.removeValue(forKey: "isCorrectionOn")
+        object["isEQEnabled"] = false
+        object["isPresetPerOutputEnabled"] = false
+        object["autoStartEngineOnLaunch"] = autoStart
+        return (try JSONSerialization.data(withJSONObject: object), settings)
+    }
+
+    @Test(arguments: [true, false])
+    func version3IsConvertedWithoutLosingAnything(autoStart: Bool) throws {
+        let (data, expected) = try version3Document(autoStart: autoStart)
+        let loaded = AppSettings.load(current: data, legacy: nil, ownBundleID: own)
+        // Everything kept; the correction is on at launch whatever the old
+        // auto-start was; the old rules become active as they are.
+        #expect(loaded.settings == expected)
+        #expect(loaded.settings.isCorrectionOn)
+        #expect(loaded.settings.engineMode(userWantsOn: true, outputUID: "macbook") == .paused)
+        #expect(loaded.settings.outputAssignment(forDeviceUID: "cuffie") == .preset(expected.presets[1].id))
+        #expect(loaded.settings.editsByDevice["cuffie"]?.preampDecibels == -2)
+        // Silent (old keys are not "unreadable"), but the old document is kept.
+        #expect(loaded.warnings.isEmpty && loaded.notice == nil && loaded.upgraded && !loaded.migrated)
+        #expect(loaded.backups == [.init(sourceKey: "RoomEQSettings", data: data)])
+        // Saved again: version 4, without the old keys.
+        let saved = try JSONSerialization.jsonObject(with: try loaded.settings.encoded()) as! [String: Any]
+        #expect(saved["version"] as? Int == 4 && saved["isCorrectionOn"] as? Bool == true)
+        for key in ["isEQEnabled", "isPresetPerOutputEnabled", "autoStartEngineOnLaunch"] {
+            #expect(saved[key] == nil, "\(key)")
+        }
+    }
+
+    /// The switch is restored as the user left it.
+    @Test(arguments: [true, false])
+    func switchIsRemembered(on: Bool) throws {
+        var settings = AppSettings.defaults()
+        settings.isCorrectionOn = on
+        let loaded = AppSettings.load(current: try settings.encoded(), legacy: nil, ownBundleID: own)
+        #expect(loaded.settings.isCorrectionOn == on && loaded.backups.isEmpty)
+    }
+
+    @Test func unreadableSwitchIsOnAndReported() throws {
+        var object = try JSONSerialization.jsonObject(with: try AppSettings.defaults().encoded()) as! [String: Any]
+        object["isCorrectionOn"] = "sì"
+        let loaded = AppSettings.load(
+            current: try JSONSerialization.data(withJSONObject: object), legacy: nil, ownBundleID: own)
+        #expect(loaded.settings.isCorrectionOn)
+        #expect(loaded.warnings == ["Stato della correzione illeggibile"])
+        #expect(loaded.backups.count == 1 && !loaded.upgraded)
+    }
+
+    /// Old keys found in a version-4 document (hand-edited) change nothing.
+    @Test func oldKeysAreIgnored() throws {
+        var settings = AppSettings.defaults()
+        settings.isCorrectionOn = false
+        var object = try JSONSerialization.jsonObject(with: try settings.encoded()) as! [String: Any]
+        object["isEQEnabled"] = "rotto"
+        object["autoStartEngineOnLaunch"] = true
+        let loaded = AppSettings.load(
+            current: try JSONSerialization.data(withJSONObject: object), legacy: nil, ownBundleID: own)
+        #expect(loaded.settings == settings)
+        #expect(loaded.warnings.isEmpty && loaded.backups.isEmpty)
+    }
+
+    /// No version at all: treated as an older document (backed up, converted).
+    @Test func missingVersionIsUpgraded() throws {
+        var object = try JSONSerialization.jsonObject(with: try AppSettings.defaults().encoded()) as! [String: Any]
+        object.removeValue(forKey: "version")
+        let data = try JSONSerialization.data(withJSONObject: object)
+        let loaded = AppSettings.load(current: data, legacy: nil, ownBundleID: own)
+        #expect(loaded.upgraded && loaded.backups.count == 1 && loaded.settings.version == 4)
     }
 }
 

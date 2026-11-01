@@ -1,10 +1,11 @@
-// Per-output rule ("Preset per uscita") and the engine mode it leads to.
+// Per-output rule ("Impostazioni per uscita") and the engine mode it leads to.
 //
-// Each output has no rule, a preset, or "no correction". With per-output
-// presets on, RoomEQ PAUSES on a "no correction" output: tap, aggregate and
-// IOProcs are released (audio goes straight to the device, as without
-// RoomEQ) while the user's main switch stays on; it resumes by itself on an
-// output with correction. The controller applies `EngineMode`.
+// Each output has no rule (the default: nothing happens), a preset, or "no
+// correction". The rules always apply (version 4: there is no option to
+// turn them off). RoomEQ PAUSES on a "no correction" output: tap, aggregate
+// and IOProcs are released (audio goes straight to the device, as without
+// RoomEQ) while the user's "Correzione" switch stays on; it resumes by
+// itself on an output with correction. The controller applies `EngineMode`.
 
 import Foundation
 
@@ -18,7 +19,7 @@ public enum OutputAssignment: Equatable, Hashable, Sendable {
 
 /// What RoomEQ should be doing.
 public enum EngineMode: Equatable, Sendable {
-    /// Switched off by the user.
+    /// "Correzione" switched off by the user.
     case off
     /// Switched on, but the current output is set to "no correction":
     /// nothing runs.
@@ -27,10 +28,11 @@ public enum EngineMode: Equatable, Sendable {
     /// by `AppSettings.outputDidChange`, not here.
     case active
 
-    /// Pure decision. `assignment`: the rule of the macOS default output
-    /// (nil = none, or no output). Rules count only with `perOutputEnabled`.
-    public static func desired(userWantsOn: Bool, perOutputEnabled: Bool, assignment: OutputAssignment?) -> EngineMode {
+    /// Pure decision. `userWantsOn`: the "Correzione" switch;
+    /// `assignment`: the rule of the macOS default output (nil = none, or
+    /// no output).
+    public static func desired(userWantsOn: Bool, assignment: OutputAssignment?) -> EngineMode {
         guard userWantsOn else { return .off }
-        return perOutputEnabled && assignment == .noCorrection ? .paused : .active
+        return assignment == .noCorrection ? .paused : .active
     }
 }

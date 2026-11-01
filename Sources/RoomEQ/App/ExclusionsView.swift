@@ -1,5 +1,6 @@
-// "App escluse": apps whose audio does NOT go through RoomEQ (e.g. Ableton
-// Live, which has its own output). Expanded by default.
+// "App escluse" (collapsible, summary: the app names when 1–2, else "N app"):
+// apps whose audio does NOT go through RoomEQ (e.g. Ableton Live, which has
+// its own correction). RoomEQ itself is always excluded (not listed).
 
 import AppKit
 import RoomEQCore
@@ -13,7 +14,7 @@ struct ExclusionsView: View {
     @State private var note: InlineNote?
 
     var body: some View {
-        PanelDisclosure(title: "App escluse", expandedByDefault: true) {
+        CollapsibleSection(title: "App escluse", summary: summary, storageKey: "exclusions") {
             if controller.excludedApps.isEmpty {
                 Text("Nessuna app esclusa").font(.callout).foregroundStyle(.secondary)
             }
@@ -22,9 +23,16 @@ struct ExclusionsView: View {
             }
             addMenu
             InlineNoteView(note: note)
-            Text("RoomEQ è sempre escluso")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// "Ableton Live", "Ableton Live, REW", "3 app", "Nessuna".
+    private var summary: String {
+        let apps = controller.excludedApps
+        switch apps.count {
+        case 0: return "Nessuna"
+        case 1, 2: return apps.map(\.name).joined(separator: ", ")
+        default: return "\(apps.count) app"
         }
     }
 

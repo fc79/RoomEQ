@@ -99,8 +99,6 @@ struct EngineConfiguration: Equatable {
     var excludedBundleIDs: [String]
     /// Preamp as linear gain (0...1, never a boost).
     var gain: Float
-    /// true = EQ off (dry signal).
-    var bypass: Bool
     /// EQ bands; the coefficients are computed for the session's actual
     /// sample rate when the render state is built.
     var bands: [EQBand]
@@ -346,7 +344,8 @@ final class EngineSession {
             configuration: RenderConfiguration(
                 inputLayout: captureLayout, tapLeft: sourceLeft, tapRight: sourceRight, outputLayout: outputLayout,
                 sampleRate: sampleRate),
-            gain: configuration.gain, bypass: configuration.bypass, outputPair: pair, filters: design.sections)
+            // The kernel's bypass is never used: switching off stops RoomEQ.
+            gain: configuration.gain, bypass: false, outputPair: pair, filters: design.sections)
         self.renderState = renderState
         let context = UnsafeMutablePointer<SplitOutputContext>.allocate(capacity: 1)
         context.initialize(to: SplitOutputContext(state: renderState.pointer, link: link.pointer))

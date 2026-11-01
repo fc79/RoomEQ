@@ -1,36 +1,28 @@
-// "Impostazioni per uscita": optionally apply a rule automatically when the
-// macOS output changes: a preset (e.g. one for the monitors, one for the
-// headphones) or "Nessuna correzione" (RoomEQ pauses, audio goes straight to
-// the device). Collapsed by default.
+// "Regole per uscita" (collapsible, summary "Nessuna regola" / "N regole"):
+// for each output, optionally a rule applied automatically when the macOS
+// output changes: a preset (e.g. one for the monitors, one for the
+// headphones) or "Nessuna correzione" (RoomEQ steps aside, audio goes
+// straight to the device). The rules are always active (no switch).
 
 import RoomEQCore
 import SwiftUI
 
-struct OutputPresetsView: View {
+struct OutputRulesView: View {
     let controller: AudioEngineController
 
     @State private var note: InlineNote?
 
     var body: some View {
-        PanelDisclosure(title: "Impostazioni per uscita") {
-            Toggle(
-                "Usa le impostazioni per uscita",
-                isOn: Binding(
-                    get: { controller.isPresetPerOutputEnabled },
-                    set: { controller.setPresetPerOutputEnabled($0) })
-            )
-            .toggleStyle(.switch)
+        CollapsibleSection(title: "Regole per uscita", summary: summary, storageKey: "rules") {
             Text(
-                controller.isPresetPerOutputEnabled
-                    ? "Quando cambi uscita in macOS, RoomEQ applica il preset assegnato. "
-                    + "Con «Nessuna correzione» RoomEQ si mette in pausa: l'audio va diretto, senza latenza aggiunta."
-                    : "Spento: le impostazioni qui sotto non hanno effetto."
+                "Scegli un preset per ogni uscita, oppure «Nessuna correzione»: "
+                    + "RoomEQ si fa da parte e l'audio va diretto, senza latenza."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
-            let outputs = controller.knownOutputs
+        let outputs = controller.knownOutputs
             if outputs.isEmpty {
                 Text("Nessuna uscita trovata").font(.caption).foregroundStyle(.secondary)
             }
@@ -38,6 +30,16 @@ struct OutputPresetsView: View {
                 row(for: output)
             }
             InlineNoteView(note: note)
+        }
+    }
+
+    /// "Nessuna regola", "1 regola", "N regole" (outputs with a rule).
+    private var summary: String {
+        let count = controller.knownOutputs.filter { $0.assignment != nil }.count
+        switch count {
+        case 0: return "Nessuna regola"
+        case 1: return "1 regola"
+        default: return "\(count) regole"
         }
     }
 

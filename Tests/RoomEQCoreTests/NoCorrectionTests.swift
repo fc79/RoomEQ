@@ -5,14 +5,13 @@ import Testing
 private let own = "com.federicociapi.RoomEQ"
 
 /// Studio on the speakers, "Cuffie" on the headphones, "no correction" on
-/// the TV; per-output presets on, current output: the speakers.
+/// the TV (rules always apply); current output: the speakers.
 private func setup() throws -> (AppSettings, studio: UUID, headphones: UUID) {
     var settings = AppSettings.defaults()
     settings.bands[0].gain = -3
     try settings.saveCurrentAsNewPreset(name: "Cuffie")
     let studio = settings.presets[0].id, headphones = settings.presets[1].id
     try settings.applyPreset(id: studio)
-    settings.isPresetPerOutputEnabled = true
     try settings.assignPreset(id: studio, toDeviceUID: "casse")
     try settings.assignPreset(id: headphones, toDeviceUID: "cuffie")
     settings.assignNoCorrection(toDeviceUID: "tv")
@@ -24,15 +23,15 @@ private func setup() throws -> (AppSettings, studio: UUID, headphones: UUID) {
 struct EngineModeDecisionTests {
     @Test(arguments: [nil, OutputAssignment.noCorrection, .preset(UUID())])
     func offWhenTheUserSwitchedOff(assignment: OutputAssignment?) {
-        #expect(EngineMode.desired(userWantsOn: false, perOutputEnabled: true, assignment: assignment) == .off)
-        #expect(EngineMode.desired(userWantsOn: false, perOutputEnabled: false, assignment: assignment) == .off)
+        #expect(EngineMode.desired(userWantsOn: false, assignment: assignment) == .off)
     }
 
-    @Test func pausedOnlyForNoCorrectionWithTheOptionOn() {
-        #expect(EngineMode.desired(userWantsOn: true, perOutputEnabled: true, assignment: .noCorrection) == .paused)
-        #expect(EngineMode.desired(userWantsOn: true, perOutputEnabled: false, assignment: .noCorrection) == .active)
-        #expect(EngineMode.desired(userWantsOn: true, perOutputEnabled: true, assignment: .preset(UUID())) == .active)
-        #expect(EngineMode.desired(userWantsOn: true, perOutputEnabled: true, assignment: nil) == .active)
+    /// The rules always apply: "no correction" pauses, anything else
+    /// ("Nessuna regola" included) corrects.
+    @Test func pausedOnlyForNoCorrection() {
+        #expect(EngineMode.desired(userWantsOn: true, assignment: .noCorrection) == .paused)
+        #expect(EngineMode.desired(userWantsOn: true, assignment: .preset(UUID())) == .active)
+        #expect(EngineMode.desired(userWantsOn: true, assignment: nil) == .active)
     }
 
     @Test func fromTheSettings() throws {
@@ -42,7 +41,7 @@ struct EngineModeDecisionTests {
         #expect(settings.engineMode(userWantsOn: true, outputUID: "cuffie") == .active)
         #expect(settings.engineMode(userWantsOn: true, outputUID: "hdmi") == .active)  // no rule
         #expect(settings.engineMode(userWantsOn: true, outputUID: nil) == .active)  // no output
-        settings.isPresetPerOutputEnabled = false
+        settings.clearAssignment(deviceUID: "tv")  // "Nessuna regola": corrects
         #expect(settings.engineMode(userWantsOn: true, outputUID: "tv") == .active)
     }
 }
@@ -154,17 +153,13 @@ struct NoCorrectionOutputChangeTests {
     }
 
     /// Lifting "no correction" with no preset (no rule): like arriving, the
-    /// sound stays; with the option off nothing happens either.
+    /// sound stays.
     @Test func noCorrectionLiftedWithoutAPreset() throws {
         var (settings, _, _) = try setup()
         let before = settings.bands
         settings.clearAssignment(deviceUID: "tv")
         #expect(settings.noCorrectionLifted(onCurrentOutput: "tv") == .unchanged)
         #expect(settings.bands == before && settings.lastOutputDeviceUID == "tv")
-        settings.isPresetPerOutputEnabled = false
-        try settings.assignPreset(id: settings.presets[1].id, toDeviceUID: "hdmi")
-        #expect(settings.noCorrectionLifted(onCurrentOutput: "hdmi") == .unchanged)
-        #expect(settings.bands == before)
     }
 
     /// (b) The recorded output has "no correction" (rule set while in use):
@@ -184,17 +179,14 @@ struct NoCorrectionOutputChangeTests {
         #expect(settings.bands == edited)
     }
 
-    /// (b) Output recorded with the option off, then the option is turned
-    /// on: it pauses there, and edits are still remembered for it.
-    @Test func recordedWithTheOptionOffThenOptionOn() throws {
+    /// (b) A version-3 document saved with the option off may have recorded
+    /// a "no correction" output: now that the rules always apply it pauses
+    /// there, and edits are still remembered for it.
+    @Test func recordedWithTheOldOptionOff() throws {
         var (settings, studio, headphones) = try setup()
-        settings.isPresetPerOutputEnabled = false
-        #expect(settings.outputDidChange(to: "tv") == .unchanged)
+        settings.lastOutputDeviceUID = "tv"  // as recorded by version 3 with the option off
         settings.bands[0].gain = -1
         let edited = settings.bands
-        settings.isPresetPerOutputEnabled = true
-        settings.startTrackingOutput("tv")
-        #expect(settings.lastOutputDeviceUID == "tv")
         #expect(settings.engineMode(userWantsOn: true, outputUID: "tv") == .paused)
         #expect(settings.outputDidChange(to: "tv") == .noCorrection)
         #expect(settings.outputDidChange(to: "cuffie") == .appliedPreset(headphones))
@@ -203,24 +195,12 @@ struct NoCorrectionOutputChangeTests {
         #expect(settings.outputDidChange(to: "tv") == .restoredEdits(presetID: studio, assignedPresetID: nil))
     }
 
-    @Test func withTheOptionOffItIsAnOrdinaryOutput() throws {
+    /// "No correction" outputs are never recorded; no output changes nothing.
+    @Test func noCorrectionOutputIsNotRecorded() throws {
         var (settings, _, _) = try setup()
-        settings.isPresetPerOutputEnabled = false
-        #expect(settings.outputDidChange(to: "tv") == .unchanged)
-        #expect(settings.lastOutputDeviceUID == "tv")
-    }
-
-    @Test func trackingDoesNotRecordANoCorrectionOutput() throws {
-        var (settings, _, _) = try setup()
-        settings.startTrackingOutput("tv")
+        #expect(settings.outputDidChange(to: "tv") == .noCorrection)
+        #expect(settings.outputDidChange(to: nil) == .unchanged)
         #expect(settings.lastOutputDeviceUID == "casse")
-        settings.startTrackingOutput(nil)
-        #expect(settings.lastOutputDeviceUID == "casse")
-        settings.startTrackingOutput("cuffie")
-        #expect(settings.lastOutputDeviceUID == "cuffie")
-        settings.isPresetPerOutputEnabled = false
-        settings.startTrackingOutput("tv")
-        #expect(settings.lastOutputDeviceUID == "tv")
     }
 }
 
@@ -231,25 +211,27 @@ struct NoCorrectionDocumentTests {
         let data = try settings.encoded()
         let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         #expect(object["noCorrectionOutputs"] as? [String] == ["tv"])
-        #expect(object["version"] as? Int == 3)
+        #expect(object["version"] as? Int == 4)
         let loaded = AppSettings.load(current: data, legacy: nil, ownBundleID: own)
         #expect(loaded.settings == settings)
         #expect(loaded.backups.isEmpty && loaded.warnings.isEmpty && loaded.notice == nil)
     }
 
     /// Documents saved before this feature (version 2, no field) load as
-    /// before, with no backup and no notice.
+    /// before, with no warning and no notice (a plain backup of the older
+    /// format is kept before it is converted).
     @Test func version2DocumentsLoadUnchanged() throws {
         var (settings, _, _) = try setup()
         settings.clearAssignment(deviceUID: "tv")
         var object = try JSONSerialization.jsonObject(with: try settings.encoded()) as! [String: Any]
         object.removeValue(forKey: "noCorrectionOutputs")
         object["version"] = 2
-        let loaded = AppSettings.load(
-            current: try JSONSerialization.data(withJSONObject: object), legacy: nil, ownBundleID: own)
+        let data = try JSONSerialization.data(withJSONObject: object)
+        let loaded = AppSettings.load(current: data, legacy: nil, ownBundleID: own)
         #expect(loaded.settings == settings)
-        #expect(loaded.settings.noCorrectionOutputs.isEmpty && loaded.settings.version == 3)
-        #expect(loaded.backups.isEmpty && loaded.warnings.isEmpty && loaded.notice == nil)
+        #expect(loaded.settings.noCorrectionOutputs.isEmpty && loaded.settings.version == AppSettings.currentVersion)
+        #expect(loaded.warnings.isEmpty && loaded.notice == nil && loaded.upgraded)
+        #expect(loaded.backups == [.init(sourceKey: "RoomEQSettings", data: data)])
     }
 
     @Test func unreadableFieldIsReportedAndTheRestIsKept() throws {

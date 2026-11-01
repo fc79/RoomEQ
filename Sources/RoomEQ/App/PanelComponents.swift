@@ -1,4 +1,6 @@
-// Small reusable SwiftUI pieces and formatting helpers for the menu panel.
+// Small reusable SwiftUI pieces and formatting helpers for the menu panel:
+// the collapsible section, dismissible messages and inline notes, the inline
+// confirmation card, the level meter and the Italian number formats.
 
 import AppKit
 import Observation
@@ -6,48 +8,69 @@ import SwiftUI
 
 // MARK: - Layout
 
-/// A titled block of the panel (small caption title + content).
-struct PanelSection<Content: View>: View {
+/// A collapsible block of the panel: title on the left, a short summary on
+/// the right (visible also when closed), chevron to open it. The whole title
+/// row toggles it. Closed by default; the open/closed state is remembered
+/// between launches (UserDefaults key "panel.section.<storageKey>").
+struct CollapsibleSection<Content: View>: View {
     let title: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-            content
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// A collapsible block of the panel (DisclosureGroup, title in the same
-/// style as `PanelSection`). The whole title row toggles it.
-struct PanelDisclosure<Content: View>: View {
-    let title: String
-    @State private var isExpanded: Bool
+    let summary: String?
+    /// An unread error is inside: a red dot next to the title (visible also
+    /// when the section is closed).
+    let hasError: Bool
+    @AppStorage private var isExpanded: Bool
     private let content: Content
 
-    init(title: String, expandedByDefault: Bool = false, @ViewBuilder content: () -> Content) {
+    init(
+        title: String, summary: String? = nil, hasError: Bool = false, storageKey: String,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
-        _isExpanded = State(initialValue: expandedByDefault)
+        self.summary = summary
+        self.hasError = hasError
+        _isExpanded = AppStorage(wrappedValue: false, "panel.section.\(storageKey)")
         self.content = content()
     }
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 6) {
-                content
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 10)
+                    Text(title)
+                        .font(.callout.weight(.semibold))
+                        .fixedSize()
+                    if hasError {
+                        Circle().fill(.red).frame(width: 7, height: 7)
+                    }
+                    Spacer(minLength: 8)
+                    if let summary, !summary.isEmpty {
+                        Text(summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 6)
-        } label: {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                ([title] + (summary.map { [$0] } ?? []) + (hasError ? ["contiene un errore"] : []))
+                    .joined(separator: ", "))
+            .accessibilityValue(isExpanded ? "aperta" : "chiusa")
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    content
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 }
@@ -287,17 +310,6 @@ struct ClipBadge: View {
 
 enum Format {
     private static let locale = Locale(identifier: "it_IT")
-
-    /// "12,3" (one decimal).
-    static func oneDecimal(_ value: Double) -> String {
-        value.formatted(.number.precision(.fractionLength(1)).locale(locale))
-    }
-
-    /// "44,1 kHz", "48 kHz".
-    static func sampleRate(_ hertz: Double) -> String {
-        let kilohertz = (hertz / 1000).formatted(.number.precision(.fractionLength(0...1)).locale(locale))
-        return "\(kilohertz) kHz"
-    }
 
     /// "−12,3 dB" (real minus sign), or "−∞ dB" for silence.
     static func decibels(_ value: Float) -> String {
