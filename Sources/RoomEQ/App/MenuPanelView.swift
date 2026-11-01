@@ -66,6 +66,10 @@ struct MenuPanelView: View {
             guard !(notification.object is NSOpenPanel) else { return }
             refreshOnOpen()
         }
+        // When a section closes, the content shrinks one frame before the
+        // window does: pinned to the top it stays still (centered it would
+        // jump down and back up).
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     /// The confirmation card over the dimmed panel (no separate window).
