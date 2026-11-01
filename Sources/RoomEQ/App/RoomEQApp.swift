@@ -21,7 +21,7 @@ struct RoomEQApp: App {
     }
 }
 
-/// Menu bar icon with three looks (correction applied / not applied / error),
+/// Menu bar icon with four looks (applied / starting / not applied / error),
 /// so it is clear without opening the panel whether the correction is on
 /// (drawings in MenuBarIcons.swift). The accessibility label tells every
 /// state apart.

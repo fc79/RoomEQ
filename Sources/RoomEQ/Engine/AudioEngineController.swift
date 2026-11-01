@@ -43,8 +43,18 @@
 // The user's intention (`isSwitchedOn`) is kept apart from `state`: it
 // survives errors, so after a failed start a change of the macOS output
 // still pauses (no correction) or tries again (correction); only the
-// switch (`stop()`) turns it off. A resume that fails is retried for up to
-// 30 s, like the auto-start at login (`startRetryDeadline`).
+// switch (`stop()`) turns it off.
+//
+// Retry window (`startRetryDeadline`, 30 s): opened by the auto-start at
+// login, an automatic resume, and a change of the macOS output (also while
+// running, or after a lost device). A device just switched on or plugged in
+// often has irregular IO for a moment, so inside the window a failed start
+// is NOT an error: RoomEQ stays `.starting` ("Attendo che l'uscita … sia
+// pronta…") and tries again after `startRetryDelay`. Only when the window
+// is over (or retrying cannot help, e.g. no permission) it goes `.failed`.
+// One retry chain at a time: each retry is bound to the launch generation,
+// so stop, pause, any new launch or failure cancels it. Retries never count
+// as automatic restarts.
 //
 // Invariant: there is never a running engine session the controller does
 // not know about. A session becomes "active" only when its start completes
@@ -251,9 +261,16 @@ final class AudioEngineController {
     @ObservationIgnored private var rateChangeRetryAvailable = false
     /// "non è passato a…" message, cleared if the device reaches the rate later.
     @ObservationIgnored private var pendingRateMessage: (message: String, rate: Double, uid: String)?
-    /// Auto-start at launch and automatic resume keep retrying a failed
-    /// start until this time (device/HAL not ready yet).
+    /// Retry window: until this time a failed start is retried instead of
+    /// failing (see the header). Nil = no window.
     @ObservationIgnored private var startRetryDeadline: Date?
+    /// Launch generation of the retry being waited for: waiting iff it
+    /// equals `launchGeneration` (any new launch, stop, pause or failure
+    /// changes the generation, which ends the wait by itself).
+    @ObservationIgnored private var retryWaitGeneration: Int?
+    static let startRetryWindow: TimeInterval = 30
+    /// Pause between attempts (each attempt takes about 1 s more itself).
+    static let startRetryDelay: TimeInterval = 1.5
     @ObservationIgnored private var automaticNoteClear: DispatchWorkItem?
     @ObservationIgnored private var iconCache: [String: NSImage] = [:]
     /// Cumulative clip counters at the last reset (see `clipStatus`).
@@ -326,7 +343,7 @@ final class AudioEngineController {
         if settings.autoStartEngineOnLaunch {
             // At login the HAL / the output device may not be ready yet:
             // keep trying for up to 30 s.
-            startRetryDeadline = Date().addingTimeInterval(30)
+            startRetryDeadline = Date().addingTimeInterval(Self.startRetryWindow)
         }
         refreshDevices { [weak self] in self?.attemptStartRetry() }
         // HAL listener registration can block briefly: done off the main
@@ -351,10 +368,9 @@ final class AudioEngineController {
         }
     }
 
-    /// Auto-start at launch and retries of a failed automatic resume:
-    /// starts if a default output exists; otherwise (or after a failed
-    /// start, see `didStart`) tries again every few seconds until
-    /// `startRetryDeadline`. Never counted as automatic restarts.
+    /// Auto-start at launch: starts once a default output exists (checked
+    /// every 2 s until `startRetryDeadline`); a start that then fails is
+    /// retried by `retryWithinWindow`. Never counted as automatic restarts.
     private func attemptStartRetry() {
         guard let deadline = startRetryDeadline else { return }
         guard Date() < deadline else {
@@ -369,7 +385,7 @@ final class AudioEngineController {
             }
             return
         }
-        Log.app.info("Automatic start (launch or resume)")
+        Log.app.info("Auto-start at launch")
         start()
     }
 
@@ -387,7 +403,8 @@ final class AudioEngineController {
         refreshDevices { [weak self] in
             guard let self, self.state == .starting, self.launchGeneration == generation else { return }
             guard let device = self.systemOutputDevice else {
-                self.fail("Nessun dispositivo di uscita di macOS disponibile")
+                let noOutput = "Nessun dispositivo di uscita di macOS disponibile"
+                if !self.retryWithinWindow(after: noOutput) { self.fail(noOutput) }
                 return
             }
             self.launch(on: device, statusText: "Avvio su \(device.name)…")
@@ -662,10 +679,12 @@ final class AudioEngineController {
         case .paused:
             pause(on: output)
         case .active:
-            guard state == .paused || (state == .failed && outputChanged) else { return }
+            // Waiting to retry on the old output: start over on the new one.
+            let newOutputWhileWaiting = outputChanged && isWaitingForRetry
+            guard state == .paused || (state == .failed && outputChanged) || newOutputWhileWaiting else { return }
             Log.app.info("Resuming on \(output.uid, privacy: .public) (has correction)")
-            // A fresh start, retried like the auto-start; not an automatic restart.
-            startRetryDeadline = Date().addingTimeInterval(30)
+            // A fresh start with a retry window; not an automatic restart.
+            openRetryWindow()
             automaticRestarts.removeAll()
             audioCapturePermissionLikelyDenied = false
             launch(on: output, statusText: "Riprendo su \(output.name)…")
@@ -700,8 +719,53 @@ final class AudioEngineController {
         guard isRunning, let system = systemOutputDevice, let active = activeOutputDevice, system.uid != active.uid
         else { return }
         // A deliberate change (the user picked another output in macOS):
-        // not counted toward the automatic-restart limit.
+        // not counted toward the automatic-restart limit. The new device
+        // may have just been switched on: retry window.
+        openRetryWindow()
         restartIfActive(reason: "uscita di macOS ora \(system.name)")
+    }
+
+    /// Opens (or renews) the retry window for the start that follows.
+    private func openRetryWindow() {
+        startRetryDeadline = Date().addingTimeInterval(Self.startRetryWindow)
+    }
+
+    private var isWaitingForRetry: Bool { state == .starting && retryWaitGeneration == launchGeneration }
+
+    /// Inside the retry window, a failed start (or no output yet) is retried
+    /// after `startRetryDelay`, staying `.starting` with no error shown (it
+    /// is logged). False when there is no window or it is over: the caller
+    /// fails. The retry is bound to a new launch generation, so it is the
+    /// only chain: stop, pause, a new launch (output change, settings) or a
+    /// failure cancels it, and a start while waiting is ignored (`.starting`).
+    private func retryWithinWindow(after message: String) -> Bool {
+        guard let deadline = startRetryDeadline else { return false }
+        guard Date().addingTimeInterval(Self.startRetryDelay) < deadline else {
+            startRetryDeadline = nil
+            Log.app.error("Start retries gave up (window over): \(message, privacy: .public)")
+            return false
+        }
+        Log.app.notice("Start failed inside the retry window (\(message, privacy: .public)); retrying")
+        let name = systemOutputDevice?.name
+        state = .starting
+        status = name.map { "Attendo che l'uscita «\($0)» sia pronta…" } ?? "Attendo un'uscita audio…"
+        lastError = nil
+        let generation = invalidatePendingLaunches()
+        retryWaitGeneration = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.startRetryDelay) { [weak self] in
+            guard let self, self.isWaitingForRetry, self.launchGeneration == generation else { return }
+            self.refreshDevices { [weak self] in
+                // The refresh may have paused, or started over on a new output.
+                guard let self, self.isWaitingForRetry, self.launchGeneration == generation else { return }
+                guard let device = self.systemOutputDevice else {
+                    let noOutput = "Nessun dispositivo di uscita di macOS disponibile"
+                    if !self.retryWithinWindow(after: noOutput) { self.fail(noOutput) }
+                    return
+                }
+                self.launch(on: device, statusText: "Attendo che l'uscita «\(device.name)» sia pronta…")
+            }
+        }
+        return true
     }
 
     private func configuration(for device: OutputDeviceInfo) -> EngineConfiguration {
@@ -808,12 +872,9 @@ final class AudioEngineController {
                 audioCapturePermissionLikelyDenied = true
                 startRetryDeadline = nil  // retrying won't help
             }
+            // The HAL / a device just switched on may not be ready yet.
+            if retryWithinWindow(after: error.localizedDescription) { return }
             fail(error.localizedDescription)
-            if startRetryDeadline != nil {
-                // Auto-start at login or automatic resume: the HAL / the
-                // device may not be ready yet.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.attemptStartRetry() }
-            }
         }
     }
 
@@ -863,6 +924,7 @@ final class AudioEngineController {
                     self.fail("\(name) è stato scollegato")
                     return
                 }
+                self.openRetryWindow()  // the new output may not be ready yet
                 self.launch(on: device, statusText: "Avvio su \(device.name)…")
                 if self.state == .starting { self.lastError = "\(name) è stato scollegato: audio su \(device.name)" }
             }
@@ -922,8 +984,10 @@ final class AudioEngineController {
     }
 
     /// Error state. Always stops the engine, so no session can outlive it.
+    /// Ends any retry window (the next start, if any, opens its own).
     private func fail(_ message: String) {
         Log.app.error("Engine error: \(message, privacy: .public)")
+        startRetryDeadline = nil
         invalidatePendingLaunches()
         clearActiveSession()
         engine.stop()

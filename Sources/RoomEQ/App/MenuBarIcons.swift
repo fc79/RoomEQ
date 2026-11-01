@@ -1,9 +1,9 @@
 // Custom menu bar icons: a filled rounded rectangle (the room) with a symbol
-// cut out of it. There are only three looks, so one glance tells whether the
+// cut out of it. There are only four looks, so one glance tells whether the
 // correction is being applied:
 //   applied      (.active)  narrow EQ waves
-//   not applied  (everything else: stopped, paused, bypassed, starting)
-//                           room crossed by a slash
+//   starting     (.starting) three dots
+//   not applied  (stopped, paused, bypassed) room crossed by a slash
 //   error        (.failed)  exclamation mark
 // Drawn as vectors (sharp at any resolution) and marked as template, so macOS
 // tints them for the light/dark menu bar and the highlighted state.
@@ -13,13 +13,14 @@ import AppKit
 enum MenuBarIcons {
     /// What the icon shows; several `MenuBarState`s share one look.
     private enum Look: CaseIterable {
-        case applied, notApplied, error
+        case applied, starting, notApplied, error
 
         init(_ state: MenuBarState) {
             switch state {
             case .active: self = .applied
+            case .starting: self = .starting
             case .failed: self = .error
-            case .stopped, .paused, .bypassed, .starting: self = .notApplied
+            case .stopped, .paused, .bypassed: self = .notApplied
             }
         }
     }
@@ -61,6 +62,8 @@ enum MenuBarIcons {
         switch look {
         case .applied:
             cutEQCurves(top: 7.6, bottom: 10.4)
+        case .starting:
+            for x in [8.0, 12.0, 16.0] { cutDot(center: NSPoint(x: x, y: 9), radius: 1.4) }
         case .notApplied:
             let slash = line(from: NSPoint(x: 3, y: 17), to: NSPoint(x: 21, y: 1))
             cut(slash, width: 3.6)
