@@ -49,9 +49,12 @@ struct MenuPanelView: View {
         }
         .padding(14)
         .frame(width: 400)
-        // Opening/closing a section changes the height: keep the top edge
-        // under the menu bar (PanelWindowAnchor.swift).
-        .keepsTopEdgeAnchored()
+        // Opening/closing a section changes the height: the window must
+        // follow it both ways (on its own it grows but never shrinks), top
+        // edge under the menu bar (PanelWindowAnchor.swift). Applied here, on
+        // the fixed-width content with its natural height, so it measures
+        // the content and not the window.
+        .fitsWindowToContent()
         .disabled(confirmations.current != nil)  // only the card answers
         .overlay { confirmationOverlay }
         .environment(confirmations)
