@@ -40,10 +40,10 @@ private struct EQCurveCanvas: View {
 
     var body: some View {
         Canvas { context, size in
-            let left: CGFloat = 28
-            let right: CGFloat = 10
+            let left: CGFloat = 32
+            let right: CGFloat = 12
             let top: CGFloat = 6
-            let bottom: CGFloat = 14
+            let bottom: CGFloat = 17
             let plot = CGRect(
                 x: left, y: top,
                 width: max(1, size.width - left - right), height: max(1, size.height - top - bottom))
@@ -57,7 +57,7 @@ private struct EQCurveCanvas: View {
             }
 
             let gridColor = Color.secondary.opacity(0.22)
-            let labelFont = Font.system(size: 8).monospacedDigit()
+            let labelFont = Font.subheadline.monospacedDigit()
 
             // Vertical grid + frequency labels.
             for (hertz, label) in Self.gridFrequencies {
@@ -67,7 +67,7 @@ private struct EQCurveCanvas: View {
                 context.stroke(line, with: .color(gridColor), lineWidth: 0.5)
                 context.draw(
                     Text(label).font(labelFont).foregroundStyle(Color.secondary),
-                    at: CGPoint(x: x(hertz), y: plot.maxY + 7), anchor: .center)
+                    at: CGPoint(x: x(hertz), y: plot.maxY + 8.5), anchor: .center)
             }
 
             // Horizontal grid every 6 dB (labels every 12 dB when crowded).

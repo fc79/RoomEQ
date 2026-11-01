@@ -16,9 +16,9 @@ struct CorrectionStatusTests {
 
     @Test func activeLine() {
         #expect(CorrectionStatusText.active(outputName: "Quantum", latencyMilliseconds: 6.28)
-            == "Correzione attiva · «Quantum» · 6,3 ms")
+            == "Correzione attiva · Quantum · 6,3 ms")
         #expect(CorrectionStatusText.active(outputName: "Quantum", latencyMilliseconds: nil)
-            == "Correzione attiva · «Quantum»")
+            == "Correzione attiva · Quantum")
         #expect(CorrectionStatusText.active(outputName: nil, latencyMilliseconds: 0) == "Correzione attiva")
     }
 

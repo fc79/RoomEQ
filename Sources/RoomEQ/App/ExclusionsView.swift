@@ -16,7 +16,7 @@ struct ExclusionsView: View {
     var body: some View {
         CollapsibleSection(title: "App escluse", summary: summary, storageKey: "exclusions") {
             if controller.excludedApps.isEmpty {
-                Text("Nessuna app esclusa").font(.callout).foregroundStyle(.secondary)
+                Text("Nessuna app esclusa").font(.body).foregroundStyle(.secondary)
             }
             ForEach(controller.excludedApps) { app in
                 row(for: app)
@@ -47,14 +47,14 @@ struct ExclusionsView: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Text(app.name).font(.callout)
+                    Text(app.name).font(.body)
                     if !app.isInstalled {
-                        Text("non installata").font(.caption2).foregroundStyle(.secondary)
+                        Text("non installata").font(.callout).foregroundStyle(.secondary)
                     }
                 }
                 if let warning = app.warning {
                     Text(warning)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }

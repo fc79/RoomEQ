@@ -48,7 +48,10 @@ struct MenuPanelView: View {
             footer
         }
         .padding(14)
-        .frame(width: 360)
+        .frame(width: 400)
+        // Opening/closing a section changes the height: keep the top edge
+        // under the menu bar (PanelWindowAnchor.swift).
+        .keepsTopEdgeAnchored()
         .disabled(confirmations.current != nil)  // only the card answers
         .overlay { confirmationOverlay }
         .environment(confirmations)
@@ -123,7 +126,7 @@ struct MenuPanelView: View {
             }
             // While paused ("no correction" output) the status stands out.
             Text(controller.statusLine)
-                .font(.caption.weight(controller.state == .paused ? .semibold : .regular))
+                .font(.callout.weight(controller.state == .paused ? .semibold : .regular))
                 .foregroundStyle(controller.state == .paused ? .primary : .secondary)
                 .fixedSize(horizontal: false, vertical: true)
             engineMessage
@@ -143,7 +146,7 @@ struct MenuPanelView: View {
         if let message = controller.lastError {
             if controller.state == .failed {
                 Text(message)
-                    .font(.caption.weight(.medium))
+                    .font(.callout.weight(.medium))
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
                 // The switch stays on after an error: retry without toggling it.
@@ -151,7 +154,7 @@ struct MenuPanelView: View {
                     .controlSize(.small)
             } else {
                 Text(message)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

@@ -39,12 +39,12 @@ struct CollapsibleSection<Content: View>: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.bold))
+                        .font(.callout.weight(.bold))
                         .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .frame(width: 10)
                     Text(title)
-                        .font(.callout.weight(.semibold))
+                        .font(.body.weight(.semibold))
                         .fixedSize()
                     if hasError {
                         Circle().fill(.red).frame(width: 7, height: 7)
@@ -52,7 +52,7 @@ struct CollapsibleSection<Content: View>: View {
                     Spacer(minLength: 8)
                     if let summary, !summary.isEmpty {
                         Text(summary)
-                            .font(.caption)
+                            .font(.callout)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -84,7 +84,7 @@ struct DismissibleMessage: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(text)
-                .font(.caption.weight(.medium))
+                .font(.callout.weight(.medium))
                 .foregroundStyle(color)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -115,7 +115,7 @@ struct InlineNoteView: View {
     var body: some View {
         if let note {
             Text(note.text)
-                .font(.caption.weight(note.isError ? .medium : .regular))
+                .font(.callout.weight(note.isError ? .medium : .regular))
                 .foregroundStyle(note.isError ? Color.red : Color.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -211,7 +211,7 @@ struct InlineConfirmationCard: View {
                 .fixedSize(horizontal: false, vertical: true)
             if !confirmation.message.isEmpty {
                 Text(confirmation.message)
-                    .font(.callout)
+                    .font(.body)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -275,8 +275,8 @@ struct LevelMeterRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(channel)
-                .font(.caption.weight(.medium))
-                .frame(width: 10, alignment: .leading)
+                .font(.callout.weight(.medium))
+                .frame(width: 12, alignment: .leading)
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.quaternary)
@@ -287,9 +287,9 @@ struct LevelMeterRow: View {
             }
             .frame(height: 6)
             Text(Format.decibels(decibels))
-                .font(.caption2.monospacedDigit())
+                .font(.callout.monospacedDigit())
                 .foregroundStyle(.secondary)
-                .frame(width: 52, alignment: .trailing)
+                .frame(width: 60, alignment: .trailing)
         }
     }
 }
@@ -298,7 +298,7 @@ struct LevelMeterRow: View {
 struct ClipBadge: View {
     var body: some View {
         Text("CLIP")
-            .font(.caption2.weight(.bold))
+            .font(.callout.weight(.bold))
             .foregroundStyle(.white)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
@@ -311,9 +311,10 @@ struct ClipBadge: View {
 enum Format {
     private static let locale = Locale(identifier: "it_IT")
 
-    /// "−12,3 dB" (real minus sign), or "−∞ dB" for silence.
+    /// "−12,3 dB" (real minus sign), or "—" for silence (zero, −∞ or below
+    /// -90 dB: such values would only show a meaningless long number).
     static func decibels(_ value: Float) -> String {
-        guard value.isFinite else { return "\u{2212}∞ dB" }
+        guard value.isFinite, value >= -90 else { return "—" }
         return "\(signedNumber(Double(value), decimals: 1)) dB"
     }
 

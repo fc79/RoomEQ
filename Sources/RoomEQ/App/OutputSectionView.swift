@@ -45,7 +45,7 @@ struct OutputSectionView: View {
     private var devicePicker: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                Text("Uscita audio").font(.callout)
+                Text("Uscita audio").font(.body)
                 Spacer()
                 if controller.isChangingOutputDevice { ProgressView().controlSize(.small) }
             }
@@ -76,7 +76,7 @@ struct OutputSectionView: View {
 
     private var channelsPicker: some View {
         HStack {
-            Text("Canali").font(.callout)
+            Text("Canali").font(.body)
             Spacer()
             Picker(
                 "Canali",
@@ -99,7 +99,7 @@ struct OutputSectionView: View {
     private var sampleRatePicker: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                Text("Frequenza di campionamento").font(.callout)
+                Text("Frequenza di campionamento").font(.body)
                 Spacer()
                 if controller.isChangingSampleRate { ProgressView().controlSize(.small) }
                 Picker(
@@ -118,7 +118,7 @@ struct OutputSectionView: View {
                 .disabled(isBusy || controller.availableSampleRates.isEmpty)
             }
             Text("Vale per tutte le app, compreso Ableton.")
-                .font(.caption2)
+                .font(.callout)
                 .foregroundStyle(.secondary)
         }
     }
@@ -142,7 +142,7 @@ struct OutputSectionView: View {
 
     private var bufferPicker: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("Buffer").font(.callout)
+            Text("Buffer").font(.body)
             Picker(
                 "Buffer",
                 selection: Binding(

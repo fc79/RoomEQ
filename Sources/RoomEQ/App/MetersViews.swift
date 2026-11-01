@@ -53,7 +53,7 @@ struct LevelsView: View {
                                 "La correzione supera 0 dB di \(Format.signedDecibels($0, plusSign: true))"
                             } ?? "La correzione supera 0 dB"
                         )
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
@@ -71,7 +71,7 @@ struct LevelsView: View {
                             + (clip.maxInputOverDecibels.map { " (\(Format.signedDecibels($0, plusSign: true)))" } ?? "")
                             + " dall'app: non dipende da RoomEQ"
                     )
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 }
@@ -123,13 +123,13 @@ private struct DiagnosticsContent: View {
                 Text("Gli altri valori compaiono quando la correzione è attiva.")
             }
         }
-        .font(.caption)
+        .font(.callout)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Linear peak as "−12,3 dB" (or "−∞ dB").
+    /// Linear peak as "−12,3 dB" (or "—" for silence, below -90 dB).
     private static func peakText(_ peak: Float) -> String {
         Format.decibels(peak > 0 ? 20 * log10(peak) : -.infinity)
     }

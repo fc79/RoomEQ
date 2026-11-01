@@ -18,13 +18,13 @@ struct OutputRulesView: View {
                 "Scegli un preset per ogni uscita, oppure «Nessuna correzione»: "
                     + "RoomEQ si fa da parte e l'audio va diretto, senza latenza."
             )
-            .font(.caption)
+            .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
         let outputs = controller.knownOutputs
             if outputs.isEmpty {
-                Text("Nessuna uscita trovata").font(.caption).foregroundStyle(.secondary)
+                Text("Nessuna uscita trovata").font(.callout).foregroundStyle(.secondary)
             }
             ForEach(outputs) { output in
                 row(for: output)
@@ -48,15 +48,15 @@ struct OutputRulesView: View {
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(output.isConnected ? output.name : "\(output.name) (scollegato)")
-                    .font(.callout)
+                    .font(.body)
                     .foregroundStyle(output.isConnected ? .primary : .secondary)
                     .lineLimit(2)
                 if isInUse {
-                    Text("in uso").font(.caption2).foregroundStyle(.secondary)
+                    Text("in uso").font(.callout).foregroundStyle(.secondary)
                 }
                 if output.hasRememberedEdits {
                     Text("modifiche non salvate ricordate")
-                        .font(.caption2)
+                        .font(.callout)
                         .foregroundStyle(.orange)
                 }
             }

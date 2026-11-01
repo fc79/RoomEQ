@@ -36,7 +36,7 @@ struct PresetRowView: View {
             if editor != nil { nameEditor }
             if let message = controller.lastAutomaticPresetSwitch {
                 Text(message)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.blue)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -54,7 +54,7 @@ struct PresetRowView: View {
 
     private var presetRow: some View {
         HStack(spacing: 8) {
-            Text("Preset").font(.callout).foregroundStyle(.secondary)
+            Text("Preset").font(.body).foregroundStyle(.secondary)
             Menu {
                 presetMenuItems
             } label: {
@@ -164,7 +164,7 @@ struct PresetRowView: View {
     private var nameEditor: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(editor == .saveAs ? "Nome del nuovo preset" : "Nuovo nome del preset")
-                .font(.caption)
+                .font(.callout)
                 .foregroundStyle(.secondary)
             TextField("Nome", text: $nameText)
                 .textFieldStyle(.roundedBorder)
@@ -172,7 +172,7 @@ struct PresetRowView: View {
                 .onSubmit(commitName)
             if let error = nameError {
                 Text(error)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }

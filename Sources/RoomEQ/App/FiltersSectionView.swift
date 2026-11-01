@@ -46,10 +46,10 @@ struct FiltersSectionView: View {
     private var preampBlock: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("Preamp").font(.callout)
+                Text("Preamp").font(.body)
                 Spacer()
                 Text(Format.signedDecibels(controller.preampDecibels))
-                    .font(.callout.monospacedDigit())
+                    .font(.body.monospacedDigit())
             }
             // Free slider; the value is rounded to 0,1 dB when it is set.
             Slider(
@@ -75,7 +75,7 @@ struct FiltersSectionView: View {
                     "La curva amplifica fino a \(Format.signedDecibels(boost, plusSign: true)): "
                         + "preamp consigliato \(Format.signedDecibels(suggested))"
                 )
-                .font(.caption)
+                .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
@@ -98,12 +98,12 @@ struct FiltersSectionView: View {
                     .disabled(controller.isImporting)
                 if controller.isImporting {
                     ProgressView().controlSize(.small)
-                    Text("Importazione in corso…").font(.caption).foregroundStyle(.secondary)
+                    Text("Importazione in corso…").font(.callout).foregroundStyle(.secondary)
                 }
             }
             if let summary = controller.lastImportSummary {
                 Text(summary)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -133,7 +133,7 @@ struct FiltersSectionView: View {
                 warningLines(warnings)
             } label: {
                 Text("\(warnings.count) avvisi sull'importazione")
-                    .font(.caption.weight(.medium))
+                    .font(.callout.weight(.medium))
                     .foregroundStyle(.orange)
             }
         } else if !warnings.isEmpty {
@@ -145,7 +145,7 @@ struct FiltersSectionView: View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                 Text(line)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }

@@ -18,10 +18,11 @@ public enum CorrectionStatusText {
     /// Retrying once after a sample-rate change.
     public static let retryAfterRateChange = "Riprovo dopo il cambio di frequenza…"
 
-    /// "Correzione attiva · «Quantum» · 6,3 ms" (parts without a value are left out).
+    /// "Correzione attiva · Quantum · 6,3 ms" (no guillemets here, unlike the
+    /// other sentences; parts without a value are left out).
     public static func active(outputName: String?, latencyMilliseconds: Double?) -> String {
         var parts = ["Correzione attiva"]
-        if let outputName, !outputName.isEmpty { parts.append("«\(outputName)»") }
+        if let outputName, !outputName.isEmpty { parts.append(outputName) }
         if let latencyMilliseconds, latencyMilliseconds.isFinite, latencyMilliseconds > 0 {
             parts.append(AudioFormatText.milliseconds(latencyMilliseconds))
         }

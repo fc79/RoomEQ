@@ -16,7 +16,7 @@ struct EQBandsList: View {
         VStack(alignment: .leading, spacing: 6) {
             if controller.bands.isEmpty {
                 Text("Nessun filtro: aggiungine uno o importa da REW.")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
             ForEach(Array(controller.bands.enumerated()), id: \.element.id) { index, band in
@@ -47,7 +47,7 @@ struct EQBandsList: View {
                 .disabled(isFull)
                 Spacer()
                 Text("\(controller.bands.count) di \(EQBand.maximumCount) filtri")
-                    .font(.caption2)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
             Button("Torna ai filtri iniziali") {
@@ -81,7 +81,7 @@ private struct EQBandRow: View {
             summaryRow
             if let issue = controller.bandIssues[band.id] {
                 Text(issue)
-                    .font(.caption2)
+                    .font(.callout)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 22)
@@ -98,8 +98,8 @@ private struct EQBandRow: View {
             )
             .labelsHidden()
             .toggleStyle(.checkbox)
-            Text("F\(number)").font(.caption.weight(.semibold)).frame(width: 24, alignment: .leading)
-            Text(Format.frequency(band.frequency)).frame(width: 66, alignment: .trailing)
+            Text("F\(number)").font(.callout.weight(.semibold)).frame(width: 28, alignment: .leading)
+            Text(Format.frequency(band.frequency)).frame(width: 70, alignment: .trailing)
             Text(Format.signedDecibels(band.gain)).frame(width: 66, alignment: .trailing)
             Text(Format.qFactor(band.q)).frame(width: 62, alignment: .trailing)
             Spacer(minLength: 0)
@@ -116,7 +116,7 @@ private struct EQBandRow: View {
             .help("Elimina il filtro")
             .accessibilityLabel("Elimina filtro F\(number)")
         }
-        .font(.caption.monospacedDigit())
+        .font(.callout.monospacedDigit())
         .opacity(band.isEnabled ? 1 : 0.5)
     }
 
@@ -173,7 +173,7 @@ private struct BandValueField: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(title).font(.caption).frame(width: 66, alignment: .leading)
+            Text(title).font(.callout).frame(width: 76, alignment: .leading)
             TextField(
                 title,
                 value: Binding(get: { value }, set: set),
@@ -190,7 +190,7 @@ private struct BandValueField: View {
                 EmptyView()
             }
             .labelsHidden()
-            Text(unit).font(.caption).foregroundStyle(.secondary)
+            Text(unit).font(.callout).foregroundStyle(.secondary)
             Spacer(minLength: 0)
         }
     }

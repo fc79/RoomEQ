@@ -19,7 +19,7 @@ struct StartupSectionView: View {
             .toggleStyle(.switch)
             if let hint = controller.launchAtLoginHint {
                 Text(hint)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(needsAttention ? Color.orange : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
