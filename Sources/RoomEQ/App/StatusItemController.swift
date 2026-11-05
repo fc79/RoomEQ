@@ -15,8 +15,8 @@
 //    the panel (e.g. on a pop-up menu) is spent making the window key, and
 //    the panel gets no keyboard (preset name fields, Cmd-Q for "Esci");
 //  - the popover is `.applicationDefined`: AppKit never closes it by itself,
-//    every close is decided here, for one of these reasons (each logged,
-//    category "panel"):
+//    every close is decided here, for one of these reasons (each logged at
+//    debug level, category "panel"):
 //      * a click on the icon (the toggle);
 //      * a click in another app (windows, desktop, other menu bar icons),
 //        seen by a global mouse monitor, which works even if the app did not
@@ -134,7 +134,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     @objc private func togglePopover(_ sender: Any?) {
         let shown = popover.isShown
         let eventType = NSApp.currentEvent.map { String(describing: $0.type) } ?? "none"
-        Log.panel.notice(
+        Log.panel.debug(
             "Icon clicked: popover shown before = \(shown, privacy: .public), event = \(eventType, privacy: .public)")
         if shown {
             closePopover(reason: .iconClick)
@@ -153,7 +153,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         // Icon highlighted while the panel is open, like a menu.
         button.highlight(true)
         installMonitors()
-        Log.panel.notice("Popover opened")
+        Log.panel.debug("Popover opened")
         // Activation is asynchronous: check again on the next run loop turn.
         DispatchQueue.main.async { [weak self] in
             self?.makePopoverKey()
@@ -162,7 +162,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func closePopover(reason: CloseReason) {
         guard popover.isShown else { return }
-        Log.panel.notice("Closing popover: \(reason.rawValue, privacy: .public)")
+        Log.panel.debug("Closing popover: \(reason.rawValue, privacy: .public)")
         popover.close()
         // popoverDidClose does it too; repeated here in case close() is not
         // followed by the delegate call (tearDown is idempotent).
@@ -198,7 +198,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
-        Log.panel.notice("Popover did close")
+        Log.panel.debug("Popover did close")
         tearDownAfterClose()
     }
 
