@@ -806,14 +806,15 @@ Code: `Sources/RoomEQCore/AppSettings.swift`, `SettingsBackups.swift`,
     events need no accessibility permission); a click in another window of
     the app (local monitor, `NSEvent.addLocalMonitorForEvents`, which ignores
     the panel, the icon and menu-level windows); Esc, when neither a text
-    field nor a cancel-shortcut button in the panel takes it; the app losing
-    active status (`didResignActiveNotification`). Each close is logged with
+    field nor a cancel-shortcut button in the panel takes it. Losing active
+    status does not close it: on macOS 26 moving the pointer onto the menu
+    bar hands the focus back to the previous app, without any click. Each close is logged with
     its reason (category `panel`). With `.transient`, AppKit examined the
     click on the icon itself, and on macOS 26 the second click on the icon
     left the popover open. Pop-up menus are unaffected: their clicks belong
     to the menu's own tracking loop, which monitors do not see.
   - **File choosers:** they use `begin`, not `runModal`. While one is up,
-    the monitors and the resign-active handler leave the popover open.
+    the monitors leave the popover open.
 - **Panel** (`MenuPanelView.swift`, 400 pt wide):
   - fixed at the top: the header (Correction switch, status line, errors),
     the preset row and the level meters;

@@ -24,8 +24,10 @@
 //      * a click in one of our own windows other than the panel and the icon
 //        (local monitor; in practice there are none);
 //      * Esc, when nothing in the panel uses it (a "Annulla" button or a
-//        text field get it first);
-//      * the app losing active status (e.g. Cmd-Tab to another app).
+//        text field get it first).
+//    Losing active status does NOT close it: on macOS 26 just moving the
+//    pointer onto the menu bar gives the focus back to the previous app,
+//    and the panel must stay open until a click.
 //    With `.transient` AppKit examined the click on the icon itself: the
 //    popover either closed on the mouse-down and the button's action then
 //    reopened it, or, when the delegate refused the close, the click was
@@ -67,7 +69,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         case clickInOtherApp = "click in another app"
         case clickInOwnWindow = "click in another window of the app"
         case escape = "Esc"
-        case appResignedActive = "app no longer active"
     }
 
     init(controller: AudioEngineController) {
@@ -103,9 +104,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(appDidBecomeActive(_:)),
             name: NSApplication.didBecomeActiveNotification, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(appDidResignActive(_:)),
-            name: NSApplication.didResignActiveNotification, object: nil)
     }
 
     // MARK: Icon
@@ -181,13 +179,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     @objc private func appDidBecomeActive(_ notification: Notification) {
         makePopoverKey()
-    }
-
-    /// Cmd-Tab or another app taking the focus without a click: what
-    /// `.transient` did by itself. Not while a file chooser is up.
-    @objc private func appDidResignActive(_ notification: Notification) {
-        guard popover.isShown, !isChoosingFile else { return }
-        closePopover(reason: .appResignedActive)
     }
 
     /// Things that can change outside the app while the panel is closed.
@@ -307,8 +298,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     // MARK: File choosers
 
     /// Runs a file chooser without blocking (`begin`, not `runModal`). While
-    /// it is up (`isChoosingFile`) every monitor and the resign-active
-    /// handler leave the popover open; afterwards the popover gets the
+    /// it is up (`isChoosingFile`) every monitor leaves the popover
+    /// open; afterwards the popover gets the
     /// keyboard back if still open.
     private func runFileChooser(_ panel: NSOpenPanel, completion: @escaping @MainActor (URL?) -> Void) {
         isChoosingFile = true
