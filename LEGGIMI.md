@@ -46,7 +46,17 @@ RoomEQ è pensato per chi misura la propria stanza d'ascolto con [REW](https://w
 
 ## Compilare e installare
 
-Non ci sono programmi già compilati: si compila dai sorgenti, da Terminale, nella cartella del progetto.
+### Scaricare l'app
+
+Ogni [release su GitHub](https://github.com/fc79/RoomEQ/releases) contiene `RoomEQ.zip`, l'app già compilata (solo Mac con Apple Silicon). Non è notarizzata, quindi la prima volta macOS la blocca:
+
+1. Decomprimi il file e sposta `RoomEQ.app` in `/Applicazioni`.
+2. Aprila una volta. macOS dice che non può verificarla: premi **Fine**.
+3. Apri Impostazioni di Sistema › Privacy e sicurezza, scorri in basso e premi **Apri comunque** accanto a RoomEQ, poi conferma.
+
+### Compilare dai sorgenti
+
+Da Terminale, nella cartella del progetto:
 
 ```bash
 ./build.sh        # compila, controlla le traduzioni, assembla e firma build/RoomEQ.app
@@ -257,7 +267,7 @@ Per disinstallare:
 - RoomEQ segue l'uscita predefinita di macOS. Viene corretta solo quell'uscita.
 - Nessuna conversione della frequenza di campionamento, per scelta. Cambiare la frequenza in RoomEQ la cambia per tutte le app che usano quella scheda.
 - Non è uno strumento di misura né un calcolatore di correzione della stanza: i filtri li calcoli in REW (o con qualsiasi strumento che esporti testo nello stile di REW) e RoomEQ li applica.
-- Nessuna versione già compilata, notarizzata o sull'App Store.
+- Nessuna versione notarizzata o sull'App Store (l'app nelle release è firmata «ad hoc»).
 - L'importazione da REW presuppone che l'equalizzatore Generic di REW definisca il Q come i filtri di RoomEQ (il filtro a campana standard del «cookbook»). L'autore lo ha verificato il 1° novembre 2026 con una misura in loopback: le due risposte coincidono entro circa 0,05 dB. Puoi ripetere la verifica sul tuo impianto, vedi [Verificare che i filtri siano giusti](#verificare-che-i-filtri-siano-giusti).
 
 ## Privacy

@@ -28,7 +28,15 @@ RoomEQ is for people who measure their listening room with [REW](https://www.roo
 
 ## Build and install
 
-There are no prebuilt binaries. Build from source:
+### Download
+
+Each [GitHub release](https://github.com/fc79/RoomEQ/releases) has a ready-built `RoomEQ.zip` (Apple Silicon only). It is not notarized, so macOS blocks it the first time:
+
+1. Unzip it and move `RoomEQ.app` to `/Applications`.
+2. Open it once. macOS says it cannot verify the app: click **Done**.
+3. Open System Settings › Privacy & Security, scroll down and click **Open Anyway** next to RoomEQ, then confirm.
+
+### Build from source
 
 ```bash
 ./build.sh        # compile, check translations, assemble and sign build/RoomEQ.app
@@ -68,7 +76,7 @@ See the [user guide](docs/USER_GUIDE.md) for every control, and for how to check
 - RoomEQ follows the macOS default output device. Only that device is corrected.
 - No sample-rate conversion, by design. Changing the sample rate in RoomEQ changes it for every app using that device.
 - Not a measurement tool and not a room-correction calculator: you compute the filters in REW (or any tool that can export REW-style text) and RoomEQ applies them.
-- No prebuilt, notarized or App Store release.
+- No notarized or App Store release (the release downloads are ad-hoc signed).
 - The REW import relies on REW's Generic equalizer defining Q the same way as RoomEQ's filters (the standard "cookbook" peaking filter). The author verified this on November 1, 2026 with a loopback measurement: the two agree within about 0.05 dB. You can repeat the check on your own setup, see the user guide.
 
 ## Privacy
