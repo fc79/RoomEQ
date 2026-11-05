@@ -799,14 +799,21 @@ Code: `Sources/RoomEQCore/AppSettings.swift`, `SettingsBackups.swift`,
     repeated. The popover window is made key again when activation arrives
     late (`didBecomeActiveNotification`). The code notes to revisit this if
     Apple removes the API.
-  - **Closing on outside clicks:** `.transient` only sees clicks that reach
-    this app. While the popover is open, a global mouse monitor
-    (`NSEvent.addGlobalMonitorForEvents`; mouse events need no accessibility
-    permission) closes it on clicks in other apps. A click on the icon is
-    handled only by the toggle (`popoverShouldClose`).
+  - **Closing:** the popover is `.applicationDefined`, so AppKit never
+    closes it by itself and every close is decided by the controller: a
+    click on the icon (the button's action, the toggle); a click in another
+    app (global mouse monitor, `NSEvent.addGlobalMonitorForEvents`; mouse
+    events need no accessibility permission); a click in another window of
+    the app (local monitor, `NSEvent.addLocalMonitorForEvents`, which ignores
+    the panel, the icon and menu-level windows); Esc, when neither a text
+    field nor a cancel-shortcut button in the panel takes it; the app losing
+    active status (`didResignActiveNotification`). Each close is logged with
+    its reason (category `panel`). With `.transient`, AppKit examined the
+    click on the icon itself, and on macOS 26 the second click on the icon
+    left the popover open. Pop-up menus are unaffected: their clicks belong
+    to the menu's own tracking loop, which monitors do not see.
   - **File choosers:** they use `begin`, not `runModal`. While one is up,
-    the popover is set to `.applicationDefined` and the global monitor is
-    ignored, so the popover stays open.
+    the monitors and the resign-active handler leave the popover open.
 - **Panel** (`MenuPanelView.swift`, 400 pt wide):
   - fixed at the top: the header (Correction switch, status line, errors),
     the preset row and the level meters;

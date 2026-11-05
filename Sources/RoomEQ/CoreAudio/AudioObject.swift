@@ -16,6 +16,7 @@ enum Log {
     static let engine = Logger(subsystem: subsystem, category: "engine")
     static let tap = Logger(subsystem: subsystem, category: "tap")
     static let devices = Logger(subsystem: subsystem, category: "devices")
+    static let panel = Logger(subsystem: subsystem, category: "panel")
 }
 
 /// A failed Core Audio call. The operation is a fixed (localizable) text,

@@ -14,15 +14,29 @@
 //    activation arrives late (didBecomeActive): otherwise the first click in
 //    the panel (e.g. on a pop-up menu) is spent making the window key, and
 //    the panel gets no keyboard (preset name fields, Cmd-Q for "Esci");
-//  - a click anywhere else closes it: in our own app through `.transient`,
-//    in other apps (windows, desktop, other menu bar icons) through a global
-//    mouse monitor installed while the popover is open, which works even if
-//    the app did not become active (`.transient` alone would then miss those
-//    clicks);
+//  - the popover is `.applicationDefined`: AppKit never closes it by itself,
+//    every close is decided here, for one of these reasons (each logged,
+//    category "panel"):
+//      * a click on the icon (the toggle);
+//      * a click in another app (windows, desktop, other menu bar icons),
+//        seen by a global mouse monitor, which works even if the app did not
+//        become active;
+//      * a click in one of our own windows other than the panel and the icon
+//        (local monitor; in practice there are none);
+//      * Esc, when nothing in the panel uses it (a "Annulla" button or a
+//        text field get it first);
+//      * the app losing active status (e.g. Cmd-Tab to another app).
+//    With `.transient` AppKit examined the click on the icon itself: the
+//    popover either closed on the mouse-down and the button's action then
+//    reopened it, or, when the delegate refused the close, the click was
+//    swallowed and the action never ran (macOS 26: the popover stayed open).
+//    Owning every close removes that interplay;
+//  - pop-up menus (Picker) in the panel keep working: their clicks are
+//    handled by the menu's own tracking loop, which monitors do not see;
 //  - just before opening, what may have changed outside the app is refreshed
 //    (login item status, candidate apps to exclude);
-//  - while a file chooser opened from the panel is up, the popover stays
-//    open (see `runFileChooser`), so what the chooser leads to (an inline
+//  - while a file chooser opened from the panel is up, nothing closes the
+//    popover (see `runFileChooser`), so what the chooser leads to (an inline
 //    confirmation, an error note) is seen right away.
 // The icon and its accessibility label follow `controller.menuBarState`
 // through Observation.
@@ -40,9 +54,21 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// Global monitor for clicks in other apps; set only while the popover
     /// is shown.
     private var outsideClickMonitor: Any?
+    /// Local monitor for clicks in our own windows and for Esc; set only
+    /// while the popover is shown.
+    private var localEventMonitor: Any?
     /// True while a file chooser opened from the panel is up: the popover
     /// must stay open meanwhile.
     private var isChoosingFile = false
+
+    /// Why the popover is being closed (for the log).
+    private enum CloseReason: String {
+        case iconClick = "icon click"
+        case clickInOtherApp = "click in another app"
+        case clickInOwnWindow = "click in another window of the app"
+        case escape = "Esc"
+        case appResignedActive = "app no longer active"
+    }
 
     init(controller: AudioEngineController) {
         self.controller = controller
@@ -57,13 +83,18 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         // The popover takes the content's ideal size, and follows it.
         host.sizingOptions = .preferredContentSize
         popover.contentViewController = host
-        popover.behavior = .transient
+        // Every close is ours (see the header).
+        popover.behavior = .applicationDefined
         popover.animates = true
         popover.delegate = self
 
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(togglePopover(_:))
+            // Default sending (on mouse-up) kept on purpose: with
+            // `.applicationDefined` nothing else looks at the mouse-down, so
+            // there is no race to avoid, and the button's own press highlight
+            // stays consistent with `highlight(true)` below.
         }
         observeIcon()
 
@@ -72,6 +103,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(appDidBecomeActive(_:)),
             name: NSApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appDidResignActive(_:)),
+            name: NSApplication.didResignActiveNotification, object: nil)
     }
 
     // MARK: Icon
@@ -98,8 +132,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     // MARK: Popover
 
     @objc private func togglePopover(_ sender: Any?) {
-        if popover.isShown {
-            closePopover()
+        let shown = popover.isShown
+        let eventType = NSApp.currentEvent.map { String(describing: $0.type) } ?? "none"
+        Log.panel.notice(
+            "Icon clicked: popover shown before = \(shown, privacy: .public), event = \(eventType, privacy: .public)")
+        if shown {
+            closePopover(reason: .iconClick)
         } else {
             showPopover()
         }
@@ -114,14 +152,17 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popoverWindow?.makeKey()
         // Icon highlighted while the panel is open, like a menu.
         button.highlight(true)
-        installOutsideClickMonitor()
+        installMonitors()
+        Log.panel.notice("Popover opened")
         // Activation is asynchronous: check again on the next run loop turn.
         DispatchQueue.main.async { [weak self] in
             self?.makePopoverKey()
         }
     }
 
-    private func closePopover() {
+    private func closePopover(reason: CloseReason) {
+        guard popover.isShown else { return }
+        Log.panel.notice("Closing popover: \(reason.rawValue, privacy: .public)")
         popover.close()
         // popoverDidClose does it too; repeated here in case close() is not
         // followed by the delegate call (tearDown is idempotent).
@@ -142,6 +183,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         makePopoverKey()
     }
 
+    /// Cmd-Tab or another app taking the focus without a click: what
+    /// `.transient` did by itself. Not while a file chooser is up.
+    @objc private func appDidResignActive(_ notification: Notification) {
+        guard popover.isShown, !isChoosingFile else { return }
+        closePopover(reason: .appResignedActive)
+    }
+
     /// Things that can change outside the app while the panel is closed.
     /// Done before showing, so the popover opens already at its final size.
     private func refreshBeforeShowing() {
@@ -149,48 +197,57 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         controller.refreshCandidateApps()
     }
 
-    /// A click on the icon is handled by `togglePopover`: if the transient
-    /// behaviour closed the popover on that same click, the click would then
-    /// reopen it at once.
-    func popoverShouldClose(_ popover: NSPopover) -> Bool {
-        guard let event = NSApp.currentEvent, event.type == .leftMouseDown,
-              let buttonWindow = statusItem.button?.window
-        else { return true }
-        return event.window !== buttonWindow
-    }
-
     func popoverDidClose(_ notification: Notification) {
+        Log.panel.notice("Popover did close")
         tearDownAfterClose()
     }
 
     private func tearDownAfterClose() {
         statusItem.button?.highlight(false)
-        removeOutsideClickMonitor()
+        removeMonitors()
     }
 
-    // MARK: Clicks in other apps
+    // MARK: Monitors
 
-    /// `.transient` only sees clicks that reach this app, or the app losing
-    /// active status; if the app never became active, a click in another app
-    /// would leave the popover open. A global monitor receives copies of the
-    /// mouse events sent to other apps (mouse events need no accessibility
-    /// permission). Clicks in our own windows (the icon, the panel, a file
-    /// chooser) are not delivered to it.
-    private func installOutsideClickMonitor() {
-        guard outsideClickMonitor == nil else { return }
-        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
-        ) { [weak self] _ in
-            // Hop to the main actor explicitly instead of assuming the
-            // handler's thread.
-            Task { @MainActor in self?.clickedInOtherApp() }
+    private func installMonitors() {
+        if outsideClickMonitor == nil {
+            // Copies of the mouse events sent to other apps (mouse events
+            // need no accessibility permission). Clicks in our own windows
+            // (the icon, the panel, a file chooser) are not delivered here.
+            outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+            ) { [weak self] _ in
+                // Hop to the main actor explicitly instead of assuming the
+                // handler's thread.
+                Task { @MainActor in self?.clickedInOtherApp() }
+            }
+        }
+        if localEventMonitor == nil {
+            // Events of our own app, before they are dispatched. Not called
+            // for events consumed by nested tracking loops (menu tracking of
+            // a pop-up menu, control tracking), so Picker menus are not seen.
+            localEventMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]
+            ) { [weak self] event in
+                // Local monitors run on the main thread, with the event
+                // being dispatched: it does not leave this thread.
+                nonisolated(unsafe) let event = event
+                let swallow = MainActor.assumeIsolated {
+                    self?.shouldSwallowLocalEvent(event) ?? false
+                }
+                return swallow ? nil : event
+            }
         }
     }
 
-    private func removeOutsideClickMonitor() {
+    private func removeMonitors() {
         if let monitor = outsideClickMonitor {
             NSEvent.removeMonitor(monitor)
             outsideClickMonitor = nil
+        }
+        if let monitor = localEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            localEventMonitor = nil
         }
     }
 
@@ -198,18 +255,62 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         // A file chooser may live partly in another process: its clicks must
         // not close the popover.
         guard popover.isShown, !isChoosingFile else { return }
-        closePopover()
+        closePopover(reason: .clickInOtherApp)
+    }
+
+    /// Handles an event of our own app; true to swallow it, false to let it
+    /// be dispatched as usual.
+    private func shouldSwallowLocalEvent(_ event: NSEvent) -> Bool {
+        guard popover.isShown, !isChoosingFile else { return false }
+        if event.type == .keyDown {
+            return handleKeyDown(event)
+        }
+        // Mouse down in one of our windows.
+        guard let window = event.window else { return false }
+        if isPanelWindow(window) { return false }
+        // The icon: the button's action (togglePopover) decides.
+        if window === statusItem.button?.window { return false }
+        // Menus and other system windows of our process (pop-up menus are
+        // at this level or above): never a reason to close.
+        if window.level >= .popUpMenu { return false }
+        closePopover(reason: .clickInOwnWindow)
+        return false
+    }
+
+    /// Esc closes the popover only if nothing in the panel wants it: a text
+    /// field being edited gets it as usual, and a button with the cancel
+    /// shortcut ("Annulla" of an inline confirmation) gets it through the
+    /// window's key equivalents. True if the event was consumed here.
+    private func handleKeyDown(_ event: NSEvent) -> Bool {
+        let escapeKeyCode: UInt16 = 53
+        guard event.keyCode == escapeKeyCode,
+              event.modifierFlags.isDisjoint(with: [.command, .option, .control, .shift]),
+              let window = popoverWindow, event.window === window
+        else { return false }
+        if window.firstResponder is NSText { return false }
+        if window.performKeyEquivalent(with: event) { return true }
+        closePopover(reason: .escape)
+        return true
+    }
+
+    /// The popover window, or a window attached to it (child, sheet).
+    private func isPanelWindow(_ window: NSWindow) -> Bool {
+        guard let panelWindow = popoverWindow else { return false }
+        var current: NSWindow? = window
+        while let candidate = current {
+            if candidate === panelWindow { return true }
+            current = candidate.parent ?? candidate.sheetParent
+        }
+        return false
     }
 
     // MARK: File choosers
 
-    /// Runs a file chooser without blocking (`begin`, not `runModal`). A
-    /// transient popover closes when another window is used (the chooser
-    /// too): it is made application-defined meanwhile, transient again
-    /// afterwards, and gets the keyboard back if still open. The global
-    /// click monitor is ignored meanwhile too (`isChoosingFile`).
+    /// Runs a file chooser without blocking (`begin`, not `runModal`). While
+    /// it is up (`isChoosingFile`) every monitor and the resign-active
+    /// handler leave the popover open; afterwards the popover gets the
+    /// keyboard back if still open.
     private func runFileChooser(_ panel: NSOpenPanel, completion: @escaping @MainActor (URL?) -> Void) {
-        popover.behavior = .applicationDefined
         isChoosingFile = true
         // A menu-bar-only app is not active by itself: without this the
         // chooser could open behind other apps' windows.
@@ -218,7 +319,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             MainActor.assumeIsolated {
                 if let self {
                     self.isChoosingFile = false
-                    self.popover.behavior = .transient
                     if self.popover.isShown {
                         self.popoverWindow?.makeKey()
                     }
