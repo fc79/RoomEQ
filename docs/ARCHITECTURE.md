@@ -353,8 +353,10 @@ The callback only increments an atomic counter.
 
 Only one copy of RoomEQ runs. At launch, before the controller loads the
 settings, `AppDelegate` looks for another running app with the same bundle
-ID (installed or a fresh build). If there is one, it shows «RoomEQ è già
-aperto» and quits without touching audio or settings: two copies would
+ID (installed or a fresh build) that started earlier. A copy that is
+quitting gets up to 3 s to finish; of two copies started together only the
+later one gives way. If one is still running, this copy shows «RoomEQ è
+già aperto» and quits without touching audio or settings: two copies would
 rewrite the same settings document and play the corrected audio twice.
 
 `EngineSession.teardown()` order:
@@ -425,12 +427,18 @@ unit-tested; the Core Audio part is in `RoomEQ/Engine`.
   pair of the tap's buffer into that app's `RecordingRing`: a
   single-producer/single-consumer ring of stereo frames with atomic
   counters, no locks and no allocation. If the ring is full, the producer
-  drops the new frames and counts them.
+  drops the new frames, counts them and records where the loss began. A
+  buffer in an unexpected channel layout is stored as silence in its
+  place (and reported like a loss).
 - **Writer side.** A serial queue (`com.federicociapi.RoomEQ.recording`)
   runs a 50 ms timer. Each tick drains every ring through that app's
   `SilenceGate` into the WAV files. For every dropped frame the consumer
-  writes one frame of silence, so each file keeps its length and the files
-  stay aligned; the lost audio is reported as a notice. About once a second
+  writes one frame of silence at the point of the loss (`RecordingRing.drain`,
+  also for losses during the drain itself), so each file keeps its length
+  and the files stay aligned; the lost audio is reported as a notice. A
+  capture attempt that fails after starting some IOProcs leaves nothing in
+  the rings (`discardAll`); a track whose ring an unstoppable IOProc may
+  still use gets a new one, so a ring never has two producers. About once a second
   (every 20th tick) it updates the WAV headers, looks for write errors and
   checks the free disk space; every 10 s (every 200th tick) it also forces
   the data to the disk.
@@ -756,8 +764,10 @@ most.
   sessions that are no longer active are ignored. One exception: a `.fatal`
   from the session a restart replaced less than 2 s earlier is still shown
   and counted, so a failure loop cannot hide behind restarts.
-- **Automatic restarts** (format/layout change, abnormal IO stop): at most 3
-  in 10 s. After that the state is `.failed` with "Troppi riavvii
+- **Automatic restarts** (format/layout change, abnormal IO stop, an
+  excluded app started later that could not be added to the tap — this one
+  at most once every 30 s): at most 3 in 10 s. If the start of an
+  automatic restart fails, that start is retried once (§6.3). After that the state is `.failed` with "Troppi riavvii
   automatici" ("Too many automatic restarts"). User-initiated restarts
   (buffer, exclusions, macOS output change) and restarts within 5 s of a
   user sample-rate change do not count.

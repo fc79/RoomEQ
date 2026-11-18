@@ -290,10 +290,11 @@ final class AudioEngineController {
     @ObservationIgnored private var userSampleRateChangeDate: Date?
     /// One start retry is allowed right after a user sample-rate change.
     @ObservationIgnored private var rateChangeRetryAvailable = false
-    /// One start retry is allowed after an automatic restart (another app
-    /// changed the rate or format, IO stopped): the HAL may still be
-    /// settling when the first start runs.
-    @ObservationIgnored private var automaticRestartRetryAvailable = false
+    /// The launch generation of an automatic restart (another app changed
+    /// the rate or format, IO stopped): if that very start fails, it is
+    /// retried once (the HAL may still be settling). Any other launch, or
+    /// a superseded one, gets no such retry.
+    @ObservationIgnored private var automaticRestartGeneration: Int?
     /// "non è passato a…" message, cleared if the device reaches the rate later.
     @ObservationIgnored private var pendingRateMessage: (message: String, rate: Double, uid: String)?
     /// Retry window: until this time a failed start is retried instead of
@@ -491,7 +492,7 @@ final class AudioEngineController {
         guard state == .running || state == .starting || state == .failed || state == .paused else { return }
         startRetryDeadline = nil
         rateChangeRetryAvailable = false
-        automaticRestartRetryAvailable = false
+        automaticRestartGeneration = nil
         replacedSessionID = nil  // a late failure of it must not count now
         replacedSessionDate = nil
         automaticRestarts.removeAll()
@@ -766,7 +767,7 @@ final class AudioEngineController {
         Log.app.info("Pausing: no correction for \(device.uid, privacy: .public)")
         startRetryDeadline = nil  // the start request is satisfied (or no longer wanted)
         rateChangeRetryAvailable = false
-        automaticRestartRetryAvailable = false
+        automaticRestartGeneration = nil
         replacedSessionID = nil  // a late failure of it must not count now
         replacedSessionDate = nil
         audioCapturePermissionLikelyDenied = false
@@ -855,6 +856,7 @@ final class AudioEngineController {
     private func clearActiveSession() {
         stopMeters()
         bufferSize = settings.bufferFrames  // the choice, until a session grants another
+        bufferSizeOptions = BufferSize.preferredSizes
         renderState = nil
         link = nil
         activeSessionID = nil
@@ -924,7 +926,7 @@ final class AudioEngineController {
             audioCapturePermissionLikelyDenied = false
             startRetryDeadline = nil
             rateChangeRetryAvailable = false
-            automaticRestartRetryAvailable = false
+            automaticRestartGeneration = nil
             state = .running
             Log.app.info("Running on \(info.outputDevice.uid, privacy: .public), \(info.sampleRate) Hz, buffer \(info.bufferFrames)")
             if isPanelVisible { startMeters() }
@@ -936,7 +938,7 @@ final class AudioEngineController {
         case .failure(let error):
             guard wanted else { return }  // the failed session is already torn down
             if retryAfterSampleRateChange(error) { return }
-            if retryAfterAutomaticRestart(error) { return }
+            if retryAfterAutomaticRestart(error, generation: generation) { return }
             if error is AudioCapturePermissionError {
                 audioCapturePermissionLikelyDenied = true
                 startRetryDeadline = nil  // retrying won't help
@@ -975,9 +977,9 @@ final class AudioEngineController {
     /// The first start after an automatic restart failed: retry once, a
     /// moment later (not counted as an automatic restart). True if a retry
     /// was scheduled.
-    private func retryAfterAutomaticRestart(_ error: Error) -> Bool {
-        guard automaticRestartRetryAvailable, !(error is AudioCapturePermissionError) else { return false }
-        automaticRestartRetryAvailable = false
+    private func retryAfterAutomaticRestart(_ error: Error, generation failed: Int) -> Bool {
+        guard automaticRestartGeneration == failed, !(error is AudioCapturePermissionError) else { return false }
+        automaticRestartGeneration = nil
         Log.app.notice("Start failed after an automatic restart (\(error.localizedDescription, privacy: .public)); retrying once")
         state = .starting
         transitionStatus = CorrectionStatusText.restarting
@@ -1067,8 +1069,8 @@ final class AudioEngineController {
             fail(String(localized: "Troppi riavvii automatici (\(reason))"))
             return
         }
-        automaticRestartRetryAvailable = true
         restartIfActive(reason: reason)
+        if state == .starting { automaticRestartGeneration = launchGeneration }
     }
 
     private func restartIfActive(reason: String) {
@@ -1089,7 +1091,7 @@ final class AudioEngineController {
     private func fail(_ message: String) {
         Log.app.error("Engine error: \(message, privacy: .public)")
         startRetryDeadline = nil
-        automaticRestartRetryAvailable = false
+        automaticRestartGeneration = nil
         invalidatePendingLaunches()
         clearActiveSession()
         engine.stop()
@@ -1163,6 +1165,10 @@ final class AudioEngineController {
         guard let work = pendingSave, !work.isCancelled else { return }
         work.cancel()
         writeSettings()
+        // On disk now: at quit the recording and the engine may take a few
+        // seconds more to stop.
+        userDefaults.synchronize()
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
     }
 
     private func writeSettings() {

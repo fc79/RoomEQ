@@ -52,6 +52,10 @@ final class AudioEngine: @unchecked Sendable {
 
     // Engine-queue state.
     private var session: EngineSession?
+    /// Last restart asked because a late-started excluded app could not be
+    /// added to the tap: at most one every 30 s (a helper-spawning app
+    /// whose updates keep failing must not cause a restart loop).
+    private var lastExclusionRestart: ContinuousClock.Instant?
     private var nextSessionID = 1
 
     /// Receives events on the main thread. Set once before starting.
@@ -246,6 +250,12 @@ final class AudioEngine: @unchecked Sendable {
 
         case .processListChanged:
             if !session.handleProcessListChanged(), !session.restartRequested {
+                let now = ContinuousClock.now
+                if let last = lastExclusionRestart, now - last < .seconds(30) {
+                    Log.engine.error("Exclusion update failed again within 30 s: no restart this time")
+                    return
+                }
+                lastExclusionRestart = now
                 session.restartRequested = true
                 emit(.restartNeeded(
                     sessionID: sessionID, reason: String(localized: "un'app esclusa non si è potuta escludere dal tap")))
