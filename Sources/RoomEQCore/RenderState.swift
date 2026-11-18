@@ -383,16 +383,26 @@ public final class RenderStateHandle: @unchecked Sendable {
     /// to the real-time thread, which ramps every band to it. Lock-free
     /// for the RT thread; returns false if `sections` equals the set
     /// published last (nothing to do). At most `maximumSections` are used.
+    /// With `gain`, also sets the preamp target, stored right before the
+    /// filter set is released (see `publishWorkingState`).
     @discardableResult
-    public func publishFilters(_ sections: [FilterSection]) -> Bool {
+    public func publishFilters(_ sections: [FilterSection], gain: Float? = nil) -> Bool {
         let sections = Array(sections.prefix(DSPProcessor.maximumSections))
         let state = pointer
+        let gain = gain.flatMap(Self.clampGain)
         return filterWriter.withLock { writer in
-            guard writer.lastPublished != sections else { return false }
+            guard writer.lastPublished != sections else {
+                if let gain { state.pointee.targetGain.store(gain, ordering: .relaxed) }
+                return false
+            }
             let base = writer.slot * DSPProcessor.maximumSections
             for (index, section) in sections.enumerated() { state.pointee.filterSlots[base + index] = section }
             state.pointee.filterSlotCounts[writer.slot] = sections.count
-            // Release: the slot contents are visible before the new index.
+            // The gain as late as possible, just before the release: the
+            // kernel can see it at most a few instructions before the set.
+            if let gain { state.pointee.targetGain.store(gain, ordering: .relaxed) }
+            // Release: the slot contents (and the gain) are visible before
+            // the new index.
             let previous = state.pointee.filterMailbox.exchange(
                 writer.slot | FilterMailbox.dirtyFlag, ordering: .acquiringAndReleasing)
             writer.slot = previous & FilterMailbox.slotMask
@@ -410,10 +420,15 @@ public final class RenderStateHandle: @unchecked Sendable {
     @discardableResult
     public func publishWorkingState(bands: [EQBand], preampDecibels: Double) -> EQDesign {
         let design = EQDesign(bands: bands, sampleRate: configuration.sampleRate)
-        // Gain first: the filter mailbox exchange releases it, so the kernel
-        // never sees the new filters without the new gain (RenderKernel).
-        setPreamp(decibels: preampDecibels)
-        publishFilters(design.sections)
+        // The gain is stored right before the filter mailbox exchange, which
+        // releases it: the kernel never sees the new filters without the new
+        // gain, and the window in which it could see the gain one chunk
+        // before the filters is a few instructions wide (RenderKernel).
+        if let gain = Preamp.linearGain(decibels: preampDecibels) {
+            publishFilters(design.sections, gain: gain)
+        } else {
+            publishFilters(design.sections)
+        }
         return design
     }
 

@@ -182,9 +182,10 @@ public enum RenderKernel {
             // bands ramp to it from wherever they are.
             acceptPublishedFilters(state)
             // The preamp target is read right after the filters, in every
-            // chunk: `publishWorkingState` stores the gain BEFORE releasing
-            // the filter set, so a new set seen here comes with its gain and
-            // the bands' and preamp's ramps start on the same sample.
+            // chunk: `publishWorkingState` stores the gain just before
+            // releasing the filter set, so a new set seen here comes with
+            // its gain and the bands' and preamp's ramps start on the same
+            // sample (barring a publish landing in those few instructions).
             gainRamp.setTarget(state.pointee.targetGain.load(ordering: .relaxed))
             state.pointee.processor.process(
                 inputLeft: UnsafePointer(dryL), inputRight: UnsafePointer(dryR), outputLeft: wetL, outputRight: wetR,

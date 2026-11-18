@@ -311,7 +311,9 @@ struct RenderKernelTests {
     /// Switching from a preset with a +10 dB band and a −10 dB preamp to a
     /// flat one at 0 dB: at the band's frequency the output level stays put
     /// all the way through (the band's boost and the preamp's cut ramp
-    /// together), even with IO buffers of several processing chunks.
+    /// together, same length and shape). Published between IO cycles: a
+    /// publish in the middle of a cycle (the start-on-the-same-sample part)
+    /// can't be staged from one thread.
     @Test func presetSwitchDoesNotOvershootAtTheBand() {
         let rate = 48_000.0, frames = 4096
         let handle = makeHandle(
