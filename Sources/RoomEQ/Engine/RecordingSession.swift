@@ -730,7 +730,7 @@ private final class Capture {
                     guard list.count > 0, let data = list[0].mData else { return }
                     let bufferChannels = Int(list[0].mNumberChannels)
                     let frames = Int(list[0].mDataByteSize) / (MemoryLayout<Float>.size * max(1, bufferChannels))
-                    ring._withUnsafeGuaranteedRef { ring in
+                    _ = ring._withUnsafeGuaranteedRef { ring in
                         if bufferChannels == channels {
                             ring.write(
                                 interleaved: data.assumingMemoryBound(to: Float.self), frames: frames,
