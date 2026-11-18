@@ -4,7 +4,8 @@
 // aggregate and the tap, so tapped apps are immediately audible again.
 // It happens on:
 //   - Quit (applicationWillTerminate, i.e. NSApplication.willTerminateNotification);
-//   - SIGINT (Ctrl-C in Terminal) and SIGTERM (kill, logout).
+//   - SIGINT (Ctrl-C in Terminal), SIGTERM (kill, logout) and SIGHUP (the
+//     Terminal window it was started from closed).
 // On a crash or SIGKILL nothing can run: we rely on the HAL destroying the
 // private tap/aggregate when the process dies (see AggregateDevice.swift);
 // our IOProc on the output device dies with the process.
@@ -42,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func installSignalHandlers() {
-        for signalNumber in [SIGINT, SIGTERM] {
+        for signalNumber in [SIGINT, SIGTERM, SIGHUP] {  // SIGHUP: its Terminal window closed
             // Ignore the default action (immediate exit) and handle the signal
             // on the main queue instead, where we can shut down properly.
             signal(signalNumber, SIG_IGN)

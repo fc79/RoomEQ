@@ -177,7 +177,8 @@ struct MenuPanelView: View {
         HStack {
             Spacer()
             Button("Esci") {
-                controller.shutdown()
+                // applicationWillTerminate closes the recording files first,
+                // then shuts the engine down.
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")

@@ -361,7 +361,7 @@ If stopping or destroying an IOProc fails, the shared state (`RenderState`,
 `SplitLink`) is **leaked on purpose**, because an IOProc might still use it.
 
 Clean shutdown also runs on Quit (`applicationWillTerminate`) and on
-SIGINT/SIGTERM (`DispatchSourceSignal` in `AppDelegate`). These call
+SIGINT/SIGTERM/SIGHUP (`DispatchSourceSignal` in `AppDelegate`). These call
 `AudioEngine.stopSynchronously`, which waits at most 2 s. On a crash or
 `kill -9`, the HAL destroys the private tap and aggregate when the process exits and
 `.mutedWhenTapped` unmutes the apps. This was checked on hardware on
@@ -460,7 +460,7 @@ unit-tested; the Core Audio part is in `RoomEQ/Engine`.
   below 50 MB, or a failed output change (all closing the files properly).
   The remaining time is estimated from the free space and the data rate, and
   a warning is shown under 10 minutes. `RecordingController.stop()`, Quit
-  (`applicationWillTerminate`) and SIGINT/SIGTERM close the files; after a
+  (`applicationWillTerminate`) and SIGINT/SIGTERM/SIGHUP close the files; after a
   `kill -9` the files are valid up to the last header update.
 - **Threads.** IOProc (real time) → rings → recording queue → files. Property
   listeners run on their own serial queue (`...recording.listeners`) and only
