@@ -284,6 +284,7 @@
 "l'aggregato di cattura ha acquisito un dispositivo" = "the capture aggregate acquired a device";
 "uscita silenziata per cambio di frequenza" = "output muted for a sample rate change";
 "l'audio si è interrotto in modo anomalo" = "audio stopped abnormally";
+"un'app esclusa non si è potuta escludere dal tap" = "an excluded app could not be excluded from the tap";
 "dispositivo di uscita" = "output device";
 "macOS non consente a RoomEQ di catturare l'audio di sistema (%@). Apri Impostazioni di Sistema › Privacy e sicurezza › Registrazione schermo e audio di sistema, consenti l'accesso a RoomEQ e riprova." = "macOS does not allow RoomEQ to capture system audio (%@). Open System Settings › Privacy & Security › Screen & System Audio Recording, allow RoomEQ and try again.";
 "Core Audio non riconosce ancora RoomEQ come processo audio: avvio annullato per evitare che RoomEQ catturi il proprio suono (effetto eco/feedback). Riprova tra qualche secondo." = "Core Audio does not recognize RoomEQ as an audio process yet: start canceled so that RoomEQ does not capture its own sound (echo/feedback). Try again in a few seconds.";

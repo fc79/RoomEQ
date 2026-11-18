@@ -716,13 +716,18 @@ final class EngineSession {
     /// exclude such apps. Whether it does is NOT documented, so when an
     /// excluded app appears we log the tap's stored description
     /// ("exclusion-check") and, unless disabled, add the new process object
-    /// to the tap via kAudioTapPropertyDescription.
-    func handleProcessListChanged() {
-        guard let tap else { return }
-        let alive = Set((try? AudioProcesses.processObjectIDs()) ?? [])
+    /// to the tap via kAudioTapPropertyDescription. Returns false if that
+    /// update failed: the excluded app would then go through the EQ, so the
+    /// caller rebuilds the session (a new tap excludes the running process).
+    func handleProcessListChanged() -> Bool {
+        guard let tap else { return true }
+        // An unreadable list changes nothing (an empty one would drop the
+        // excluded processes already running from the tap).
+        guard let aliveList = try? AudioProcesses.processObjectIDs() else { return true }
+        let alive = Set(aliveList)
         let matches = AudioProcesses.processObjects(matching: tap.excludedBundleIDs)
         let newcomers = matches.filter { !tap.excludedProcesses.contains($0.object) }
-        guard !newcomers.isEmpty else { return }
+        guard !newcomers.isEmpty else { return true }
 
         let names = newcomers.map { "\($0.bundleID) (\($0.object))" }
         Log.tap.notice(
@@ -732,13 +737,15 @@ final class EngineSession {
             Log.tap.notice(
                 "exclusion-check: fallback DISABLED — relying on bundleIDs only. If the app is heard through RoomEQ, bundleIDs alone does not work."
             )
-            return
+            return true
         }
         do {
             let stillAlive = tap.excludedProcesses.filter { alive.contains($0) }
             try tap.replaceExcludedProcesses(stillAlive + newcomers.map(\.object))
+            return true
         } catch {
             Log.tap.error("exclusion-check: tap update failed: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 
