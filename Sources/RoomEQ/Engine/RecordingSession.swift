@@ -460,7 +460,12 @@ private final class Track {
         if dropped > 0 {
             Log.engine.error("Recording \(self.target.bundleID, privacy: .public): \(dropped) frames dropped")
         }
-        return dropped
+        let silenced = ring.takeSilencedFrames()
+        if silenced > 0 {
+            Log.engine.error(
+                "Recording \(self.target.bundleID, privacy: .public): \(silenced) frames in an unexpected layout, recorded as silence")
+        }
+        return dropped + silenced  // both are reported as lost audio
     }
 
     /// A new, empty ring of the same size (the old one stays with an IOProc

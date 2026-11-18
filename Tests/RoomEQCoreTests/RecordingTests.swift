@@ -101,6 +101,12 @@ struct RecordingTests {
     /// A buffer in an unexpected layout becomes silence in its place.
     @Test func silenceIsStoredInOrder() {
         let ring = RecordingRing(minimumFrames: 8)
+        // Fill every slot with non-zero audio first, so the silence must
+        // really overwrite it.
+        let full = block(8, 5)
+        full.withUnsafeBufferPointer { _ = ring.write(interleaved: $0.baseAddress!, frames: 8, channelCount: 2, left: 0, right: 1) }
+        var sink = [Float](repeating: 0, count: 16)
+        _ = sink.withUnsafeMutableBufferPointer { ring.read(into: $0.baseAddress!, maxFrames: 8) }
         let one = block(2, 1)
         one.withUnsafeBufferPointer { _ = ring.write(interleaved: $0.baseAddress!, frames: 2, channelCount: 2, left: 0, right: 1) }
         #expect(ring.writeSilence(frames: 3) == 3)
@@ -108,8 +114,10 @@ struct RecordingTests {
         var out = [Float](repeating: 9, count: 14)
         #expect(out.withUnsafeMutableBufferPointer { ring.read(into: $0.baseAddress!, maxFrames: 7) } == 7)
         #expect(out.enumerated().filter { $0.offset % 2 == 0 }.map(\.element) == [1, 1, 0, 0, 0, 1, 1])
+        #expect(ring.takeSilencedFrames() == 3)
         #expect(ring.writeSilence(frames: 10) == 8)
         #expect(ring.takeDroppedFrames() == 2)
+        #expect(ring.takeSilencedFrames() == 8)
     }
 
     /// Frames lost WHILE a drain runs (the writer stalls inside `emit` on a
@@ -149,6 +157,7 @@ struct RecordingTests {
         ring.discardAll()
         #expect(ring.available == 0)
         #expect(ring.takeDroppedFrames() == 0)
+        #expect(ring.takePeak() == 0)
         #expect(source.withUnsafeBufferPointer { ring.write(interleaved: $0.baseAddress!, frames: 4, channelCount: 2, left: 0, right: 1) } == 4)
     }
 

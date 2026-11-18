@@ -25,6 +25,8 @@ public final class RecordingRing: @unchecked Sendable {
     /// Where the current loss happened: the `written` count when the first
     /// frame of it was dropped (frames before it came before the loss).
     private let dropPosition = Atomic<Int>(0)
+    /// Frames stored as silence instead of the audio (`writeSilence`).
+    private let silenced = Atomic<Int>(0)
     /// Highest absolute sample written since the last `takePeak()` (Float bits).
     private let peak = Atomic<UInt32>(0)
 
@@ -88,6 +90,7 @@ public final class RecordingRing: @unchecked Sendable {
             storage[index + 1] = 0
         }
         written.store(writeCount + count, ordering: .releasing)
+        silenced.add(count, ordering: .relaxed)
         if count < frames { noteDropped(frames - count, at: writeCount + count) }
         return count
     }
@@ -128,12 +131,19 @@ public final class RecordingRing: @unchecked Sendable {
     /// Frames dropped since the last call (and resets the count).
     public func takeDroppedFrames() -> Int { dropped.exchange(0, ordering: .acquiring) }
 
-    /// Throws away everything stored and any loss not yet taken (after a
-    /// failed capture attempt: what it wrote must not reach the files).
-    /// Only while no producer runs.
+    /// Frames stored as silence by `writeSilence` since the last call (and
+    /// resets the count): audio that was lost too, to be reported.
+    public func takeSilencedFrames() -> Int { silenced.exchange(0, ordering: .relaxed) }
+
+    /// Throws away everything stored, any loss not yet taken and the peak
+    /// (after a failed capture attempt: nothing it wrote may reach the files
+    /// or the meters). Consumer side only: a producer that still runs (an
+    /// IOProc that could not be stopped) just keeps writing after it.
     public func discardAll() {
         read.store(written.load(ordering: .acquiring), ordering: .releasing)
         _ = dropped.exchange(0, ordering: .acquiring)
+        _ = silenced.exchange(0, ordering: .relaxed)
+        _ = peak.exchange(0, ordering: .relaxed)
     }
 
     /// A piece of a drain, in time order.
