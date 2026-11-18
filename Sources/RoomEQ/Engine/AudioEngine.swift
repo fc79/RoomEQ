@@ -21,6 +21,7 @@
 
 import Foundation
 import RoomEQCore
+import Synchronization
 
 /// Events reported to the controller (on the main thread).
 enum EngineEvent {
@@ -45,6 +46,10 @@ final class AudioEngine: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.federicociapi.RoomEQ.engine", qos: .userInitiated)
     private let listenerQueue = DispatchQueue(label: "com.federicociapi.RoomEQ.listeners", qos: .userInitiated)
 
+    /// Number of the latest `start` request (written on main, read on the
+    /// engine queue): a queued start that is no longer the latest is skipped.
+    private let latestStart = Atomic<Int>(0)
+
     // Engine-queue state.
     private var session: EngineSession?
     private var nextSessionID = 1
@@ -56,8 +61,17 @@ final class AudioEngine: @unchecked Sendable {
 
     /// Starts a new session (stopping any current one first). The result
     /// carries the new session's ID.
+    /// A start that a newer one replaced before it ran is skipped (it would
+    /// build a whole session, muting the apps for about a second, only to be
+    /// discarded); it completes with an error the controller ignores.
     func start(_ configuration: EngineConfiguration, completion: @escaping @MainActor (Result<SessionInfo, Error>) -> Void) {
+        let ticket = latestStart.add(1, ordering: .relaxed).newValue
         queue.async { [self] in
+            guard latestStart.load(ordering: .relaxed) == ticket else {
+                Log.engine.info("Start \(ticket) skipped: a newer start is queued")
+                onMain { completion(.failure(EngineError(message: "Superseded by a newer start"))) }
+                return
+            }
             stopSession()
             let session = EngineSession(id: nextSessionID, configuration: configuration)
             nextSessionID += 1
@@ -231,7 +245,11 @@ final class AudioEngine: @unchecked Sendable {
             emit(.restartNeeded(sessionID: sessionID, reason: String(localized: "l'audio si è interrotto in modo anomalo")))
 
         case .processListChanged:
-            session.handleProcessListChanged()
+            if !session.handleProcessListChanged(), !session.restartRequested {
+                session.restartRequested = true
+                emit(.restartNeeded(
+                    sessionID: sessionID, reason: String(localized: "un'app esclusa non si è potuta escludere dal tap")))
+            }
         }
     }
 }
