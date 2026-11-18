@@ -397,3 +397,5 @@
 "Disco quasi pieno: resta meno di 2 minuti di registrazione." = "Disk almost full: less than 2 minutes of recording left.";
 "In attesa che l'uscita audio sia pronta: la registrazione riprende da sola." = "Waiting for the audio output to be ready: recording resumes by itself.";
 "Nessun file salvato: l'app non ha suonato." = "No file saved: the app didn't play.";
+"attiva" = "on";
+"spenta" = "off";

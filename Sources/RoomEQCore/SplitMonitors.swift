@@ -132,9 +132,17 @@ public struct DriftMonitor: Sendable {
         return recent.reduce(0) { $0 + $1.need } / Double(recent.count) - baseline
     }
 
+    /// A trend counts only when the mean has also really moved by this many
+    /// frames: a step of a couple of frames (measurement noise, a single
+    /// timing adjustment) can show a steep slope over a short window. A real
+    /// clock difference above `ppmLimit` passes this within seconds anyway
+    /// (10 ppm at 44.1 kHz: 8 frames in under 20 s).
+    public static let minimumTrendChange: Double = 8
+
     /// Adds the mean `need` of the last interval at time `time` (seconds
     /// since start). Returns true when the clocks must be considered
-    /// different: a sustained trend above `ppmLimit`, or the mean moved by
+    /// different: a sustained trend above `ppmLimit` together with a real
+    /// change of at least `minimumTrendChange` frames, or the mean moved by
     /// more than one buffer.
     public mutating func add(meanNeed: Double, at time: Double) -> Bool {
         samples.append((time, meanNeed))
@@ -143,7 +151,11 @@ public struct DriftMonitor: Sendable {
             baseline = samples.prefix(2).reduce(0) { $0 + $1.need } / 2
         }
         if let change = lagChange, abs(change) > Double(bufferFrames) { return true }
-        if let trend = trendPPM, abs(trend) > ppmLimit { return true }
+        if let trend = trendPPM, abs(trend) > ppmLimit, let change = lagChange,
+            abs(change) >= Self.minimumTrendChange
+        {
+            return true
+        }
         return false
     }
 }

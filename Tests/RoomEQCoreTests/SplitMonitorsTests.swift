@@ -71,6 +71,15 @@ struct DriftMonitorTests {
         #expect(tripped != nil && tripped! >= 30 && tripped! <= 31)
     }
 
+    @Test func smallStepDoesNotTripEvenWithASteepShortTrend() {
+        // Seen on hardware: -2 frames after ~30 s gave a -7 ppm slope.
+        var monitor = DriftMonitor(sampleRate: 44100, bufferFrames: 64)
+        for second in 1...120 {
+            let tripped = monitor.add(meanNeed: second < 25 ? 190 : 187.5, at: Double(second))
+            #expect(!tripped)
+        }
+    }
+
     @Test func lagJumpLargerThanABufferTrips() {
         var monitor = DriftMonitor(sampleRate: 44100, bufferFrames: 64)
         for second in 1...5 { _ = monitor.add(meanNeed: 190, at: Double(second)) }

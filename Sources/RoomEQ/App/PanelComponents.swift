@@ -385,3 +385,33 @@ enum Format {
         return bundleID
     }
 }
+
+/// A switch drawn like the system one (large size) whose "on" color is
+/// always the accent color. The system switch turns grey whenever another
+/// app becomes active, which happens while the panel is open (pointer on the
+/// menu bar, a full-screen app): for the "Correzione" switch the color must
+/// always tell whether the correction is on.
+struct AlwaysActiveSwitchStyle: ToggleStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let isOn = configuration.isOn
+        Capsule()
+            .fill(isOn ? Color.accentColor : Color(nsColor: .tertiaryLabelColor))
+            .frame(width: 42, height: 24)
+            .overlay(alignment: isOn ? .trailing : .leading) {
+                Circle()
+                    .fill(.white)
+                    .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
+                    .padding(2)
+            }
+            .opacity(isEnabled ? 1 : 0.5)
+            .animation(.easeOut(duration: 0.15), value: isOn)
+            .contentShape(Capsule())
+            .onTapGesture { if isEnabled { configuration.isOn.toggle() } }
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityValue(isOn ? Text("attiva") : Text("spenta"))
+            .accessibilityAction { if isEnabled { configuration.isOn.toggle() } }
+    }
+}
