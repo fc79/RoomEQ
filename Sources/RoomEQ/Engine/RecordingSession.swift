@@ -583,13 +583,22 @@ private final class Capture {
     var tapIDs: [AudioObjectID] { units.map(\.tapID) }
 
     /// The capture still fits `device`: same object (a device unplugged and
-    /// plugged back gets a new one), same rate, same stream layout.
+    /// plugged back gets a new one), same rate, same stream layout, and every
+    /// tap still delivers that format.
     func matches(device: AudioObjectID) -> Bool {
         guard device == deviceID, AudioDevices.isAlive(device),
             let rate = try? AudioDevices.nominalSampleRate(of: device), SampleRates.same(rate, sampleRate),
             let streams = try? DeviceStreams.streams(of: device, scope: kAudioObjectPropertyScopeOutput),
             source.stream < streams.count, Int(streams[source.stream].format.mChannelsPerFrame) == channelCount
         else { return false }
+        for unit in units {
+            guard
+                let format: AudioStreamBasicDescription = try? AudioObject.read(
+                    unit.tapID, AudioObject.address(kAudioTapPropertyFormat), initial: AudioStreamBasicDescription(),
+                    "Lettura formato del tap"),
+                SampleRates.same(format.mSampleRate, sampleRate), Int(format.mChannelsPerFrame) == channelCount
+            else { return false }
+        }
         return true
     }
 
