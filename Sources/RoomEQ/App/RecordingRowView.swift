@@ -41,9 +41,10 @@ struct RecordingRowView: View {
                 recorder.start()
             } label: {
                 Label {
-                    Text("Registra")
+                    recorder.isStarting ? Text("Avvio…") : Text("Registra")
                 } icon: {
-                    Image(systemName: "record.circle.fill").foregroundStyle(.red)
+                    Image(systemName: "record.circle.fill")
+                        .foregroundStyle(recorder.canStart ? Color.red : Color.secondary)
                 }
             }
             .disabled(!recorder.canStart)

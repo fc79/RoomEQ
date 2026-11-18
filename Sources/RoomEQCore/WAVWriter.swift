@@ -1,9 +1,9 @@
 // 24-bit stereo PCM WAV files for recording.
 //
 // The header is written at creation with zero sizes and rewritten by
-// `updateHeader()` (the writer calls it about once a second) and on close, so
-// a file cut short by a crash or power loss is still a valid WAV up to the
-// last update. A RIFF file cannot exceed 4 GiB: `canAppend(frames:)` tells
+// `updateHeader()` (the writer calls it once a second) and on close, so a
+// file cut short by a crash of the app is still a valid WAV up to the last
+// update. `flushToDisk()` (every 10 seconds) bounds what a power cut can lose. A RIFF file cannot exceed 4 GiB: `canAppend(frames:)` tells
 // the writer when to continue in a new file.
 
 import Foundation
@@ -34,7 +34,12 @@ public final class WAVWriter {
             throw CocoaError(errno == EEXIST ? .fileWriteFileExists : .fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path])
         }
         handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        try handle.write(contentsOf: Self.header(sampleRate: sampleRate, dataBytes: 0))
+        do {
+            try handle.write(contentsOf: Self.header(sampleRate: sampleRate, dataBytes: 0))
+        } catch {
+            try? FileManager.default.removeItem(at: url)  // no empty file left behind
+            throw error
+        }
     }
 
     deinit { if !closed { try? close() } }
@@ -68,6 +73,10 @@ public final class WAVWriter {
         try handle.write(contentsOf: Self.header(sampleRate: sampleRate, dataBytes: dataBytes))
         try handle.seek(toOffset: position)
     }
+
+    /// Forces the data written so far to the disk (fsync), so a power cut
+    /// loses at most what came after.
+    public func flushToDisk() throws { try handle.synchronize() }
 
     public func close() throws {
         guard !closed else { return }

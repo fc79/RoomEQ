@@ -105,6 +105,10 @@ public struct SilenceGate {
                         if silentRun >= settings.holdFrames {
                             sink.close()
                             isOpen = false
+                            // The end of the dropped silence is the pre-roll of
+                            // the next file, so it always starts with its margin.
+                            let keep = min(pending.count, settings.preRollFrames * 2)
+                            preRoll.append(contentsOf: pending.suffix(keep))
                             pending.removeAll(keepingCapacity: true)
                             frame += 1
                             break

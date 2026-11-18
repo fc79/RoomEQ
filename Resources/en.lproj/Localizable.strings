@@ -393,3 +393,5 @@
 "Nessun file salvato: le app non hanno suonato." = "No files saved: the apps didn't play.";
 "Salvato 1 file (%@)." = "Saved 1 file (%@).";
 "Salvati %lld file (%@)." = "Saved %lld files (%@).";
+"%@, %@ e un'altra" = "%1$@, %2$@ and 1 more";
+"Disco quasi pieno: resta meno di 2 minuti di registrazione." = "Disk almost full: less than 2 minutes of recording left.";

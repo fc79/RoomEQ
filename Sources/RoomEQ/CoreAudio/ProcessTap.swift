@@ -55,6 +55,15 @@ enum AudioProcesses {
         }
     }
 
+    /// Process objects of an app chosen for recording (the app and its
+    /// helpers, see `RecordingMatch`); nil if the process list can't be read.
+    static func processObjects(ofApp bundleID: String) -> [AudioObjectID]? {
+        guard let all = try? processObjectIDs() else { return nil }
+        return all.filter { object in
+            AudioProcesses.bundleID(of: object).map { RecordingMatch.belongs(processBundleID: $0, toApp: bundleID) } ?? false
+        }
+    }
+
     /// Process objects of currently running processes whose bundle ID
     /// matches one of `bundleIDs`.
     static func processObjects(matching bundleIDs: [String]) -> [(object: AudioObjectID, bundleID: String)] {

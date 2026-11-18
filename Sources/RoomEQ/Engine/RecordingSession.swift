@@ -2,23 +2,31 @@
 // RoomEQ's correction.
 //
 // For each app a private, UNMUTED process tap includes that app's processes
-// (matched by bundle ID prefix, so browser helpers such as
-// "com.brave.Browser.helper" are found) on the same output stream the
-// correction uses: the device's own rate and channels, no mixdown, no
-// sample-rate conversion. All taps sit in ONE private aggregate, so the files
-// share one clock and stay aligned. The aggregate is separate from the
-// correction's: recording works with the correction on, off or paused, and
-// adds nothing to its path.
+// (the app itself and its helper processes, see `RecordingMatch`) on the
+// same output stream the correction uses: the device's own rate and
+// channels, no mixdown, no sample-rate conversion. Each tap has its own
+// private aggregate and IOProc (one tap per aggregate, so there is no doubt
+// about which stream belongs to which app); all taps run on the output
+// device's clock, so the files stay aligned within a few milliseconds. The
+// aggregates are separate from the correction's: recording works with the
+// correction on, off or paused, and adds nothing to its path.
 //
 // Threads:
-//   - the IOProc (real time) only copies the chosen stereo pair of each tap
-//     into that app's `RecordingRing`;
+//   - each IOProc (real time) only copies its tap's chosen stereo pair into
+//     that app's `RecordingRing` (no allocation, lock or ARC traffic);
 //   - `queue` (serial) does everything else: building and tearing down the
 //     taps, and every 50 ms draining the rings through the silence gates into
-//     the WAV files (header refreshed about once a second).
-// The output device can change while recording: the taps are rebuilt on the
-// new device; at the same sample rate the files continue, at a different one
-// they are closed and new files start (never converted).
+//     the WAV files (header refreshed every second, data flushed to disk
+//     every 10 seconds);
+//   - Core Audio listeners run on `listenerQueue` and only hop to `queue`.
+// The main thread never waits for `queue`, except `stopAndWait` at quit
+// (bounded).
+//
+// The recording follows the output: a new default output device, or a new
+// sample rate or stream layout on the same device, rebuilds the taps. At the
+// same sample rate the files continue; at another one they are closed and new
+// files start (never converted). If the new output is not ready yet, it is
+// retried every second for 30 seconds before the recording stops.
 
 import CoreAudio
 import Foundation
@@ -32,11 +40,12 @@ final class RecordingSession: @unchecked Sendable {
     }
 
     struct AppStatus: Equatable, Sendable {
+        let bundleID: String
         let name: String
-        /// Peak since the previous snapshot (linear).
-        let peak: Float
+        /// Highest peak since the previous `takeSnapshot()` (linear).
+        var peak: Float
         /// "Skip silence" is waiting for the app to play.
-        let isPaused: Bool
+        var isPaused: Bool
     }
 
     struct Snapshot: Equatable, Sendable {
@@ -50,7 +59,8 @@ final class RecordingSession: @unchecked Sendable {
         var files: [URL] = []
         /// Approximate recording time left on the disk, in seconds.
         var secondsLeftOnDisk: Double?
-        /// Set when the session stopped by itself (write error, full disk).
+        /// Set when the session stopped by itself (write error, full disk,
+        /// output not followed).
         var failure: String?
         var isRunning = false
     }
@@ -60,11 +70,23 @@ final class RecordingSession: @unchecked Sendable {
     let skipSilence: Bool
 
     private let queue = DispatchQueue(label: "com.federicociapi.RoomEQ.recording", qos: .userInitiated)
+    private let listenerQueue = DispatchQueue(label: "com.federicociapi.RoomEQ.recording.device")
     private let state = Mutex(Snapshot())
+
+    // Confined to `queue`.
     private var tracks: [Track] = []
     private var capture: Capture?
+    private var deviceListeners: [PropertyListener] = []
     private var timer: DispatchSourceTimer?
     private var ticks = 0
+    private var finished = false
+    /// The output the recording should be on, and the rate of the files.
+    private var wantedDevice: AudioObjectID?
+    private var fileRate: Double = 0
+    /// While the output can't be captured: retry until this moment.
+    private var retryDeadline: ContinuousClock.Instant?
+    /// Invalidates scheduled retries and debounced rebuilds.
+    private var generation = 0
 
     init(targets: [Target], folder: URL, skipSilence: Bool) {
         self.targets = targets
@@ -74,69 +96,58 @@ final class RecordingSession: @unchecked Sendable {
 
     deinit { if capture != nil { Log.engine.fault("RecordingSession released while running") } }
 
-    var snapshot: Snapshot { state.withLock { $0 } }
-
-    // MARK: - Control (any thread; work happens on `queue`)
-
-    /// Starts on `device`. Throws without leaving anything behind.
-    func start(device: AudioObjectID) throws {
-        try queue.sync {
-            guard !targets.isEmpty else { throw EngineError("Nessuna app da registrare.") }
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let capture = try Capture.make(targets: targets, device: device)
-            tracks = targets.map { Track(target: $0, folder: folder, sampleRate: capture.sampleRate, skipSilence: skipSilence) }
-            do {
-                try capture.start(rings: tracks.map(\.ring))
-            } catch {
-                capture.destroy()
-                tracks = []
-                throw error
-            }
-            self.capture = capture
-            state.withLock {
-                $0 = Snapshot(started: Date(), sampleRate: capture.sampleRate, deviceName: capture.deviceName, isRunning: true)
-            }
-            let timer = DispatchSource.makeTimerSource(queue: queue)
-            timer.schedule(deadline: .now() + .milliseconds(50), repeating: .milliseconds(50))
-            timer.setEventHandler { [weak self] in self?.tick() }
-            timer.resume()
-            self.timer = timer
-            Log.engine.info(
-                "Recording started on \(capture.deviceName, privacy: .public) at \(capture.sampleRate) Hz: \(self.targets.map(\.bundleID), privacy: .public)")
+    /// The current state; the peaks start again from zero after each call.
+    func takeSnapshot() -> Snapshot {
+        state.withLock { current in
+            let copy = current
+            for index in current.apps.indices { current.apps[index].peak = 0 }
+            return copy
         }
     }
 
-    /// Stops and closes every file. Safe to call more than once.
-    func stop() {
-        queue.sync { finish(failure: nil) }
-    }
+    // MARK: - Control (any thread)
 
-    /// Moves the taps to a new output device (called when the macOS output
-    /// changes). Same rate: the files continue. Other rate: new files.
-    func switchDevice(to device: AudioObjectID) {
+    /// Starts on `device`; `completion` runs on the main queue with nil or
+    /// the reason it could not start (nothing is left behind then).
+    func start(device: AudioObjectID, completion: @escaping @Sendable (Error?) -> Void) {
         queue.async { [self] in
-            guard let old = capture else { return }
-            guard AudioDevices.uid(of: device) != old.deviceUID else { return }
-            old.destroy()
-            capture = nil
-            drain()
+            let result: Error?
             do {
-                let new = try Capture.make(targets: targets, device: device)
-                if new.sampleRate != old.sampleRate {
-                    for track in tracks { track.restart(sampleRate: new.sampleRate) }
-                }
-                try new.start(rings: tracks.map(\.ring))
-                capture = new
-                state.withLock {
-                    $0.sampleRate = new.sampleRate
-                    $0.deviceName = new.deviceName
-                }
-                Log.engine.info("Recording moved to \(new.deviceName, privacy: .public) at \(new.sampleRate) Hz")
+                try begin(device: device)
+                result = nil
             } catch {
-                Log.engine.error("Recording could not follow the output change: \(error.localizedDescription, privacy: .public)")
-                finish(failure: String(localized: "Registrazione fermata: non riesce a seguire la nuova uscita audio (\(error.localizedDescription)). I file salvati sono completi."))
+                result = error
             }
+            DispatchQueue.main.async { completion(result) }
         }
+    }
+
+    /// Stops and closes every file; `completion` runs on the main queue with
+    /// the final state.
+    func stop(completion: @escaping @Sendable (Snapshot) -> Void) {
+        queue.async { [self] in
+            finish(failure: nil)
+            let snapshot = takeSnapshot()
+            DispatchQueue.main.async { completion(snapshot) }
+        }
+    }
+
+    /// For quitting: stops and waits at most `timeout` for the files to be
+    /// closed.
+    func stopAndWait(timeout: TimeInterval) {
+        let done = DispatchSemaphore(value: 0)
+        queue.async { [self] in
+            finish(failure: nil)
+            done.signal()
+        }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            Log.engine.error("Recording did not stop within \(timeout) s at quit")
+        }
+    }
+
+    /// The default output changed: follow it.
+    func switchDevice(to device: AudioObjectID) {
+        queue.async { [self] in follow(device: device, force: false) }
     }
 
     /// Re-reads the running processes of each app (a browser may start a new
@@ -145,13 +156,162 @@ final class RecordingSession: @unchecked Sendable {
         queue.async { [self] in capture?.refreshProcesses() }
     }
 
+    // MARK: - Lifecycle (queue)
+
+    private func begin(device: AudioObjectID) throws {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard !targets.isEmpty else { throw EngineError("Nessuna app da registrare.") }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let capture = try Capture.make(targets: targets, device: device)
+        tracks = targets.map { Track(target: $0, sampleRate: capture.sampleRate, skipSilence: skipSilence) }
+        do {
+            try capture.start(rings: tracks.map(\.ring))
+        } catch {
+            capture.destroy()
+            tracks = []
+            throw error
+        }
+        self.capture = capture
+        wantedDevice = device
+        fileRate = capture.sampleRate
+        listen(to: capture)
+        state.withLock {
+            $0 = Snapshot(
+                started: Date(),
+                apps: targets.map { AppStatus(bundleID: $0.bundleID, name: $0.name, peak: 0, isPaused: skipSilence) },
+                sampleRate: capture.sampleRate, deviceName: capture.deviceName, isRunning: true)
+        }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(50), repeating: .milliseconds(50))
+        timer.setEventHandler { [weak self] in self?.tick() }
+        timer.resume()
+        self.timer = timer
+        Log.engine.info(
+            "Recording started on \(capture.deviceName, privacy: .public) at \(capture.sampleRate) Hz: \(self.targets.map(\.bundleID), privacy: .public)")
+    }
+
+    /// Rebuilds the taps on `device` unless they already run there at the
+    /// device's current rate (`force` rebuilds anyway).
+    private func follow(device: AudioObjectID, force: Bool) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard !finished, timer != nil else { return }
+        // A device that is already gone: wait for the next change.
+        guard let uid = AudioDevices.uid(of: device) else { return }
+        if !force, let capture, capture.deviceUID == uid,
+            let rate = try? AudioDevices.nominalSampleRate(of: device), SampleRates.same(rate, capture.sampleRate)
+        {
+            return
+        }
+        generation += 1
+        wantedDevice = device
+        retryDeadline = nil
+        stopCapture()
+        attemptCapture(generation: generation)
+    }
+
+    private func attemptCapture(generation attempt: Int) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard !finished, attempt == generation, let device = wantedDevice else { return }
+        var new: Capture?
+        do {
+            let made = try Capture.make(targets: targets, device: device)
+            new = made
+            if !SampleRates.same(made.sampleRate, fileRate) {
+                for track in tracks { track.restart(sampleRate: made.sampleRate) }
+                fileRate = made.sampleRate
+            }
+            try made.start(rings: tracks.map(\.ring))
+            capture = made
+            retryDeadline = nil
+            listen(to: made)
+            state.withLock {
+                $0.sampleRate = made.sampleRate
+                $0.deviceName = made.deviceName
+            }
+            Log.engine.info("Recording now on \(made.deviceName, privacy: .public) at \(made.sampleRate) Hz")
+        } catch {
+            new?.destroy()
+            let clock = ContinuousClock()
+            let deadline = retryDeadline ?? clock.now + .seconds(30)
+            retryDeadline = deadline
+            if clock.now < deadline {
+                Log.engine.notice("Recording can't use the output yet, retrying: \(error.localizedDescription, privacy: .public)")
+                queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.attemptCapture(generation: attempt) }
+            } else {
+                Log.engine.error("Recording could not follow the output: \(error.localizedDescription, privacy: .public)")
+                finish(failure: String(localized: "Registrazione fermata: non riesce a seguire la nuova uscita audio (\(error.localizedDescription)). I file salvati sono completi."))
+            }
+        }
+    }
+
+    /// Stops the taps (the files stay open).
+    private func stopCapture() {
+        for listener in deviceListeners { listener.remove() }
+        deviceListeners = []
+        capture?.destroy()
+        capture = nil
+        drain()
+    }
+
+    /// A new rate or stream layout on the current device, or a tap format
+    /// change: rebuild (debounced, changes come in bursts).
+    private func listen(to capture: Capture) {
+        let changed: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.queue.async {
+                let expected = self.generation
+                self.queue.asyncAfter(deadline: .now() + 0.2) {
+                    guard expected == self.generation, let device = self.wantedDevice else { return }
+                    self.follow(device: device, force: true)
+                }
+            }
+        }
+        var addresses: [(AudioObjectID, AudioObjectPropertyAddress)] = [
+            (capture.deviceID, AudioObject.address(kAudioDevicePropertyNominalSampleRate)),
+            (capture.deviceID, AudioObject.address(kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeOutput)),
+        ]
+        for tap in capture.tapIDs { addresses.append((tap, AudioObject.address(kAudioTapPropertyFormat))) }
+        for (object, address) in addresses {
+            do {
+                deviceListeners.append(try PropertyListener(object: object, address: address, queue: listenerQueue, handler: changed))
+            } catch {
+                Log.engine.error("Recording listener: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func finish(failure: String?) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard !finished else { return }
+        finished = true
+        generation += 1
+        timer?.cancel()
+        timer = nil
+        stopCapture()
+        var failure = failure
+        for track in tracks {
+            track.close()
+            if failure == nil, let trackFailure = track.failure { failure = trackFailure }
+        }
+        let files = allFiles()
+        tracks = []
+        state.withLock {
+            $0.isRunning = false
+            $0.files = files
+            if let failure { $0.failure = failure }
+            for index in $0.apps.indices { $0.apps[index].isPaused = false }
+        }
+        Log.engine.info("Recording stopped: \(files.count) files\(failure.map { ", \($0)" } ?? "", privacy: .public)")
+    }
+
     // MARK: - Writer (queue)
 
     private func tick() {
+        dispatchPrecondition(condition: .onQueue(queue))
         drain()
         ticks += 1
-        if ticks % 20 == 0 {  // about once a second
-            for track in tracks { track.updateHeader() }
+        if ticks % 20 == 0 {  // every second
+            for track in tracks { track.updateHeader(flushToDisk: ticks % 200 == 0) }
             if let failure = tracks.lazy.compactMap(\.failure).first {
                 finish(failure: failure)
                 return
@@ -161,46 +321,40 @@ final class RecordingSession: @unchecked Sendable {
     }
 
     private func drain() {
-        var apps: [AppStatus] = []
         var dropped = 0
+        var peaks: [Float] = []
+        var paused: [Bool] = []
         for track in tracks {
             dropped += track.drain()
-            apps.append(AppStatus(name: track.target.name, peak: track.ring.takePeak(), isPaused: track.isPaused))
+            peaks.append(track.ring.takePeak())
+            paused.append(track.isPaused)
         }
-        let files = tracks.flatMap(\.files).sorted { $0.created < $1.created }.map(\.url)
+        let files = allFiles()
         state.withLock {
-            $0.apps = apps
+            for index in $0.apps.indices where index < peaks.count {
+                $0.apps[index].peak = max($0.apps[index].peak, peaks[index])
+                $0.apps[index].isPaused = paused[index]
+            }
             $0.droppedFrames += dropped
             $0.files = files
         }
     }
 
+    private func allFiles() -> [URL] {
+        tracks.flatMap(\.files).sorted { $0.created < $1.created }.map(\.url)
+    }
+
     private func checkDisk() {
-        let values = try? folder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        guard let free = values?.volumeAvailableCapacityForImportantUsage, let capture else { return }
-        let bytesPerSecond = capture.sampleRate * Double(WAVWriter.channels * WAVWriter.bytesPerSample) * Double(tracks.count)
-        let seconds = Double(free) / max(bytesPerSecond, 1)
-        state.withLock { $0.secondsLeftOnDisk = seconds }
+        var url = folder
+        url.removeAllCachedResourceValues()  // fresh value every time
+        guard let free = (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage
+        else { return }
+        let bytesPerSecond = fileRate * Double(WAVWriter.channels * WAVWriter.bytesPerSample) * Double(tracks.count)
+        state.withLock { $0.secondsLeftOnDisk = Double(free) / max(bytesPerSecond, 1) }
         if free < 50_000_000 {
             finish(failure: String(localized: "Registrazione fermata: il disco è pieno. I file salvati sono completi."))
         }
-    }
-
-    private func finish(failure: String?) {
-        timer?.cancel()
-        timer = nil
-        capture?.destroy()
-        capture = nil
-        drain()
-        for track in tracks { track.close() }
-        let files = tracks.flatMap(\.files).sorted { $0.created < $1.created }.map(\.url)
-        tracks = []
-        state.withLock {
-            $0.isRunning = false
-            $0.files = files
-            if let failure { $0.failure = failure }
-        }
-        Log.engine.info("Recording stopped: \(files.count) files\(failure.map { ", \($0)" } ?? "", privacy: .public)")
     }
 }
 
@@ -210,26 +364,29 @@ final class RecordingSession: @unchecked Sendable {
 private final class Track {
     let target: RecordingSession.Target
     let ring: RecordingRing
-    private let folder: URL
     private let skipSilence: Bool
     private var gate: SilenceGate
     private var sink: FileSink
     private let scratch: UnsafeMutablePointer<Float>
+    private let zeros: UnsafeMutablePointer<Float>
     private let scratchFrames = 4096
-    private var silence: [Float] = []
 
-    init(target: RecordingSession.Target, folder: URL, sampleRate: Double, skipSilence: Bool) {
+    init(target: RecordingSession.Target, sampleRate: Double, skipSilence: Bool) {
         self.target = target
-        self.folder = folder
         self.skipSilence = skipSilence
         // Two seconds of headroom for the writer.
         ring = RecordingRing(minimumFrames: Int(sampleRate * 2))
         gate = SilenceGate(settings: .standard(sampleRate: sampleRate), enabled: skipSilence)
-        sink = FileSink(folder: folder, appName: target.name, sampleRate: Int(sampleRate.rounded()))
+        sink = FileSink(appName: target.name, folder: RecordingNames.defaultFolder(), sampleRate: Int(sampleRate.rounded()))
         scratch = .allocate(capacity: scratchFrames * 2)
+        zeros = .allocate(capacity: scratchFrames * 2)
+        zeros.initialize(repeating: 0, count: scratchFrames * 2)
     }
 
-    deinit { scratch.deallocate() }
+    deinit {
+        scratch.deallocate()
+        zeros.deallocate()
+    }
 
     var isPaused: Bool { gate.isPaused }
     var files: [FileSink.File] { sink.files }
@@ -244,10 +401,13 @@ private final class Track {
         }
         let dropped = ring.takeDroppedFrames()
         if dropped > 0 {
-            // Keep the length (and the alignment with the other apps).
-            if silence.count < dropped * 2 { silence = [Float](repeating: 0, count: dropped * 2) }
-            silence.withUnsafeBufferPointer {
-                gate.process(UnsafeBufferPointer(rebasing: $0[0..<(dropped * 2)]), into: &sink)
+            // Silence of the same length keeps the file's duration (and its
+            // alignment with the other apps' files).
+            var left = dropped
+            while left > 0 {
+                let count = min(left, scratchFrames)
+                gate.process(UnsafeBufferPointer(start: zeros, count: count * 2), into: &sink)
+                left -= count
             }
             Log.engine.error("Recording \(self.target.bundleID, privacy: .public): \(dropped) frames dropped")
         }
@@ -261,7 +421,7 @@ private final class Track {
         sink.sampleRate = Int(sampleRate.rounded())
     }
 
-    func updateHeader() { sink.updateHeader() }
+    func updateHeader(flushToDisk: Bool) { sink.updateHeader(flushToDisk: flushToDisk) }
 
     func close() { gate.finish(into: &sink) }
 }
@@ -273,16 +433,16 @@ private final class FileSink: RecordingSink {
         let created: Date
     }
 
-    let folder: URL
     let appName: String
+    let folder: URL
     var sampleRate: Int
     private(set) var files: [File] = []
     private(set) var failure: String?
     private var writer: WAVWriter?
 
-    init(folder: URL, appName: String, sampleRate: Int) {
-        self.folder = folder
+    init(appName: String, folder: URL, sampleRate: Int) {
         self.appName = appName
+        self.folder = folder
         self.sampleRate = sampleRate
     }
 
@@ -322,9 +482,14 @@ private final class FileSink: RecordingSink {
         do { try writer.close() } catch { fail(error) }
     }
 
-    func updateHeader() {
+    func updateHeader(flushToDisk: Bool) {
         guard let writer else { return }
-        do { try writer.updateHeader() } catch { fail(error) }
+        do {
+            try writer.updateHeader()
+            if flushToDisk { try writer.flushToDisk() }
+        } catch {
+            fail(error)
+        }
     }
 
     private func fail(_ error: Error) {
@@ -336,24 +501,33 @@ private final class FileSink: RecordingSink {
     }
 }
 
-// MARK: - Taps, aggregate and IOProc on one device
+// MARK: - Taps, aggregates and IOProcs on one device
 
 private final class Capture {
+    /// One app: its tap, its private aggregate and its IOProc.
+    private struct Unit {
+        let target: RecordingSession.Target
+        let tapID: AudioObjectID
+        let uuid: UUID
+        var processes: [AudioObjectID]
+        var aggregateID = AudioObjectID(kAudioObjectUnknown)
+        var procID: AudioDeviceIOProcID?
+        var started = false
+    }
+
     let deviceID: AudioObjectID
     let deviceUID: String
     let deviceName: String
     let sampleRate: Double
     private let source: TapSource
     private let channelCount: Int
-    private let targets: [RecordingSession.Target]
-    private var taps: [(id: AudioObjectID, uuid: UUID, processes: [AudioObjectID])] = []
-    private var aggregateID = AudioObjectID(kAudioObjectUnknown)
-    private var procID: AudioDeviceIOProcID?
-    private var started = false
+    private var units: [Unit] = []
+
+    var tapIDs: [AudioObjectID] { units.map(\.tapID) }
 
     private init(
         deviceID: AudioObjectID, deviceUID: String, deviceName: String, sampleRate: Double, source: TapSource,
-        channelCount: Int, targets: [RecordingSession.Target]
+        channelCount: Int
     ) {
         self.deviceID = deviceID
         self.deviceUID = deviceUID
@@ -361,10 +535,9 @@ private final class Capture {
         self.sampleRate = sampleRate
         self.source = source
         self.channelCount = channelCount
-        self.targets = targets
     }
 
-    /// Builds the taps and the aggregate (not started). Throws after cleaning up.
+    /// Builds the taps and aggregates (not started). Throws after cleaning up.
     static func make(targets: [RecordingSession.Target], device: AudioObjectID) throws -> Capture {
         guard let uid = AudioDevices.uid(of: device) else {
             throw EngineError("Uscita audio non disponibile per la registrazione.")
@@ -376,12 +549,15 @@ private final class Capture {
         case .success(let located): source = located
         case .failure(let error): throw EngineError(message: error.message)
         }
+        let rate = try AudioDevices.nominalSampleRate(of: device)
+        guard AudioFormatText.isKnownRate(rate) else {
+            throw EngineError("Il formato della registrazione non coincide con quello dell'uscita: registrazione annullata per non convertire l'audio.")
+        }
         let capture = Capture(
-            deviceID: device, deviceUID: uid, deviceName: AudioDevices.name(of: device),
-            sampleRate: try AudioDevices.nominalSampleRate(of: device), source: source,
-            channelCount: counts[source.stream], targets: targets)
+            deviceID: device, deviceUID: uid, deviceName: AudioDevices.name(of: device), sampleRate: rate,
+            source: source, channelCount: counts[source.stream])
         do {
-            try capture.build()
+            for target in targets { try capture.addUnit(for: target) }
         } catch {
             capture.destroy()
             throw error
@@ -389,58 +565,60 @@ private final class Capture {
         return capture
     }
 
-    private func build() throws {
-        for target in targets {
-            let processes = AudioProcesses.processObjects(matching: [target.bundleID]).map(\.object)
-            let uuid = UUID()
-            let description = Self.description(target: target, uuid: uuid, deviceUID: deviceUID, stream: source.stream, processes: processes)
-            var tapID = AudioObjectID(kAudioObjectUnknown)
+    private func addUnit(for target: RecordingSession.Target) throws {
+        let processes = AudioProcesses.processObjects(ofApp: target.bundleID) ?? []
+        let uuid = UUID()
+        let description = Self.description(target: target, uuid: uuid, deviceUID: deviceUID, stream: source.stream, processes: processes)
+        var tapID = AudioObjectID(kAudioObjectUnknown)
+        do {
             try AudioObject.check(AudioHardwareCreateProcessTap(description, &tapID), "Creazione del tap di registrazione")
-            taps.append((tapID, uuid, processes))
-            let format: AudioStreamBasicDescription = try AudioObject.read(
-                tapID, AudioObject.address(kAudioTapPropertyFormat), initial: AudioStreamBasicDescription(),
-                "Lettura formato del tap")
-            guard format.isFloat32, Int(format.mChannelsPerFrame) == channelCount, format.mSampleRate == sampleRate else {
-                throw EngineError("Il formato della registrazione non coincide con quello dell'uscita: registrazione annullata per non convertire l'audio.")
-            }
-            Log.engine.info(
-                "Recording tap \(tapID) for \(target.bundleID, privacy: .public): processes \(processes, privacy: .public), \(format.logDescription, privacy: .public)")
+        } catch {
+            throw AudioCapturePermissionError.classify(error, tapCreation: true)
         }
-        let tapList: [[String: Any]] = try taps.map { tap in
-            let uid = try AudioObject.readString(tap.id, AudioObject.address(kAudioTapPropertyUID), "Lettura UID del tap")
-            return [kAudioSubTapUIDKey: uid, kAudioSubTapDriftCompensationKey: 0]
+        var unit = Unit(target: target, tapID: tapID, uuid: uuid, processes: processes)
+        units.append(unit)
+        let format: AudioStreamBasicDescription = try AudioObject.read(
+            tapID, AudioObject.address(kAudioTapPropertyFormat), initial: AudioStreamBasicDescription(),
+            "Lettura formato del tap")
+        guard format.isFloat32, Int(format.mChannelsPerFrame) == channelCount, SampleRates.same(format.mSampleRate, sampleRate)
+        else {
+            throw EngineError("Il formato della registrazione non coincide con quello dell'uscita: registrazione annullata per non convertire l'audio.")
         }
-        let description: [String: Any] = [
+        let tapUID = try AudioObject.readString(tapID, AudioObject.address(kAudioTapPropertyUID), "Lettura UID del tap")
+        let aggregate: [String: Any] = [
             kAudioAggregateDeviceNameKey: "RoomEQ Recording",
             kAudioAggregateDeviceUIDKey: "\(AudioDevices.ownAggregateUIDPrefix).recording.\(UUID().uuidString)",
             kAudioAggregateDeviceIsPrivateKey: 1,
             kAudioAggregateDeviceIsStackedKey: 0,
             kAudioAggregateDeviceTapAutoStartKey: 0,
             kAudioAggregateDeviceSubDeviceListKey: [[String: Any]](),
-            kAudioAggregateDeviceTapListKey: tapList,
+            kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: tapUID, kAudioSubTapDriftCompensationKey: 0]],
         ]
         try AudioObject.check(
-            AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggregateID),
+            AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &unit.aggregateID),
             "Creazione dell'aggregato di registrazione")
+        units[units.count - 1] = unit
 
-        // One input stream per tap, in tap order, each with the device's channels.
+        // Exactly one input stream (the tap), in the device's format.
         let clock = ContinuousClock()
         let deadline = clock.now + .seconds(3)
         var inputs: [StreamInfo] = []
         while clock.now < deadline {
-            inputs = (try? DeviceStreams.streams(of: aggregateID, scope: kAudioObjectPropertyScopeInput)) ?? []
-            if inputs.count == taps.count { break }
+            inputs = (try? DeviceStreams.streams(of: unit.aggregateID, scope: kAudioObjectPropertyScopeInput)) ?? []
+            if inputs.count == 1 { break }
             Thread.sleep(forTimeInterval: 0.05)
         }
-        guard inputs.count == taps.count,
-            inputs.allSatisfy({ $0.format.isFloat32 && Int($0.format.mChannelsPerFrame) == channelCount && !$0.format.isNonInterleaved })
+        guard inputs.count == 1, inputs[0].format.isFloat32, Int(inputs[0].format.mChannelsPerFrame) == channelCount,
+            !inputs[0].format.isNonInterleaved
         else {
             throw EngineError("Gli stream della registrazione non sono comparsi come previsto: registrazione annullata.")
         }
-        let rate = try AudioDevices.nominalSampleRate(of: aggregateID)
-        guard rate == sampleRate else {
+        let aggregateRate = try AudioDevices.nominalSampleRate(of: unit.aggregateID)
+        guard SampleRates.same(aggregateRate, sampleRate) else {
             throw EngineError("Il formato della registrazione non coincide con quello dell'uscita: registrazione annullata per non convertire l'audio.")
         }
+        Log.engine.info(
+            "Recording tap \(tapID) for \(target.bundleID, privacy: .public): processes \(processes, privacy: .public), \(format.logDescription, privacy: .public), aggregate \(unit.aggregateID)")
     }
 
     private static func description(
@@ -465,45 +643,52 @@ private final class Capture {
         return description
     }
 
-    /// Starts the IOProc that copies each tap's stereo pair into its ring.
+    /// Starts one IOProc per app, each copying its tap's stereo pair into the
+    /// app's ring (`rings` in the order of the targets).
     func start(rings: [RecordingRing]) throws {
-        let rings = ContiguousArray(rings)
         let channels = channelCount
         let left = source.left
         let right = source.right
-        try AudioObject.check(
-            AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, nil) { _, input, _, _, _ in
-                let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
-                let count = min(list.count, rings.count)
-                for index in 0..<count {
-                    let buffer = list[index]
-                    guard let data = buffer.mData, Int(buffer.mNumberChannels) == channels else { continue }
-                    let frames = Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * channels)
-                    rings[index].write(
-                        interleaved: data.assumingMemoryBound(to: Float.self), frames: frames, channelCount: channels,
-                        left: left, right: right)
-                }
-            }, "Creazione della callback di registrazione")
-        guard let procID else { throw EngineError("Creazione delle callback: ID mancante") }
-        try AudioObject.check(AudioDeviceStart(aggregateID, procID), "Avvio della registrazione")
-        started = true
+        for index in units.indices {
+            // Unretained: the ring outlives the IOProc (the session keeps the
+            // tracks until the capture is destroyed), and no ARC traffic
+            // happens on the real-time thread.
+            let ring = Unmanaged.passUnretained(rings[index])
+            try AudioObject.check(
+                AudioDeviceCreateIOProcIDWithBlock(&units[index].procID, units[index].aggregateID, nil) { _, input, _, _, _ in
+                    let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
+                    guard list.count > 0, let data = list[0].mData, Int(list[0].mNumberChannels) == channels else { return }
+                    let frames = Int(list[0].mDataByteSize) / (MemoryLayout<Float>.size * channels)
+                    _ = ring._withUnsafeGuaranteedRef {
+                        $0.write(
+                            interleaved: data.assumingMemoryBound(to: Float.self), frames: frames, channelCount: channels,
+                            left: left, right: right)
+                    }
+                }, "Creazione della callback di registrazione")
+            guard let procID = units[index].procID else { throw EngineError("Creazione delle callback: ID mancante") }
+            try AudioObject.check(AudioDeviceStart(units[index].aggregateID, procID), "Avvio della registrazione")
+            units[index].started = true
+        }
     }
 
     /// Adds newly started processes of each app (e.g. a new browser helper).
+    /// A failed read of the process list changes nothing.
     func refreshProcesses() {
-        for index in taps.indices {
-            let processes = AudioProcesses.processObjects(matching: [targets[index].bundleID]).map(\.object)
-            guard Set(processes) != Set(taps[index].processes) else { continue }
+        for index in units.indices {
+            guard let processes = AudioProcesses.processObjects(ofApp: units[index].target.bundleID),
+                Set(processes) != Set(units[index].processes)
+            else { continue }
             var description = Self.description(
-                target: targets[index], uuid: taps[index].uuid, deviceUID: deviceUID, stream: source.stream,
+                target: units[index].target, uuid: units[index].uuid, deviceUID: deviceUID, stream: source.stream,
                 processes: processes)
             var address = AudioObject.address(kAudioTapPropertyDescription)
             let status = withUnsafeMutablePointer(to: &description) {
-                AudioObjectSetPropertyData(taps[index].id, &address, 0, nil, UInt32(MemoryLayout<CATapDescription>.size), $0)
+                AudioObjectSetPropertyData(units[index].tapID, &address, 0, nil, UInt32(MemoryLayout<CATapDescription>.size), $0)
             }
             if status == noErr {
-                taps[index].processes = processes
-                Log.engine.info("Recording tap for \(self.targets[index].bundleID, privacy: .public): processes now \(processes, privacy: .public)")
+                units[index].processes = processes
+                Log.engine.info(
+                    "Recording tap for \(self.units[index].target.bundleID, privacy: .public): processes now \(processes, privacy: .public)")
             } else {
                 Log.engine.error("Recording tap update failed: \(describeOSStatus(status), privacy: .public)")
             }
@@ -511,17 +696,14 @@ private final class Capture {
     }
 
     func destroy() {
-        if let procID {
-            if started { AudioDeviceStop(aggregateID, procID) }
-            AudioDeviceDestroyIOProcID(aggregateID, procID)
-            self.procID = nil
+        for unit in units {
+            if let procID = unit.procID {
+                if unit.started { AudioDeviceStop(unit.aggregateID, procID) }
+                AudioDeviceDestroyIOProcID(unit.aggregateID, procID)
+            }
+            if unit.aggregateID != kAudioObjectUnknown { AudioHardwareDestroyAggregateDevice(unit.aggregateID) }
+            AudioHardwareDestroyProcessTap(unit.tapID)
         }
-        started = false
-        if aggregateID != kAudioObjectUnknown {
-            AudioHardwareDestroyAggregateDevice(aggregateID)
-            aggregateID = AudioObjectID(kAudioObjectUnknown)
-        }
-        for tap in taps { AudioHardwareDestroyProcessTap(tap.id) }
-        taps = []
+        units = []
     }
 }

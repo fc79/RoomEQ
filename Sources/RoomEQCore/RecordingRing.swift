@@ -45,22 +45,23 @@ public final class RecordingRing: @unchecked Sendable {
         interleaved source: UnsafePointer<Float>, frames: Int, channelCount: Int, left: Int, right: Int
     ) -> Int {
         guard frames > 0, channelCount > 0, left < channelCount, right < channelCount else { return 0 }
-        let w = written.load(ordering: .relaxed)
-        let r = read.load(ordering: .acquiring)
-        let room = capacity - (w - r)
+        let writeCount = written.load(ordering: .relaxed)
+        let room = capacity - (writeCount - read.load(ordering: .acquiring))
         let count = min(frames, room)
         var blockPeak: Float = 0
         for frame in 0..<count {
-            let index = ((w + frame) & mask) * 2
-            let l = source[frame * channelCount + left]
-            let r = source[frame * channelCount + right]
-            storage[index] = l
-            storage[index + 1] = r
-            blockPeak = max(blockPeak, abs(l), abs(r))
+            let index = ((writeCount + frame) & mask) * 2
+            let leftSample = source[frame * channelCount + left]
+            let rightSample = source[frame * channelCount + right]
+            storage[index] = leftSample
+            storage[index + 1] = rightSample
+            // NaN/inf don't count (max() would keep NaN out anyway).
+            if leftSample.isFinite { blockPeak = max(blockPeak, abs(leftSample)) }
+            if rightSample.isFinite { blockPeak = max(blockPeak, abs(rightSample)) }
         }
-        written.store(w + count, ordering: .releasing)
+        written.store(writeCount + count, ordering: .releasing)
         if count < frames { dropped.add(frames - count, ordering: .relaxed) }
-        if blockPeak.isFinite, blockPeak > 0 {
+        if blockPeak > 0 {
             // Positive floats order like their bit patterns: an integer max.
             peak.max(blockPeak.bitPattern, ordering: .relaxed)
         }

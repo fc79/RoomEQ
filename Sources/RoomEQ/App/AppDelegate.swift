@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // Close the recording files first (headers written).
-        recorder.stop()
+        recorder.stopForQuit()
         controller.shutdown()
     }
 
@@ -50,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             source.setEventHandler { [weak self] in
                 MainActor.assumeIsolated {
                     Log.app.notice("Signal \(signalNumber) received, shutting down")
-                    self?.recorder.stop()
+                    self?.recorder.stopForQuit()
                     self?.controller.shutdown()
                     exit(0)
                 }

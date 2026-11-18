@@ -6,14 +6,18 @@ import Foundation
 
 public enum RecordingNames {
     /// "Spotify 2026-11-18 00.35.12.wav". Characters that are not allowed or
-    /// confusing in a file name ("/" and ":") become "-".
+    /// confusing in a file name ("/" and ":") become "-"; leading dots are
+    /// dropped and long names cut to 80 characters.
     public static func fileName(app: String, date: Date, timeZone: TimeZone = .current) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
         let cleaned = app.map { $0 == "/" || $0 == ":" ? "-" : $0 }
-        let name = String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
+        // No hidden files (leading dot) and well within the 255-byte limit.
+        var name = String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
+        while name.hasPrefix(".") { name.removeFirst() }
+        if name.count > 80 { name = String(name.prefix(80)).trimmingCharacters(in: .whitespaces) }
         return "\(name.isEmpty ? "App" : name) \(formatter.string(from: date)).wav"
     }
 

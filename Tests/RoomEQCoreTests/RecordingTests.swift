@@ -109,6 +109,39 @@ struct RecordingTests {
         #expect(log.files[1] == block(3, 0) + block(2, 0.3))  // pre-roll from the silence
     }
 
+    @Test func soundRightAfterTheHoldStillGetsItsPreRoll() {
+        var gate = SilenceGate(settings: settings, enabled: true)
+        var log = FileLog()
+        run(&gate, &log, block(4, 0.5))
+        run(&gate, &log, block(20, 0.002))  // exactly hold: closes, nothing after it
+        #expect(!log.isOpen)
+        run(&gate, &log, block(1, 0.5))
+        gate.finish(into: &log)
+        #expect(log.files.count == 2)
+        #expect(log.files[1] == block(3, 0.002) + block(1, 0.5))
+    }
+
+    @Test func silenceHeldAcrossBlocksIsWrittenWhenSoundReturns() {
+        var gate = SilenceGate(settings: settings, enabled: true)
+        var log = FileLog()
+        run(&gate, &log, block(2, 0.5))
+        run(&gate, &log, block(7, 0))
+        run(&gate, &log, block(8, 0))  // 15 silent frames < hold, split over two blocks
+        run(&gate, &log, block(1, 0.5))
+        gate.finish(into: &log)
+        #expect(log.files.count == 1)
+        #expect(log.files[0] == block(2, 0.5) + block(15, 0) + block(1, 0.5))
+    }
+
+    @Test func recordingIncludesHelpersButNotOtherApps() {
+        #expect(RecordingMatch.belongs(processBundleID: "com.brave.Browser", toApp: "com.brave.Browser"))
+        #expect(RecordingMatch.belongs(processBundleID: "com.brave.Browser.helper", toApp: "com.brave.browser"))
+        #expect(RecordingMatch.belongs(processBundleID: "com.google.Chrome.helper.renderer", toApp: "com.google.Chrome"))
+        #expect(!RecordingMatch.belongs(processBundleID: "com.google.Chrome.canary", toApp: "com.google.Chrome"))
+        #expect(!RecordingMatch.belongs(processBundleID: "com.google.Chrome.canary.helper", toApp: "com.google.Chrome"))
+        #expect(!RecordingMatch.belongs(processBundleID: "com.spotify.client2", toApp: "com.spotify.client"))
+    }
+
     @Test func soundInTheMiddleOfABlockOpensAtTheRightPlace() {
         var gate = SilenceGate(settings: settings, enabled: true)
         var log = FileLog()
@@ -183,6 +216,7 @@ struct RecordingTests {
         var taken: Set<String> = [name, String(name.dropLast(4)) + " 2.wav"]
         let url = RecordingNames.uniqueURL(in: folder, app: "Spotify", date: date, timeZone: utc) { taken.contains($0.lastPathComponent) }
         #expect(url.lastPathComponent == String(name.dropLast(4)) + " 3.wav")
-        taken.removeAll()
+        #expect(RecordingNames.fileName(app: "..Hidden", date: date, timeZone: utc).hasPrefix("Hidden "))
+        #expect(RecordingNames.fileName(app: String(repeating: "x", count: 300), date: date, timeZone: utc).count < 110)
     }
 }
