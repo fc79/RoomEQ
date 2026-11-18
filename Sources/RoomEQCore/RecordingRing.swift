@@ -4,9 +4,10 @@
 // tap's interleaved buffer and never blocks, allocates or locks. The consumer
 // is the recording writer (a normal thread), which drains the ring into the
 // silence gate and the WAV file. When the writer falls behind and the ring is
-// full, the producer drops the new frames and counts them; the consumer then
-// writes the same number of silent frames where they were lost (`drain`), so
-// every file keeps its length and files of different apps stay aligned.
+// full, the producer drops the new frames, counts them and notes where the
+// loss began; the consumer then writes the same number of silent frames at
+// that point (`drain`), so every file keeps its length and files of
+// different apps stay aligned.
 
 import Synchronization
 
@@ -19,7 +20,11 @@ public final class RecordingRing: @unchecked Sendable {
     /// Total frames ever written / read (monotonic; the ring index is & mask).
     private let written = Atomic<Int>(0)
     private let read = Atomic<Int>(0)
+    /// Frames dropped since the consumer last took the count.
     private let dropped = Atomic<Int>(0)
+    /// Where the current loss happened: the `written` count when the first
+    /// frame of it was dropped (frames before it came before the loss).
+    private let dropPosition = Atomic<Int>(0)
     /// Highest absolute sample written since the last `takePeak()` (Float bits).
     private let peak = Atomic<UInt32>(0)
 
@@ -60,7 +65,7 @@ public final class RecordingRing: @unchecked Sendable {
             if rightSample.isFinite { blockPeak = max(blockPeak, abs(rightSample)) }
         }
         written.store(writeCount + count, ordering: .releasing)
-        if count < frames { dropped.add(frames - count, ordering: .relaxed) }
+        if count < frames { noteDropped(frames - count, at: writeCount + count) }
         if blockPeak > 0 {
             // Positive floats order like their bit patterns: an integer max.
             peak.max(blockPeak.bitPattern, ordering: .relaxed)
@@ -68,10 +73,31 @@ public final class RecordingRing: @unchecked Sendable {
         return count
     }
 
-    /// Counts `frames` that could not be stored (e.g. a buffer in an
-    /// unexpected layout), so the writer replaces them with silence.
-    public func addDropped(_ frames: Int) {
-        if frames > 0 { dropped.add(frames, ordering: .relaxed) }
+    /// Stores `frames` silent frames (e.g. for a buffer in an unexpected
+    /// layout, so the file keeps its length and its order). Returns the
+    /// frames stored; the rest are counted as dropped.
+    @discardableResult
+    public func writeSilence(frames: Int) -> Int {
+        guard frames > 0 else { return 0 }
+        let writeCount = written.load(ordering: .relaxed)
+        let room = capacity - (writeCount - read.load(ordering: .acquiring))
+        let count = min(frames, room)
+        for frame in 0..<count {
+            let index = ((writeCount + frame) & mask) * 2
+            storage[index] = 0
+            storage[index + 1] = 0
+        }
+        written.store(writeCount + count, ordering: .releasing)
+        if count < frames { noteDropped(frames - count, at: writeCount + count) }
+        return count
+    }
+
+    /// Counts a loss; the first one since the consumer took the count also
+    /// records where it happened (released with the count).
+    @inline(__always)
+    private func noteDropped(_ frames: Int, at position: Int) {
+        if dropped.load(ordering: .relaxed) == 0 { dropPosition.store(position, ordering: .relaxed) }
+        dropped.add(frames, ordering: .releasing)
     }
 
     /// Highest absolute sample since the last call (and resets it), for the
@@ -100,7 +126,15 @@ public final class RecordingRing: @unchecked Sendable {
     }
 
     /// Frames dropped since the last call (and resets the count).
-    public func takeDroppedFrames() -> Int { dropped.exchange(0, ordering: .relaxed) }
+    public func takeDroppedFrames() -> Int { dropped.exchange(0, ordering: .acquiring) }
+
+    /// Throws away everything stored and any loss not yet taken (after a
+    /// failed capture attempt: what it wrote must not reach the files).
+    /// Only while no producer runs.
+    public func discardAll() {
+        read.store(written.load(ordering: .acquiring), ordering: .releasing)
+        _ = dropped.exchange(0, ordering: .acquiring)
+    }
 
     /// A piece of a drain, in time order.
     public enum DrainChunk {
@@ -111,29 +145,47 @@ public final class RecordingRing: @unchecked Sendable {
     }
 
     /// Moves everything in the ring to `emit`, in time order, through
-    /// `scratch` (`scratchFrames` stereo frames). Frames dropped since the
-    /// last drain are reported as silence where they were lost: frames are
-    /// dropped only while the ring is full, so they come after everything
-    /// stored when the drain starts, and before what the producer stores
-    /// while this drain frees room. Returns the frames dropped.
+    /// `scratch` (`scratchFrames` stereo frames). Frames dropped (also
+    /// while this drain runs, e.g. when `emit` stalls on a slow disk) are
+    /// reported as silence at the point where they were lost: after the
+    /// frames stored before the loss, before those stored after it. Returns
+    /// the frames dropped.
     @discardableResult
     public func drain(
         scratch: UnsafeMutablePointer<Float>, scratchFrames: Int, emit: (DrainChunk) -> Void
     ) -> Int {
-        let lost = takeDroppedFrames()
-        var beforeGap = lost > 0 ? available : 0
-        while beforeGap > 0 {
-            let count = read(into: scratch, maxFrames: min(beforeGap, scratchFrames))
-            if count == 0 { break }
-            emit(.audio(UnsafeBufferPointer(start: scratch, count: count * 2)))
-            beforeGap -= count
-        }
-        if lost > 0 { emit(.silence(frames: lost)) }
+        var total = 0
+        var lost = 0
+        var lossAt = 0
         while true {
-            let count = read(into: scratch, maxFrames: scratchFrames)
-            if count == 0 { break }
+            if lost == 0 {
+                lost = takeDroppedFrames()
+                if lost > 0 {
+                    lossAt = dropPosition.load(ordering: .relaxed)
+                    total += lost
+                }
+            }
+            var maxFrames = scratchFrames
+            if lost > 0 {
+                let beforeLoss = lossAt - read.load(ordering: .relaxed)
+                if beforeLoss <= 0 {
+                    emit(.silence(frames: lost))
+                    lost = 0
+                    continue
+                }
+                maxFrames = min(maxFrames, beforeLoss)
+            }
+            let count = read(into: scratch, maxFrames: maxFrames)
+            if count == 0 {
+                if lost > 0 {  // not expected: the loss point is never past `written`
+                    emit(.silence(frames: lost))
+                    lost = 0
+                    continue
+                }
+                break
+            }
             emit(.audio(UnsafeBufferPointer(start: scratch, count: count * 2)))
         }
-        return lost
+        return total
     }
 }

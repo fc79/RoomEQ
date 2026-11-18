@@ -98,11 +98,58 @@ struct RecordingTests {
         #expect(silences == 0)
     }
 
-    @Test func framesInAnUnexpectedLayoutCountAsDropped() {
+    /// A buffer in an unexpected layout becomes silence in its place.
+    @Test func silenceIsStoredInOrder() {
+        let ring = RecordingRing(minimumFrames: 8)
+        let one = block(2, 1)
+        one.withUnsafeBufferPointer { _ = ring.write(interleaved: $0.baseAddress!, frames: 2, channelCount: 2, left: 0, right: 1) }
+        #expect(ring.writeSilence(frames: 3) == 3)
+        one.withUnsafeBufferPointer { _ = ring.write(interleaved: $0.baseAddress!, frames: 2, channelCount: 2, left: 0, right: 1) }
+        var out = [Float](repeating: 9, count: 14)
+        #expect(out.withUnsafeMutableBufferPointer { ring.read(into: $0.baseAddress!, maxFrames: 7) } == 7)
+        #expect(out.enumerated().filter { $0.offset % 2 == 0 }.map(\.element) == [1, 1, 0, 0, 0, 1, 1])
+        #expect(ring.writeSilence(frames: 10) == 8)
+        #expect(ring.takeDroppedFrames() == 2)
+    }
+
+    /// Frames lost WHILE a drain runs (the writer stalls inside `emit` on a
+    /// slow disk, the ring fills up) still get their silence where they were
+    /// lost, not after what the producer stored afterwards.
+    @Test func lossDuringADrainIsPlacedWhereItHappened() {
         let ring = RecordingRing(minimumFrames: 4)
-        ring.addDropped(3)
-        ring.addDropped(0)
-        #expect(ring.takeDroppedFrames() == 3)
+        func put(_ values: [Float]) -> Int {
+            let samples = values.flatMap { [$0, $0] }
+            return samples.withUnsafeBufferPointer {
+                ring.write(interleaved: $0.baseAddress!, frames: values.count, channelCount: 2, left: 0, right: 1)
+            }
+        }
+        #expect(put([1, 2, 3, 4]) == 4)
+        let scratch = UnsafeMutablePointer<Float>.allocate(capacity: 4)
+        defer { scratch.deallocate() }
+        var timeline: [Float] = []
+        var emits = 0
+        let dropped = ring.drain(scratch: scratch, scratchFrames: 2) { chunk in
+            switch chunk {
+            case .audio(let samples): timeline += samples.enumerated().filter { $0.offset % 2 == 0 }.map(\.element)
+            case .silence(let frames): timeline += [Float](repeating: 0, count: frames)
+            }
+            emits += 1
+            if emits == 1 { #expect(put([5, 6, 7]) == 2) }  // 7 lost: the ring is full again
+            if emits == 2 { #expect(put([8]) == 1) }  // after the loss
+        }
+        #expect(dropped == 1)
+        #expect(timeline == [1, 2, 3, 4, 5, 6, 0, 8])
+    }
+
+    /// After a failed capture attempt nothing it wrote reaches the files.
+    @Test func discardAllEmptiesTheRingAndTheLosses() {
+        let ring = RecordingRing(minimumFrames: 4)
+        let source = block(6, 0.5)
+        source.withUnsafeBufferPointer { _ = ring.write(interleaved: $0.baseAddress!, frames: 6, channelCount: 2, left: 0, right: 1) }
+        ring.discardAll()
+        #expect(ring.available == 0)
+        #expect(ring.takeDroppedFrames() == 0)
+        #expect(source.withUnsafeBufferPointer { ring.write(interleaved: $0.baseAddress!, frames: 4, channelCount: 2, left: 0, right: 1) } == 4)
     }
 
     @Test func ringReportsThePeakOfTheRecordedPairOnly() {
@@ -276,6 +323,7 @@ struct RecordingTests {
         let url = RecordingNames.uniqueURL(in: folder, app: "Spotify", date: date, timeZone: utc) { taken.contains($0.lastPathComponent) }
         #expect(url.lastPathComponent == String(name.dropLast(4)) + " 3.wav")
         #expect(RecordingNames.fileName(app: "..Hidden", date: date, timeZone: utc).hasPrefix("Hidden "))
+        #expect(RecordingNames.fileName(app: ". .x", date: date, timeZone: utc).hasPrefix("x "))
         #expect(RecordingNames.fileName(app: String(repeating: "x", count: 300), date: date, timeZone: utc).count < 110)
     }
 

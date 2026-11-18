@@ -17,8 +17,9 @@ public enum RecordingNames {
         formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
         let cleaned = app.map { $0 == "/" || $0 == ":" ? "-" : $0 }
         // No hidden files (leading dot), and well within the 255-byte limit.
-        var name = String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
-        while name.hasPrefix(".") { name.removeFirst() }
+        var name = String(cleaned)
+        while let first = name.first, first == "." || first.isWhitespace { name.removeFirst() }
+        name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.count > 80 { name = String(name.prefix(80)) }
         while name.utf8.count > 150 { name.removeLast() }  // whole characters
         name = name.trimmingCharacters(in: .whitespaces)

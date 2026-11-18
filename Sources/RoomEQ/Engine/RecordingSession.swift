@@ -257,7 +257,13 @@ final class RecordingSession: @unchecked Sendable {
             }
             Log.engine.info("Recording now on \(made.deviceName, privacy: .public) at \(made.sampleRate) Hz")
         } catch {
-            new?.destroy()
+            if let new {
+                // What a half-started attempt wrote (maybe at another rate)
+                // must not reach the files.
+                let leaked = new.destroy()
+                for track in tracks { track.ring.discardAll() }
+                replaceRings(leaked)
+            }
             if finished || cancelling.load(ordering: .relaxed) { return }
             let clock = ContinuousClock()
             let deadline = retryDeadline ?? clock.now + .seconds(30)
@@ -277,9 +283,17 @@ final class RecordingSession: @unchecked Sendable {
     private func stopCapture() {
         for listener in deviceListeners { listener.remove() }
         deviceListeners = []
-        capture?.destroy()
+        let leaked = capture?.destroy() ?? []
         capture = nil
         drain()
+        replaceRings(leaked)
+    }
+
+    /// Tracks whose ring an IOProc that could not be stopped may still write
+    /// to get a fresh one, so the next capture is never a second producer.
+    private func replaceRings(_ leaked: Set<ObjectIdentifier>) {
+        guard !leaked.isEmpty else { return }
+        for track in tracks where leaked.contains(ObjectIdentifier(track.ring)) { track.replaceRing() }
     }
 
     /// A new rate or stream layout on the current device, a tap format change,
@@ -395,7 +409,7 @@ final class RecordingSession: @unchecked Sendable {
 /// One app's ring, silence gate and files. Used on the session queue only.
 private final class Track {
     let target: RecordingSession.Target
-    let ring: RecordingRing
+    private(set) var ring: RecordingRing
     private let skipSilence: Bool
     private var gate: SilenceGate
     private var sink: FileSink
@@ -447,6 +461,12 @@ private final class Track {
             Log.engine.error("Recording \(self.target.bundleID, privacy: .public): \(dropped) frames dropped")
         }
         return dropped
+    }
+
+    /// A new, empty ring of the same size (the old one stays with an IOProc
+    /// that could not be stopped, deliberately leaked by `Capture.destroy`).
+    func replaceRing() {
+        ring = RecordingRing(minimumFrames: ring.capacity)
     }
 
     /// Closes the current file and continues at a new sample rate.
@@ -716,7 +736,7 @@ private final class Capture {
                                 interleaved: data.assumingMemoryBound(to: Float.self), frames: frames,
                                 channelCount: channels, left: left, right: right)
                         } else {
-                            ring.addDropped(frames)  // unexpected layout: silence instead
+                            ring.writeSilence(frames: frames)  // unexpected layout: silence instead
                         }
                     }
                 }, "Creazione della callback di registrazione")
@@ -759,7 +779,10 @@ private final class Capture {
     /// leaked: the IOProc holds it unretained, and freeing it would let a
     /// real-time thread write to freed memory (as the correction engine
     /// does with its shared state, see EngineSession.teardown).
-    func destroy() {
+    /// Returns the rings left to such IOProcs (empty when all went well).
+    @discardableResult
+    func destroy() -> Set<ObjectIdentifier> {
+        var leaked: Set<ObjectIdentifier> = []
         for unit in units {
             if let procID = unit.procID {
                 var status = noErr
@@ -768,7 +791,10 @@ private final class Capture {
                 if status != noErr || destroyStatus != noErr {
                     Log.engine.fault(
                         "Recording IOProc of \(unit.target.bundleID, privacy: .public) not cleanly removed (stop \(describeOSStatus(status), privacy: .public), destroy \(describeOSStatus(destroyStatus), privacy: .public)): keeping its ring")
-                    if let ring = unit.ring { _ = Unmanaged.passRetained(ring) }  // deliberate leak
+                    if let ring = unit.ring {
+                        _ = Unmanaged.passRetained(ring)  // deliberate leak
+                        leaked.insert(ObjectIdentifier(ring))
+                    }
                 }
             }
             if unit.aggregateID != kAudioObjectUnknown {
@@ -783,5 +809,6 @@ private final class Capture {
             }
         }
         units = []
+        return leaked
     }
 }
