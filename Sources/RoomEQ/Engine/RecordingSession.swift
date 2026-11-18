@@ -82,6 +82,9 @@ final class RecordingSession: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var ticks = 0
     private var finished = false
+    /// A process-list refresh is already scheduled (notifications come in
+    /// bursts when a browser starts or ends helpers).
+    private var processRefreshScheduled = false
     /// The sample rate of the files being written.
     private var fileRate: Double = 0
     /// Set by stop/stopAndWait from any thread: a (re)build in progress gives up.
@@ -159,7 +162,14 @@ final class RecordingSession: @unchecked Sendable {
     /// Re-reads the running processes of each app (a browser may start a new
     /// helper process while recording).
     func refreshProcesses() {
-        queue.async { [self] in capture?.refreshProcesses() }
+        queue.async { [self] in
+            guard !processRefreshScheduled else { return }
+            processRefreshScheduled = true
+            queue.asyncAfter(deadline: .now() + 0.1) { [self] in
+                processRefreshScheduled = false
+                capture?.refreshProcesses()
+            }
+        }
     }
 
     // MARK: - Lifecycle (queue)
@@ -228,11 +238,15 @@ final class RecordingSession: @unchecked Sendable {
             }
             let made = try Capture.make(targets: targets, device: device, cancelling: cancelling)
             new = made
+            try made.start(rings: tracks.map(\.ring))
+            // New files only once the new rate is really recording (a failed
+            // attempt, then a return to the old rate, keeps the files whole).
+            // What the IOProcs already wrote is still in the rings: it goes
+            // to the new files at the next drain.
             if !SampleRates.same(made.sampleRate, fileRate) {
                 for track in tracks { track.restart(sampleRate: made.sampleRate) }
                 fileRate = made.sampleRate
             }
-            try made.start(rings: tracks.map(\.ring))
             capture = made
             retryDeadline = nil
             listen(to: made, owner: generation)
