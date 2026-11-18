@@ -154,6 +154,11 @@ struct RecordingTests {
         let ring = RecordingRing(minimumFrames: 4)
         let source = block(6, 0.5)
         source.withUnsafeBufferPointer { _ = ring.write(interleaved: $0.baseAddress!, frames: 6, channelCount: 2, left: 0, right: 1) }
+        #expect(ring.writeSilence(frames: 1) == 0)  // full: counted as dropped
+        let empty = RecordingRing(minimumFrames: 4)
+        empty.writeSilence(frames: 2)
+        empty.discardAll()
+        #expect(empty.takeSilencedFrames() == 0)
         ring.discardAll()
         #expect(ring.available == 0)
         #expect(ring.takeDroppedFrames() == 0)

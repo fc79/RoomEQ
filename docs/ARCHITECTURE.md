@@ -765,10 +765,12 @@ most.
   from the session a restart replaced less than 2 s earlier is still shown
   and counted, so a failure loop cannot hide behind restarts.
 - **Automatic restarts** (format/layout change, abnormal IO stop, an
-  excluded app started later that could not be added to the tap — this one
-  at most once every 30 s): at most 3 in 10 s. If the start of an
-  automatic restart fails, that start is retried once (§6.3). After that the state is `.failed` with "Troppi riavvii
-  automatici" ("Too many automatic restarts"). User-initiated restarts
+  excluded app started later that could not be added to the tap): at most 3
+  in 10 s; after that the state is `.failed` with "Troppi riavvii
+  automatici" ("Too many automatic restarts"). If the start of an
+  automatic restart fails, that start is retried once (§6.3). A second
+  failed late exclusion within 30 s stops the correction with an error
+  (an excluded app is never corrected silently, and no slow restart loop). User-initiated restarts
   (buffer, exclusions, macOS output change) and restarts within 5 s of a
   user sample-rate change do not count.
 - **Device lost.** The engine already stopped the session. The controller

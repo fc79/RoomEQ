@@ -53,7 +53,8 @@ final class RecordingSession: @unchecked Sendable {
         var apps: [AppStatus] = []
         var sampleRate: Double = 0
         var deviceName = ""
-        /// Frames lost because the writer fell behind (replaced by silence).
+        /// Frames lost (the writer fell behind, or a buffer came in an
+        /// unexpected layout), replaced by silence.
         var droppedFrames = 0
         /// Files written so far (open and closed), in creation order.
         var files: [URL] = []
