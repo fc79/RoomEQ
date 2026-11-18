@@ -354,3 +354,16 @@
 "Sub-device attivi" = "Active sub-devices";
 "Tipo di collegamento" = "Transport type";
 "Traduzione PID" = "Translating the PID";
+
+/* Recording */
+"Nessuna app da registrare." = "No apps to record.";
+"Uscita audio non disponibile per la registrazione." = "The audio output isn't available for recording.";
+"Creazione del tap di registrazione" = "Creating the recording tap";
+"Creazione dell'aggregato di registrazione" = "Creating the recording aggregate";
+"Creazione della callback di registrazione" = "Creating the recording callback";
+"Avvio della registrazione" = "Starting the recording";
+"Il formato della registrazione non coincide con quello dell'uscita: registrazione annullata per non convertire l'audio." = "The recording format doesn't match the output: recording canceled so the audio isn't converted.";
+"Gli stream della registrazione non sono comparsi come previsto: registrazione annullata." = "The recording streams didn't appear as expected: recording canceled.";
+"Registrazione fermata: errore nel salvare il file di «%@» (%@)." = "Recording stopped: couldn't save the file for “%1$@” (%2$@).";
+"Registrazione fermata: il disco è pieno. I file salvati sono completi." = "Recording stopped: the disk is full. The saved files are complete.";
+"Registrazione fermata: non riesce a seguire la nuova uscita audio (%@). I file salvati sono completi." = "Recording stopped: it couldn't follow the new audio output (%@). The saved files are complete.";

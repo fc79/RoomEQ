@@ -46,6 +46,14 @@ struct RecordingTests {
         #expect(ring.takeDroppedFrames() == 0)
     }
 
+    @Test func ringReportsThePeakOfTheRecordedPairOnly() {
+        let ring = RecordingRing(minimumFrames: 8)
+        let source: [Float] = [0.9, 0.2, -0.4, 0.1, 0.3, -0.05]  // 3 channels; record 1 and 2
+        #expect(source.withUnsafeBufferPointer { ring.write(interleaved: $0.baseAddress!, frames: 2, channelCount: 3, left: 1, right: 2) } == 2)
+        #expect(ring.takePeak() == 0.4)
+        #expect(ring.takePeak() == 0)
+    }
+
     // MARK: Silence gate
 
     private let settings = SilenceGate.Settings(threshold: 0.01, holdFrames: 20, preRollFrames: 3, tailFrames: 5)
