@@ -309,6 +309,19 @@ struct SplitKernelTests {
         #expect(rig.output.get(buffer: 0, channel: 0, frame: 0) == 0)
     }
 
+    /// One warm-up window must fit the `need` history at any rate and
+    /// buffer (352.8 kHz with 64-frame buffers: 2205 cycles in 0.4 s).
+    @Test func needHistoryHoldsAWarmUpWindow() {
+        for (rate, buffer) in [(44_100.0, 64), (352_800, 64), (384_000, 16), (48_000, 4096)] {
+            let capacity = SplitLinkConfiguration.needHistoryCapacity(window: 0.4, sampleRate: rate, bufferFrames: buffer)
+            let cycles = Int((0.4 * rate / Double(buffer)).rounded(.up))
+            #expect(capacity - 32 >= cycles * 2)
+            #expect(capacity >= 2048)
+            #expect(capacity & (capacity - 1) == 0)
+        }
+        #expect(SplitLinkConfiguration.needHistoryCapacity(window: 0.4, sampleRate: 48_000, bufferFrames: 64) == 2048)
+    }
+
     @Test func muteSilencesImmediately() {
         let rig = Rig()
         for _ in 0..<3 { rig.step() }

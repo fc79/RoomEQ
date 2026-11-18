@@ -179,6 +179,8 @@ final class EngineSession {
     static let warmupSettle = 0.15
     static let warmupWindow = 0.4
     static let warmupDeadline = 1.0
+    /// Drift is checked once per second (maintenance runs every 100 ms).
+    static let ticksPerDriftCheck = 10
 
     let id: Int
     let configuration: EngineConfiguration
@@ -218,7 +220,9 @@ final class EngineSession {
     private var drift: DriftMonitor?
     private var underrunsSeen: UInt64 = 0
     private var runningSeconds = 0.0
-    private var driftAccumulator = 0.0
+    /// Maintenance ticks so far (an integer: ten sums of 0.1 s fall short of
+    /// 1.0, so a seconds accumulator would check every 11 ticks).
+    private var maintenanceTicks = 0
     private var lastNeedTotals: (sum: Int64, count: Int64) = (0, 0)
     private var latencySettled = false
 
@@ -328,7 +332,9 @@ final class EngineSession {
             delayIncreases: Self.maxDelayIncreases)
         let link = SplitLinkHandle(
             configuration: SplitLinkConfiguration(
-                captureLayout: captureLayout, captureLeft: sourceLeft, captureRight: sourceRight, sizing: sizing))
+                captureLayout: captureLayout, captureLeft: sourceLeft, captureRight: sourceRight, sizing: sizing,
+                needHistoryCapacity: SplitLinkConfiguration.needHistoryCapacity(
+                    window: Self.warmupWindow, sampleRate: sampleRate, bufferFrames: min(bufferFrames, captureBuffer))))
         self.link = link
         Log.engine.info(
             "Buffers: capture \(captureBuffer), output \(self.bufferFrames), largest callback \(maxCallback); ring \(link.capacity) frames, maximum delay \(link.maximumDelay)"
@@ -631,15 +637,14 @@ final class EngineSession {
             return .fatal(DelayAdaptation.failureMessage)
         }
 
-        driftAccumulator += elapsed
-        if driftAccumulator >= 1, var drift {
-            driftAccumulator = 0
+        maintenanceTicks += 1
+        if maintenanceTicks % Self.ticksPerDriftCheck == 0, var drift {
             let count = status.needCount - lastNeedTotals.count
             if count > 0 {
                 let mean = Double(status.needSum - lastNeedTotals.sum) / Double(count)
                 let mismatch = drift.add(meanNeed: mean, at: runningSeconds)
                 self.drift = drift
-                if Int(runningSeconds) % 10 == 0 {
+                if maintenanceTicks % (Self.ticksPerDriftCheck * 10) == 0 {
                     Log.engine.debug(
                         "Drift: mean need \(String(format: "%.2f", mean), privacy: .public) frames, change \(String(format: "%.2f", drift.lagChange ?? 0), privacy: .public), trend \(drift.trendPPM.map { String(format: "%.2f ppm", $0) } ?? "n/a", privacy: .public)"
                     )

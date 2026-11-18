@@ -87,6 +87,18 @@ public struct SplitLinkConfiguration: Sendable {
         self.fadeOutFrames = fadeOutFrames
         self.needHistoryCapacity = needHistoryCapacity
     }
+
+    /// History large enough for one warm-up window of `seconds` at
+    /// `sampleRate` with output cycles of `bufferFrames` (one value per
+    /// cycle), with a 2x margin for a late wake-up and the 32 values kept
+    /// clear of the writer. At least 2048; a power of two.
+    public static func needHistoryCapacity(window seconds: Double, sampleRate: Double, bufferFrames: Int) -> Int {
+        let cycles = seconds * max(sampleRate, 0) / Double(max(1, bufferFrames))
+        let wanted = Int(min(cycles, 1_000_000).rounded(.up)) * 2 + 64
+        var size = 2048
+        while size < wanted { size <<= 1 }
+        return size
+    }
 }
 
 /// 128 bytes (an Apple-silicon cache line): keeps fields written by
