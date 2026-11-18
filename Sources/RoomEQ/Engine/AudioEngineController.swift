@@ -152,7 +152,9 @@ final class AudioEngineController {
 
     // MARK: Buffer, level, exclusions
 
-    /// IO buffer size in frames, same on the capture and output side.
+    /// IO buffer size in frames the running session got (same on the capture
+    /// and output side); the user's choice, asked of every new session, is
+    /// `settings.bufferFrames` (a device may grant another size).
     private(set) var bufferSize = BufferSize.defaultSize
     /// Buffer sizes the devices accept (64/128/256 within their ranges).
     private(set) var bufferSizeOptions = BufferSize.preferredSizes
@@ -543,7 +545,7 @@ final class AudioEngineController {
     /// Restarts the engine if running (the delay is re-measured for the new
     /// buffer size).
     func setBufferSize(_ frames: Int) {
-        guard frames != bufferSize else { return }
+        guard frames != settings.bufferFrames || frames != bufferSize else { return }
         bufferSize = frames
         settings.bufferFrames = frames  // remembered across launches
         saveSettings()
@@ -823,7 +825,7 @@ final class AudioEngineController {
         EngineConfiguration(
             outputDeviceUID: device.uid,
             outputPair: outputChannelPair,
-            bufferFrames: bufferSize,
+            bufferFrames: settings.bufferFrames,
             excludedBundleIDs: excludedBundleIDs,
             gain: Preamp.linearGain(decibels: preampDecibels) ?? 1,
             bands: bands,
