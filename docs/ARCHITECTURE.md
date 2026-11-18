@@ -499,7 +499,8 @@ All real-time DSP lives in `RoomEQCore`.
 
 Meter peaks are stored as `Float` bit patterns in `Atomic<UInt32>`. For
 non-negative floats an integer `max` equals a float max. The UI reads and
-resets them about 25 times per second (`readMeters`). A second set of peaks
+resets them about 25 times per second (`readMeters`), only while the panel
+is open (the status item tells the controller). A second set of peaks
 serves the engine's debug level logging, so the logging does not steal
 peaks from the UI.
 
@@ -770,7 +771,7 @@ change (within 8 s) (`retryAfterSampleRateChange`).
 
 | Context | What runs there |
 |---|---|
-| Main thread / main actor | `AudioEngineController`, all UI, meter polling (25 Hz `Timer`), debounced settings save. |
+| Main thread / main actor | `AudioEngineController`, all UI, meter polling (25 Hz `Timer`, only while the panel is open), debounced settings save. |
 | Engine queue (`AudioEngine`, serial) | All Core Audio setup and teardown (blocking: aggregate creation, IO start, warm-up), and the 100 ms maintenance ticks. Enforced with `dispatchPrecondition`. |
 | Listener queue (serial) | Session property listener blocks. They never block; they forward to the engine queue (the rate listener also sets `muted`). |
 | `deviceQueue` | HAL reads for the device list; (un)registration of the controller's listeners. |

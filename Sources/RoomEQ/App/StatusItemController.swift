@@ -148,6 +148,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func showPopover() {
         guard let button = statusItem.button else { return }
         refreshBeforeShowing()
+        controller.setPanelVisible(true)
         activateApp()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         // Keyboard to the panel (the popover window may not take it alone).
@@ -199,6 +200,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     private func tearDownAfterClose() {
+        controller.setPanelVisible(false)
         statusItem.button?.highlight(false)
         removeMonitors()
     }

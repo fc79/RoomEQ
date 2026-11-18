@@ -323,6 +323,10 @@ final class AudioEngineController {
     /// stopped.
     @ObservationIgnored private var launchGeneration = 0
     @ObservationIgnored private var meterTimer: Timer?
+    /// The panel is on screen: only then the levels are polled (they are
+    /// shown nowhere else; the clip counters are cumulative, so nothing is
+    /// lost while it is closed).
+    @ObservationIgnored private var isPanelVisible = false
     @ObservationIgnored private var deviceListeners: [PropertyListener] = []
     @ObservationIgnored private var automaticRestarts: [Date] = []
     @ObservationIgnored private var prepared = false
@@ -914,7 +918,7 @@ final class AudioEngineController {
             rateChangeRetryAvailable = false
             state = .running
             Log.app.info("Running on \(info.outputDevice.uid, privacy: .public), \(info.sampleRate) Hz, buffer \(info.bufferFrames)")
-            startMeters()
+            if isPanelVisible { startMeters() }
             // Curve and issues for this session's rate; bands changed while
             // starting are published (an unchanged set is not re-sent).
             updateEQ()
@@ -1168,8 +1172,22 @@ final class AudioEngineController {
         }
     }
 
+    /// Called by the status item when the panel opens and closes.
+    func setPanelVisible(_ visible: Bool) {
+        guard visible != isPanelVisible else { return }
+        isPanelVisible = visible
+        if visible {
+            if renderState != nil { startMeters() }
+        } else {
+            stopMeters()
+        }
+    }
+
     private func startMeters() {
         stopMeters()
+        // Drop the peaks held while the panel was closed (they would flash
+        // an old level for one frame); the clip counters are kept.
+        _ = renderState?.readMeters()
         let timer = Timer(timeInterval: 1.0 / 25.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.pollMeters() }
         }
