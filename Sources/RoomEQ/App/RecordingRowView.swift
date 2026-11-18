@@ -17,6 +17,7 @@ struct RecordingRowView: View {
     let recorder: RecordingController
 
     @State private var showsPicker = false
+    @State private var listHeight: CGFloat = 100
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -109,20 +110,28 @@ struct RecordingRowView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
-            ForEach(recorder.apps) { app in
-                Toggle(isOn: Binding(get: { app.isChosen }, set: { recorder.setChosen($0, app: app) })) {
-                    HStack {
-                        Text(app.name).lineLimit(1)
-                        Spacer(minLength: 6)
-                        if app.isPlaying {
-                            Label("sta suonando", systemImage: "waveform")
-                                .font(.callout)
-                                .foregroundStyle(.green)
+            // About 7 rows, then the list scrolls in place (a long list of
+            // open apps must not push the panel off the screen).
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(recorder.apps) { app in
+                        Toggle(isOn: Binding(get: { app.isChosen }, set: { recorder.setChosen($0, app: app) })) {
+                            HStack {
+                                Text(app.name).lineLimit(1)
+                                Spacer(minLength: 6)
+                                if app.isPlaying {
+                                    Label("sta suonando", systemImage: "waveform")
+                                        .font(.callout)
+                                        .foregroundStyle(.green)
+                                }
+                            }
                         }
+                        .toggleStyle(.checkbox)
                     }
                 }
-                .toggleStyle(.checkbox)
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { listHeight = $0 }
             }
+            .frame(height: min(max(listHeight, 1), 168))
             Divider().padding(.vertical, 2)
             Toggle(isOn: Binding(get: { recorder.skipSilence }, set: { recorder.skipSilence = $0 })) {
                 VStack(alignment: .leading, spacing: 1) {

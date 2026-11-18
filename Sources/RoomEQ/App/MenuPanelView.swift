@@ -29,10 +29,14 @@ struct MenuPanelView: View {
     let recorder: RecordingController
 
     /// The sections never grow beyond this height (then they scroll); header,
-    /// preset row, levels and footer stay outside it, always visible.
+    /// preset row, levels, recording row and footer stay outside it, always
+    /// visible. Lower on a short screen: the whole panel must fit under the
+    /// menu bar (see `scrollHeight`).
     private static let scrollMaxHeight: CGFloat = 520
 
     @State private var scrollContentHeight: CGFloat = 200
+    /// Height of everything except the sections' scroll area.
+    @State private var fixedHeight: CGFloat = 300
     /// The unreadable-settings notice the user has dismissed (the notice is
     /// owned by the controller, which has no way to clear it).
     @State private var dismissedSettingsNotice: String?
@@ -51,15 +55,27 @@ struct MenuPanelView: View {
                 sections
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { scrollContentHeight = $0 }
             }
-            .frame(height: min(max(scrollContentHeight, 1), Self.scrollMaxHeight))
+            .frame(height: scrollHeight)
             Divider()
             footer
         }
         .padding(14)
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { total in
+            fixedHeight = max(0, total - scrollHeight)
+        }
         .frame(width: 400)
         .disabled(confirmations.current != nil)  // only the card answers
         .overlay { confirmationOverlay }
         .environment(confirmations)
+    }
+
+    /// The sections' scroll height: their content, at most `scrollMaxHeight`
+    /// and at most what is left of the screen under the menu bar after the
+    /// fixed parts (so the popover never runs off the top of the screen).
+    private var scrollHeight: CGFloat {
+        let screen = NSScreen.main?.visibleFrame.height ?? 900
+        let available = screen - fixedHeight - 40  // popover arrow and margins
+        return max(80, min(max(scrollContentHeight, 1), Self.scrollMaxHeight, available))
     }
 
     /// The confirmation card over the dimmed panel (no separate window).
