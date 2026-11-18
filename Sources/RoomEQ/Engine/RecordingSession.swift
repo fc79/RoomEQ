@@ -303,7 +303,7 @@ private final class FileSink: RecordingSink {
         guard let writer else { return }
         do {
             if !writer.canAppend(frames: samples.count / 2) {
-                // RIFF limit (about 6 hours of stereo at 48 kHz): next file.
+                // RIFF limit (about 4 hours of stereo at 48 kHz): next file.
                 close()
                 open()
                 guard let next = self.writer else { return }

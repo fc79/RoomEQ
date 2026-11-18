@@ -17,6 +17,7 @@ RoomEQ è pensato per chi misura la propria stanza d'ascolto con [REW](https://w
 - [Come funziona, in un paragrafo](#come-funziona-in-un-paragrafo)
 - [L'icona nella barra dei menu](#licona-nella-barra-dei-menu)
 - [Il pannello](#il-pannello)
+- [Registrare l'audio delle app](#registrare-laudio-delle-app)
 - [Importare i filtri da REW](#importare-i-filtri-da-rew)
 - [Verificare che i filtri siano giusti](#verificare-che-i-filtri-siano-giusti)
 - [Verificare un EQ nel DAW](#verificare-un-eq-nel-daw)
@@ -36,13 +37,14 @@ RoomEQ è pensato per chi misura la propria stanza d'ascolto con [REW](https://w
 - **Importazione da REW.** Carica il file di testo esportato da REW (Export filter settings as text, equalizzatore Generic).
 - **Bassa latenza.** Il valore mostrato nella riga di stato è la latenza **totale** d'uscita, stimata dall'app. Comprende la latenza propria della scheda audio, che c'è anche senza RoomEQ. Sulla scheda dell'autore è circa 6 ms con un buffer di 64 frame. Il tuo risultato dipende dalla tua scheda e dal buffer; il pannello mostra la stima per la tua.
 - **Sicurezza in caso di guasto.** Se RoomEQ si chiude o va in crash, l'audio delle app torna normale da solo: le app sono silenziate solo finché RoomEQ è in funzione (verificato chiudendo RoomEQ di forza con `kill -9` durante la riproduzione).
+- **Registrazione per app.** Registra il suono delle app che scegli, un file WAV a 24 bit per app, prima della correzione. Vedi [Registrare l'audio delle app](#registrare-laudio-delle-app).
 - **Italiano e inglese.** L'interfaccia segue la lingua di macOS.
 
 ## Requisiti
 
 - macOS 15 (Sequoia) o successivo per usare l'app.
 - Per compilarla: Xcode 26 o successivo (toolchain Swift 6.2 o successiva). Il codice usa API dell'SDK di macOS 26 (`CATapDescription.bundleIDs` e `isProcessRestoreEnabled`), protette da un controllo a runtime: l'app gira anche su macOS 15, ma per compilarla serve l'SDK di macOS 26. Il progetto si compila con Swift Package Manager; non c'è un progetto Xcode.
-- Il permesso **Registrazione schermo e audio di sistema**. macOS lo chiede la prima volta che RoomEQ avvia la correzione (Impostazioni di Sistema › Privacy e sicurezza › Registrazione schermo e audio di sistema). macOS può mostrare anche la richiesta per il microfono, perché le schede audio hanno degli ingressi: RoomEQ non registra il microfono e usa la scheda solo come uscita.
+- Il permesso **Registrazione schermo e audio di sistema**. macOS lo chiede la prima volta che RoomEQ avvia la correzione o una registrazione (Impostazioni di Sistema › Privacy e sicurezza › Registrazione schermo e audio di sistema). macOS può mostrare anche la richiesta per il microfono, perché le schede audio hanno degli ingressi: RoomEQ non registra mai il microfono e usa la scheda solo come uscita.
 
 ## Compilare e installare
 
@@ -86,6 +88,8 @@ Al primo avvio RoomEQ non ha filtri, ha un solo preset vuoto chiamato «Senza no
 ## Come funziona, in un paragrafo
 
 RoomEQ chiede a Core Audio un «process tap» sull'uscita attuale di macOS. Il tap cattura l'audio di tutte le app tranne quelle escluse (e RoomEQ stesso) e le silenzia sulla scheda finché RoomEQ sta leggendo. RoomEQ fa passare l'audio catturato dall'equalizzatore e riproduce il risultato sulla stessa scheda. Non c'è nessun dispositivo audio virtuale e nessuna conversione della frequenza di campionamento. Se RoomEQ si chiude o va in crash, il tap sparisce e le app tornano a suonare direttamente sulla scheda, senza che RoomEQ debba fare nulla.
+
+A parte, e solo quando lo chiedi, RoomEQ può registrare su file l'audio di app che scegli (vedi [Registrare l'audio delle app](#registrare-laudio-delle-app)). In ogni altro caso l'audio non viene mai scritto su disco.
 
 ## L'icona nella barra dei menu
 
@@ -162,6 +166,60 @@ Le app in questo elenco non vengono catturate: il loro audio non passa da RoomEQ
 **Diagnostica**
 
 Numeri tecnici: latenza stimata e sua suddivisione, formato del tap, ritardo dell'anello, underrun, contatori di clip, sovraccarichi e picchi in ingresso e in uscita. Serve solo per capire un problema.
+
+## Registrare l'audio delle app
+
+RoomEQ può registrare il suono delle app che scegli. È una funzione separata dalla correzione: va con la correzione accesa, spenta o in pausa, e registrare non cambia quello che senti.
+
+### Scegliere cosa registrare
+
+La riga **Registra** è sempre visibile, sotto i livelli. Accanto al pulsante **Registra** c'è un pulsante che apre l'elenco **App da registrare** («un file per app»), con una casella per ogni app:
+
+- Sono elencate le app aperte, con quelle che **stanno suonando** in cima. Spunta quelle da registrare. La scelta viene ricordata da un avvio all'altro.
+- Se non c'è nessuna app aperta l'elenco dice «Nessuna app aperta.» Se premi **Registra** senza averne spuntata nessuna, RoomEQ dice «Scegli almeno un'app da registrare.»
+- **Salta il silenzio** è una casella in fondo allo stesso elenco, attiva di default (vedi sotto).
+
+Il pulsante chiuso riassume la scelta, per esempio «Brave, Spotify · salta silenzio»; con molte app «Brave, Spotify e altre 2»; con nessuna «Nessuna app».
+
+### Cosa si ottiene
+
+- **Un file per app**: un file WAV stereo a 24 bit, alla frequenza di campionamento dell'uscita. Nessuna conversione della frequenza e nessun mix tra le app.
+- **Il suono originale dell'app, prima della correzione.** Non il suono corretto, e non quello delle altre app.
+- **I due canali sono quelli su cui suona l'audio del Mac**: la coppia stereo preferita dalla scheda audio. Su una scheda con tante uscite è la coppia che macOS usa per il suono di sistema.
+- I browser e le app simili usano diversi processi di supporto. RoomEQ li trova, compresi quelli che partono mentre registri.
+
+### Avviare, controllare e fermare
+
+1. Spunta le app e premi **Registra**.
+2. Durante la registrazione la riga mostra un pallino rosso con il tempo trascorso, un pulsante **Ferma** e **Mostra nel Finder**, e sotto il livello di ogni app. L'icona nella barra dei menu ha un **pallino rosso**. Se un'app è «in pausa · silenzio» sta aspettando il suono (vedi **Salta il silenzio**).
+3. Premi **Ferma**. RoomEQ dice «Salvato 1 file (*durata*).» oppure «Salvati *n* file (*durata*).», e **Mostra nel Finder** apre la cartella con i file. Se le app non hanno suonato dice «Nessun file salvato: le app non hanno suonato.»
+
+Se esci da RoomEQ mentre registri, o gli viene chiesto di fermarsi (per esempio allo spegnimento del Mac), i file vengono prima chiusi correttamente.
+
+### Salta il silenzio
+
+È attivo di default. Quando un'app resta sotto −60 dBFS per 2 secondi, il suo file si chiude e il silenzio non viene scritto. Resta mezzo secondo di margine prima del suono e dopo, così attacchi e code non vengono tagliati. Quando l'app riprende a suonare **inizia un file nuovo**. Così le sessioni lunghe non si riempiono di file vuoti e di buchi. Se disattivi l'opzione, per ogni app viene scritto un solo file per tutta la registrazione, silenzio compreso.
+
+### Dove vanno i file
+
+Nella cartella **Musica**, in **RoomEQ** (`~/Music/RoomEQ`), con nome *nome dell'app, data e ora d'inizio del file*, per esempio `Spotify 2026-11-18 00.35.12.wav`. Se esiste già un file con quel nome si aggiunge « 2» (poi « 3»…): RoomEQ non sovrascrive mai un file. L'audio viene scritto solo in questi file, sul tuo Mac. Non viene inviato da nessuna parte.
+
+### Quando cambia l'uscita
+
+La registrazione non si ferma se cambi l'uscita di macOS.
+
+- **Stessa frequenza di campionamento**: i file continuano (al massimo può mancare un attimo di suono nel passaggio).
+- **Frequenza diversa**: i file attuali vengono chiusi e ne iniziano **di nuovi** alla nuova frequenza. RoomEQ non converte mai l'audio.
+
+### Limiti e sicurezza
+
+- I file restano validi anche se il Mac va in crash o salta la corrente: l'intestazione del WAV viene aggiornata ogni secondo, quindi si perde al massimo l'ultimo secondo.
+- Un file WAV non può superare circa 4 GB (poco più di 4 ore a 48 kHz in stereo a 24 bit); oltre, la registrazione continua in un file nuovo.
+- Quando restano meno di 10 minuti di spazio, RoomEQ avvisa («Disco quasi pieno»). Con meno di 50 MB liberi, o per un errore di scrittura, **si ferma da sola**; i file salvati sono completi.
+- Se il disco è troppo lento, una breve parte di audio può andare persa: viene sostituita da silenzio, così il file mantiene la sua durata e resta allineato agli altri, e RoomEQ mostra un avviso.
+- Se dopo un cambio non riesce a seguire la nuova uscita, la registrazione si ferma con un messaggio; i file salvati sono completi.
+- Si registrano solo le app che spunti; il suono delle altre app no.
+- Il permesso **Registrazione schermo e audio di sistema** vale anche per la registrazione.
 
 ## Importare i filtri da REW
 
@@ -272,7 +330,7 @@ Per disinstallare:
 
 ## Privacy
 
-L'audio non lascia mai il tuo Mac. RoomEQ non fa nessuna connessione di rete: il codice sorgente non contiene codice di rete, e non registra l'audio su disco. Le impostazioni (filtri, preset, regole, app escluse) sono salvate in locale nelle preferenze dell'app (`defaults read com.federicociapi.RoomEQ`). Se per una tua copia del progetto cambi il bundle identifier in `Resources/Info.plist`, usa il tuo identificativo in questo e negli altri comandi `defaults`. I messaggi diagnostici vanno solo nel registro di sistema di macOS sul tuo Mac (li puoi leggere in Console) e comprendono i nomi delle tue schede audio e gli identificativi (bundle identifier) delle app in esecuzione.
+L'audio non lascia mai il tuo Mac. RoomEQ non fa nessuna connessione di rete: il codice sorgente non contiene codice di rete. L'audio viene scritto su disco solo quando registri: RoomEQ salva allora il suono delle app che hai scelto, in file sul tuo Mac (in `~/Music/RoomEQ`) e da nessun'altra parte. Senza una registrazione, nessun audio viene scritto su disco. Le impostazioni (filtri, preset, regole, app escluse) sono salvate in locale nelle preferenze dell'app (`defaults read com.federicociapi.RoomEQ`). Se per una tua copia del progetto cambi il bundle identifier in `Resources/Info.plist`, usa il tuo identificativo in questo e negli altri comandi `defaults`. I messaggi diagnostici vanno solo nel registro di sistema di macOS sul tuo Mac (li puoi leggere in Console) e comprendono i nomi delle tue schede audio e gli identificativi (bundle identifier) delle app in esecuzione.
 
 ## Documentazione e licenza
 

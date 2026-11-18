@@ -34,7 +34,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>RoomEQ cattura l'audio del sistema per applicare la correzione acustica della stanza.</string>
+	<string>RoomEQ cattura l'audio del sistema per applicare la correzione acustica della stanza e, quando lo chiedi, per registrare l'audio delle app che scegli.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>RoomEQ non registra il microfono: usa la scheda audio solo come uscita. macOS potrebbe chiedere questo permesso perché la scheda audio ha anche degli ingressi.</string>
 </dict>

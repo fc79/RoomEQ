@@ -18,13 +18,14 @@ RoomEQ is for people who measure their listening room with [REW](https://www.roo
 - **REW import.** Load the text file REW exports (Export filter settings as text, Generic equalizer).
 - **Low latency.** The latency shown in the status line is the total output latency, estimated by the app. It includes the latency of the output device itself, which is there even without RoomEQ. On the author's interface it is about 6 ms with a 64-frame buffer. Your result depends on your device and buffer size; the panel shows the estimate for yours.
 - **Safe failure.** If RoomEQ quits or crashes, the apps' audio returns to normal on its own: the apps are muted only while RoomEQ is running (checked by force-quitting RoomEQ with `kill -9` during playback).
+- **Recording per app.** Record the sound of the apps you choose, one 24-bit WAV file per app, before the correction. See [Recording app audio](#recording-app-audio).
 - **English and Italian.** The interface follows the macOS language.
 
 ## Requirements
 
 - macOS 15 (Sequoia) or later to run the app.
 - To build: Xcode 26 or later (Swift 6.2 or later toolchain). The code uses APIs from the macOS 26 SDK (`CATapDescription.bundleIDs` and `isProcessRestoreEnabled`), behind a runtime availability check, so the app still runs on macOS 15 but needs the macOS 26 SDK to compile. The project is built with plain Swift Package Manager; there is no Xcode project.
-- The **Screen & System Audio Recording** permission. macOS asks for it the first time RoomEQ starts the correction (System Settings › Privacy & Security › Screen & System Audio Recording). macOS may also show a microphone prompt because audio interfaces have inputs; RoomEQ does not record the microphone and uses the interface only as an output.
+- The **Screen & System Audio Recording** permission. macOS asks for it the first time RoomEQ starts the correction or a recording (System Settings › Privacy & Security › Screen & System Audio Recording). macOS may also show a microphone prompt because audio interfaces have inputs; RoomEQ never records the microphone and uses the interface only as an output.
 
 ## Build and install
 
@@ -69,7 +70,15 @@ The panel opens under the menu bar icon. At the top is the **Correction** switch
 
 See the [user guide](docs/USER_GUIDE.md) for every control, and for how to check the filters with a measurement.
 
-## Known limitations and non-goals
+## Recording app audio
+
+The **Record** row, under the level meters, records the audio of the apps you choose. Each app gets its own stereo 24-bit WAV file, at the output device's own sample rate with no conversion, containing the app's original sound **before** RoomEQ's correction. It works with the correction on, off or paused.
+
+1. Open the apps menu next to **Record** and tick the apps to record (the ones playing are listed first; your choice is remembered). **Skip silence** is on by default: after 2 s below −60 dBFS the file closes, and when the app plays again a new file starts.
+2. Click **Record**. The row shows the duration and a level for each app, and the menu bar icon gets a red dot. Click **Stop** to finish; **Show in Finder** opens the files.
+
+Files go to `~/Music/RoomEQ`, named like `Spotify 2026-11-18 00.35.12.wav`. See the [user guide](docs/USER_GUIDE.md#recording-app-audio) for the details and limits.
+
 
 - Stereo only. RoomEQ corrects two channels and writes them to one pair of output channels; it does not handle surround or multichannel output.
 - Only parametric peaking (PK) filters, up to 16. Other REW filter types (shelves, low/high pass) are skipped on import with a warning.
@@ -81,7 +90,7 @@ See the [user guide](docs/USER_GUIDE.md) for every control, and for how to check
 
 ## Privacy
 
-Audio never leaves your Mac. RoomEQ makes no network connections: the source code contains no networking code, and it does not record audio to disk. Settings (filters, presets, rules, excluded apps) are stored locally in the app's preferences (`defaults read com.federicociapi.RoomEQ`). If you change the bundle identifier in `Resources/Info.plist` for your own fork, use your identifier in this and the other `defaults` commands. Diagnostic messages go to the macOS system log on your machine only (you can read them in Console); they include the names of your audio devices and the bundle identifiers of the apps that are running.
+Audio never leaves your Mac. RoomEQ makes no network connections: the source code contains no networking code. Audio is written to disk only when you record: RoomEQ then saves the sound of the apps you chose, in files on your Mac (in `~/Music/RoomEQ`), and nowhere else. Without a recording, no audio is written to disk. Settings (filters, presets, rules, excluded apps) are stored locally in the app's preferences (`defaults read com.federicociapi.RoomEQ`). If you change the bundle identifier in `Resources/Info.plist` for your own fork, use your identifier in this and the other `defaults` commands. Diagnostic messages go to the macOS system log on your machine only (you can read them in Console); they include the names of your audio devices and the bundle identifiers of the apps that are running.
 
 ## Documentation
 

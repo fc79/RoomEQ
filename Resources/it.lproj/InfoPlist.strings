@@ -3,5 +3,5 @@
    the English ones (development region "en") for an Italian user.
    tools/check-localizations.swift checks at every build that they are
    exactly the texts of Info.plist: change Info.plist first, then copy here. */
-"NSAudioCaptureUsageDescription" = "RoomEQ cattura l'audio del sistema per applicare la correzione acustica della stanza.";
+"NSAudioCaptureUsageDescription" = "RoomEQ cattura l'audio del sistema per applicare la correzione acustica della stanza e, quando lo chiedi, per registrare l'audio delle app che scegli.";
 "NSMicrophoneUsageDescription" = "RoomEQ non registra il microfono: usa la scheda audio solo come uscita. macOS potrebbe chiedere questo permesso perché la scheda audio ha anche degli ingressi.";

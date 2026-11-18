@@ -9,6 +9,7 @@ Interface labels below match the English interface. If your Mac is set to Italia
 - [How it works in one paragraph](#how-it-works-in-one-paragraph)
 - [The menu bar icon](#the-menu-bar-icon)
 - [The panel](#the-panel)
+- [Recording app audio](#recording-app-audio)
 - [Importing filters from REW](#importing-filters-from-rew)
 - [Checking that the filters are right](#checking-that-the-filters-are-right)
 - [Checking an EQ in your DAW](#checking-an-eq-in-your-daw)
@@ -18,6 +19,8 @@ Interface labels below match the English interface. If your Mac is set to Italia
 ## How it works in one paragraph
 
 RoomEQ asks Core Audio for a "process tap" on the current macOS output device. The tap captures the audio of all apps except the ones you excluded (and RoomEQ itself), and silences them on the device while RoomEQ is reading. RoomEQ runs the captured audio through the EQ and plays the result on the same device. There is no virtual audio device and no sample-rate conversion. If RoomEQ quits or crashes, the tap disappears and the apps play directly to the device again, without RoomEQ having to do anything.
+
+Separately, and only when you ask for it, RoomEQ can record the audio of chosen apps to files (see [Recording app audio](#recording-app-audio)). Audio is never written to disk otherwise.
 
 ## The menu bar icon
 
@@ -94,6 +97,60 @@ Apps listed here are not captured: their audio does not go through RoomEQ. The l
 **Diagnostics**
 
 Technical numbers: estimated latency and its breakdown, the tap format, ring-buffer delay, underruns, clip counters, overloads and input/output peaks. It is only useful for understanding a problem.
+
+## Recording app audio
+
+RoomEQ can record the sound of the apps you choose. This is separate from the correction: it works with the correction on, off or paused, and recording never changes what you hear.
+
+### Choosing what to record
+
+The **Record** row is always visible, under the level meters. Next to the **Record** button is a button that opens the **Apps to record** list ("one file per app"), with a checkbox for each app:
+
+- The apps that are open are listed, with the ones that are **playing** at the top. Tick the ones to record. Your choice is remembered between launches.
+- If no app is open the list says "No apps open." If you click **Record** with nothing ticked, RoomEQ says "Choose at least one app to record."
+- **Skip silence** is a checkbox at the bottom of the same list, on by default (see below).
+
+The closed button summarizes the choice, for example "Brave, Spotify · skip silence"; with many apps, "Brave, Spotify and 2 more"; with none, "No apps".
+
+### What you get
+
+- **One file per app**: a stereo WAV file with 24-bit samples, at the sample rate of the output device. There is no sample-rate conversion and no mixing between apps.
+- **The app's original sound, before the correction.** Not the corrected sound, and not what the other apps play.
+- **The two channels are the pair on which the Mac's audio plays**: the stereo pair preferred by the output device. On an interface with many outputs, that is the pair macOS uses for the system sound.
+- Browsers and similar apps use several helper processes. RoomEQ finds them, including helpers that start while you are recording.
+
+### Starting, watching and stopping
+
+1. Tick the apps and click **Record**.
+2. While recording, the row shows a red dot with the elapsed time, a **Stop** button and **Show in Finder**, and below it a level for each app. The menu bar icon gets a **red dot**. If an app is in "paused · silence" it is waiting for sound (see **Skip silence**).
+3. Click **Stop**. RoomEQ says "Saved 1 file (*time*)" or "Saved *n* files (*time*)", and **Show in Finder** opens the folder with the files. If the apps never played, it says "No files saved: the apps didn't play."
+
+If you quit RoomEQ while recording, or it is asked to stop (for example when the Mac shuts down), the files are closed properly first.
+
+### Skip silence
+
+On by default. When an app has stayed below −60 dBFS for 2 seconds, its file is closed and the silence is not written. Half a second of margin is kept before the sound and after it, so attacks and decays are not cut. When the app plays again, a **new file** starts. This keeps long sessions free of empty files and gaps. If you turn the option off, one file per app is written for the whole recording, silence included.
+
+### Where the files go
+
+In your **Music** folder, in **RoomEQ** (`~/Music/RoomEQ`), named *app name, date and time the file started*, for example `Spotify 2026-11-18 00.35.12.wav`. If a file with that name already exists, " 2" (then " 3"…) is added: RoomEQ never overwrites a file. Audio is written only to these files, on your Mac. Nothing is sent anywhere.
+
+### When the output changes
+
+Recording does not stop if you switch the macOS output.
+
+- **Same sample rate**: the files continue (at most a brief moment of sound may be missing at the switch).
+- **Different sample rate**: the current files are closed and **new files** start at the new rate. RoomEQ never converts the audio.
+
+### Limits and safety
+
+- The files are valid even if the Mac crashes or loses power: the WAV header is updated every second, so you lose at most the last second.
+- A WAV file cannot be larger than about 4 GB (a little over 4 hours at 48 kHz in 24-bit stereo); beyond that, recording continues in a new file.
+- When fewer than 10 minutes of space are left, RoomEQ warns you ("Disk almost full"). With less than 50 MB free, or on a write error, **it stops by itself**; the files saved are complete.
+- If the disk is too slow to keep up, a short piece of audio may be lost: it is replaced with silence, so the file keeps its length and stays aligned with the others, and RoomEQ shows a warning.
+- If the output cannot be followed after a change, recording stops with a message; saved files are complete.
+- Only the apps you tick are recorded; the sound of other apps is not.
+- The **Screen & System Audio Recording** permission covers recording too.
 
 ## Importing filters from REW
 

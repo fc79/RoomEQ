@@ -47,6 +47,10 @@ How it works, briefly:
   directly again instead of staying muted.
 - The design also aims at a safe result when the process disappears without
   cleaning up (crash, `kill -9`): see §3.10.
+- Separately, and only when the user starts it, RoomEQ can **record chosen
+  apps to WAV files** (§3.11). This is the only time audio is written to
+  disk, and it goes only to local files the user chose to make. RoomEQ makes
+  no network connections.
 
 Requirements (`Package.swift`): the app runs on macOS 15. That minimum comes
 from the standard library's `Synchronization.Atomic`. Process taps need macOS
@@ -60,9 +64,9 @@ built app runs on macOS 15.
 | Path | What it holds |
 |---|---|
 | `Package.swift` | SwiftPM package, 3 targets (below). |
-| `Sources/RoomEQCore/` | Library with pure, hardware-independent logic. Contains the real-time code (render kernel, EQ processor, ring buffer) and the engine-side decisions (warm-up, health, drift), plus settings, presets, REW import, latency math, text formatting. Unit-tested. Swift 6 language mode. |
-| `Sources/RoomEQ/App/` | Executable target, UI layer: `RoomEQApp` (entry point), `AppDelegate` (lifecycle, signals), `StatusItemController` (menu bar icon and popover), and the SwiftUI views of the panel. |
-| `Sources/RoomEQ/Engine/` | `AudioEngineController` (main-actor, single source of truth for the UI), `AudioEngine` (serial engine queue, session lifecycle), `EngineSession` (one running audio path), `ControllerTypes` (UI value types). |
+| `Sources/RoomEQCore/` | Library with pure, hardware-independent logic. Contains the real-time code (render kernel, EQ processor, ring buffer) and the engine-side decisions (warm-up, health, drift), plus settings, presets, REW import, latency math, text formatting, and the recording building blocks (`RecordingRing`, `SilenceGate`, `WAVWriter`, `RecordingNames`). Unit-tested. Swift 6 language mode. |
+| `Sources/RoomEQ/App/` | Executable target, UI layer: `RoomEQApp` (entry point), `AppDelegate` (lifecycle, signals), `StatusItemController` (menu bar icon and popover), and the SwiftUI views of the panel (including `RecordingRowView`, the Record row). |
+| `Sources/RoomEQ/Engine/` | `RecordingController` and `RecordingSession` (per-app recording, §3.11), `AudioEngineController` (main-actor, single source of truth for the UI), `AudioEngine` (serial engine queue, session lifecycle), `EngineSession` (one running audio path), `ControllerTypes` (UI value types). |
 | `Sources/RoomEQ/CoreAudio/` | Thin wrappers around the HAL: `AudioObject` (checked property access, `Log`, errors), `AudioDevices`, `ProcessTap`, `AggregateDevice` (also `DeviceStreams`, `DeviceIO`), `PropertyListener` / `RealtimeListener`. |
 | `Tests/RoomEQCoreTests/` | Swift Testing suites for `RoomEQCore`. |
 | `Resources/` | `Info.plist`, app icon, `en.lproj` / `it.lproj` string tables. |
@@ -363,6 +367,89 @@ SIGINT/SIGTERM (`DispatchSourceSignal` in `AppDelegate`). These call
 `.mutedWhenTapped` unmutes the apps. This was checked on hardware on
 1 November 2026: `kill -9` of RoomEQ during playback, and the apps kept
 playing directly to the device.
+
+### 3.11 Recording (`RecordingSession.swift`, `RecordingController.swift`)
+
+Per-app recording is independent of the correction: it has its own taps and
+its own aggregate, so it works with the correction on, off or paused and adds
+nothing to the correction's audio path. Pure parts live in `RoomEQCore`
+(`RecordingRing`, `SilenceGate`, `WAVWriter`, `RecordingNames`) and are
+unit-tested; the Core Audio part is in `RoomEQ/Engine`.
+
+- **Taps.** For each chosen app, one private tap with `muteBehavior =
+  .unmuted` (recording never changes what the user hears), `isMixdown =
+  false`, `isMono = false`, built with `CATapDescription(processes:deviceUID:stream:)`
+  on the **same output stream** the correction uses (found with
+  `TapSourceSelection.locate` from the device's preferred stereo pair). The
+  processes are those whose bundle ID equals the app's or starts with
+  `"<bundle ID>."`.
+- **One aggregate.** All the taps are sub-taps of **one** private aggregate
+  (no sub-devices, drift compensation off), so every file shares one clock
+  and the files stay aligned. The aggregate has one input stream per tap.
+  Before starting, the code checks that each tap and stream is Float32,
+  interleaved, with the device's channel count and sample rate; otherwise it
+  cancels the recording instead of converting.
+- **Why the device stream and not a mixdown (hardware test, 18 November
+  2026).** A stereo-mixdown tap was found to convert the audio to 48 kHz and
+  to attenuate it. A tap on the device's stream delivers the device's native
+  rate and the original level. That is why recording uses the stream tap and
+  the format check above.
+- **Helper processes.** On macOS 26 the description also carries `bundleIDs`
+  and `isProcessRestoreEnabled`, but the same test showed that `bundleIDs`
+  does not cover helper processes whose bundle ID differs from the app's
+  (browser helpers, for example `com.brave.Browser.helper`). So the process
+  list is read with the prefix rule above. A listener on
+  `kAudioHardwarePropertyProcessObjectList` calls `refreshProcesses()`,
+  which rewrites `kAudioTapPropertyDescription` of a tap whose process set
+  changed (same UUID), so helpers that start during a recording are added.
+- **Real-time side.** One IOProc on the aggregate (created with a block,
+  unlike the correction's C-function IOProcs) only copies the chosen L/R
+  pair of each tap's buffer into that app's `RecordingRing`: a
+  single-producer/single-consumer ring of stereo frames with atomic
+  counters, no locks and no allocation. If the ring is full, the producer
+  drops the new frames and counts them.
+- **Writer side.** A serial queue (`com.federicociapi.RoomEQ.recording`)
+  runs a 50 ms timer. Each tick drains every ring through that app's
+  `SilenceGate` into the WAV files. For every dropped frame the consumer
+  writes one frame of silence, so each file keeps its length and the files
+  stay aligned; the lost audio is reported as a notice. About once a second
+  (every 20th tick) it updates the WAV headers, looks for write errors and
+  checks the free disk space.
+- **Silence gate** (`SilenceGate`). A pure state machine, enabled by "Skip
+  silence". Threshold −60 dBFS, hold 2 s, pre-roll 0.5 s, tail 0.5 s. While
+  closed it keeps the last 0.5 s; a sample above the threshold opens a file
+  starting with that pre-roll. After the last sound it keeps the tail; if
+  the silence lasts the hold time the file closes and the rest of the silence
+  is discarded; if sound returns first, the held-back silence is written and
+  the file continues. With the gate off a file opens with the first frames
+  and everything is written.
+- **WAV files** (`WAVWriter`). 24-bit stereo PCM. The file is created with
+  `O_EXCL` (never overwrites) and a header with zero sizes, which is
+  rewritten by `updateHeader()` every second and on close, so a file cut
+  short by a crash or power loss is valid up to the last update. A RIFF file
+  cannot exceed 4 GiB: when `canAppend(frames:)` says no, the writer
+  continues in a new file. Names come from `RecordingNames`: `<app>
+  yyyy-MM-dd HH.mm.ss.wav` (time of the file's start; `/` and `:` become
+  `-`), with " 2", " 3"… added if the name exists, in `~/Music/RoomEQ`.
+- **Output change.** A listener on `kAudioHardwarePropertyDefaultOutputDevice`
+  calls `switchDevice(to:)`. If the new device has another UID, the old taps
+  and aggregate are destroyed, the rings are drained, and the new ones are
+  built. With the same sample rate the files continue (a moment of sound may
+  be missing); with another rate each app's current file is closed and a new
+  one starts at the new rate (`restart(sampleRate:)`). If the new output
+  cannot be followed, the session stops with a message and closes the files.
+- **Stopping.** Only the user stops it, except for a write error, free space
+  below 50 MB, or a failed output change (all closing the files properly).
+  The remaining time is estimated from the free space and the data rate, and
+  a warning is shown under 10 minutes. `RecordingController.stop()`, Quit
+  (`applicationWillTerminate`) and SIGINT/SIGTERM close the files; after a
+  `kill -9` the files are valid up to the last header update.
+- **Threads.** IOProc (real time) → rings → recording queue → files. Property
+  listeners run on their own serial queue (`...recording.listeners`) and only
+  forward to the recording queue. `RecordingController` (main actor) owns the
+  UI state, the app picker (open apps, those playing first, the choice and
+  "Skip silence" saved in `UserDefaults` under `recording.apps` and
+  `recording.skipSilence`) and the menu bar red dot.
 
 ## 4. DSP
 
@@ -898,7 +985,10 @@ Code: `Sources/RoomEQCore/AppSettings.swift`, `SettingsBackups.swift`,
   records the app by path and signature, and the panel explains this
   (`launchAtLoginHint`).
 - **Permissions** (`Resources/Info.plist`):
-  - `NSAudioCaptureUsageDescription` covers system audio capture (the tap).
+  - `NSAudioCaptureUsageDescription` covers system audio capture (the tap),
+    both for the correction and for recording apps on request. The text is
+    kept identical in `Info.plist` and the two `InfoPlist.strings` files (the
+    build checks it).
   - `NSMicrophoneUsageDescription` explains that RoomEQ does not record the
     microphone; macOS may ask because the output interface also has inputs.
     The code disables those inputs for its IOProc (§3.4).
