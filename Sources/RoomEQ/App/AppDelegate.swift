@@ -62,9 +62,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The pid of another copy (same bundle ID, any location: installed or a
     /// fresh build) that started before this one and is still running, or
-    /// nil. A copy that is quitting gets up to 3 s to finish (quitting waits
-    /// for the recording and the engine); of two copies started together
-    /// only the later one gives way. Not checked without a bundle ID (bare
+    /// nil. A copy that is quitting gets up to 5 s to finish (quitting waits
+    /// up to 2 s for the recording and 2 s for the engine); of two copies
+    /// started together only the later one gives way. `launchDate` exists
+    /// only for apps launched by LaunchServices (Apple docs): a copy without
+    /// one counts as started first. Not checked without a bundle ID (bare
     /// executable).
     private static func olderCopyStillRunning() -> pid_t? {
         guard let bundleID = Bundle.main.bundleIdentifier else { return nil }
@@ -79,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         .map(\.processIdentifier)
         guard !older.isEmpty else { return nil }
         // kill(pid, 0) only asks whether the process still exists.
-        let deadline = Date().addingTimeInterval(3)
+        let deadline = Date().addingTimeInterval(5)
         while true {
             let alive = older.filter { kill($0, 0) == 0 }
             if alive.isEmpty { return nil }

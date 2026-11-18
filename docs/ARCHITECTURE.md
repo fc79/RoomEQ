@@ -354,7 +354,7 @@ The callback only increments an atomic counter.
 Only one copy of RoomEQ runs. At launch, before the controller loads the
 settings, `AppDelegate` looks for another running app with the same bundle
 ID (installed or a fresh build) that started earlier. A copy that is
-quitting gets up to 3 s to finish; of two copies started together only the
+quitting gets up to 5 s to finish; of two copies started together only the
 later one gives way. If one is still running, this copy shows «RoomEQ è
 già aperto» and quits without touching audio or settings: two copies would
 rewrite the same settings document and play the corrected audio twice.
