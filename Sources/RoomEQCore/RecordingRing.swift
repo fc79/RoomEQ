@@ -5,8 +5,8 @@
 // is the recording writer (a normal thread), which drains the ring into the
 // silence gate and the WAV file. When the writer falls behind and the ring is
 // full, the producer drops the new frames and counts them; the consumer then
-// writes the same number of silent frames, so every file keeps its length and
-// files of different apps stay aligned.
+// writes the same number of silent frames where they were lost (`drain`), so
+// every file keeps its length and files of different apps stay aligned.
 
 import Synchronization
 
@@ -68,6 +68,12 @@ public final class RecordingRing: @unchecked Sendable {
         return count
     }
 
+    /// Counts `frames` that could not be stored (e.g. a buffer in an
+    /// unexpected layout), so the writer replaces them with silence.
+    public func addDropped(_ frames: Int) {
+        if frames > 0 { dropped.add(frames, ordering: .relaxed) }
+    }
+
     /// Highest absolute sample since the last call (and resets it), for the
     /// level meters.
     public func takePeak() -> Float { Float(bitPattern: peak.exchange(0, ordering: .relaxed)) }
@@ -95,4 +101,39 @@ public final class RecordingRing: @unchecked Sendable {
 
     /// Frames dropped since the last call (and resets the count).
     public func takeDroppedFrames() -> Int { dropped.exchange(0, ordering: .relaxed) }
+
+    /// A piece of a drain, in time order.
+    public enum DrainChunk {
+        /// Interleaved L/R samples (valid only during the `emit` call).
+        case audio(UnsafeBufferPointer<Float>)
+        /// Frames that were dropped: write this much silence.
+        case silence(frames: Int)
+    }
+
+    /// Moves everything in the ring to `emit`, in time order, through
+    /// `scratch` (`scratchFrames` stereo frames). Frames dropped since the
+    /// last drain are reported as silence where they were lost: frames are
+    /// dropped only while the ring is full, so they come after everything
+    /// stored when the drain starts, and before what the producer stores
+    /// while this drain frees room. Returns the frames dropped.
+    @discardableResult
+    public func drain(
+        scratch: UnsafeMutablePointer<Float>, scratchFrames: Int, emit: (DrainChunk) -> Void
+    ) -> Int {
+        let lost = takeDroppedFrames()
+        var beforeGap = lost > 0 ? available : 0
+        while beforeGap > 0 {
+            let count = read(into: scratch, maxFrames: min(beforeGap, scratchFrames))
+            if count == 0 { break }
+            emit(.audio(UnsafeBufferPointer(start: scratch, count: count * 2)))
+            beforeGap -= count
+        }
+        if lost > 0 { emit(.silence(frames: lost)) }
+        while true {
+            let count = read(into: scratch, maxFrames: scratchFrames)
+            if count == 0 { break }
+            emit(.audio(UnsafeBufferPointer(start: scratch, count: count * 2)))
+        }
+        return lost
+    }
 }

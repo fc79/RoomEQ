@@ -413,21 +413,23 @@ private final class Track {
 
     /// Moves everything in the ring to the files. Returns dropped frames.
     func drain() -> Int {
-        while true {
-            let count = ring.read(into: scratch, maxFrames: scratchFrames)
-            if count == 0 { break }
-            gate.process(UnsafeBufferPointer(start: scratch, count: count * 2), into: &sink)
-        }
-        let dropped = ring.takeDroppedFrames()
-        if dropped > 0 {
-            // Silence of the same length keeps the file's duration (and its
-            // alignment with the other apps' files).
-            var left = dropped
-            while left > 0 {
-                let count = min(left, scratchFrames)
-                gate.process(UnsafeBufferPointer(start: zeros, count: count * 2), into: &sink)
-                left -= count
+        let dropped = ring.drain(scratch: scratch, scratchFrames: scratchFrames) { chunk in
+            switch chunk {
+            case .audio(let samples):
+                gate.process(samples, into: &sink)
+            case .silence(let frames):
+                // Silence of the same length, where the audio was lost, keeps
+                // the file's duration (and its alignment with the other apps'
+                // files).
+                var left = frames
+                while left > 0 {
+                    let count = min(left, scratchFrames)
+                    gate.process(UnsafeBufferPointer(start: zeros, count: count * 2), into: &sink)
+                    left -= count
+                }
             }
+        }
+        if dropped > 0 {
             Log.engine.error("Recording \(self.target.bundleID, privacy: .public): \(dropped) frames dropped")
         }
         return dropped
@@ -532,6 +534,8 @@ private final class Capture {
         var aggregateID = AudioObjectID(kAudioObjectUnknown)
         var procID: AudioDeviceIOProcID?
         var started = false
+        /// The ring this unit's IOProc writes to (held unretained by it).
+        var ring: RecordingRing?
     }
 
     let deviceID: AudioObjectID
@@ -684,16 +688,22 @@ private final class Capture {
             // Unretained: the ring outlives the IOProc (the session keeps the
             // tracks until the capture is destroyed), and no ARC traffic
             // happens on the real-time thread.
+            units[index].ring = rings[index]
             let ring = Unmanaged.passUnretained(rings[index])
             try AudioObject.check(
                 AudioDeviceCreateIOProcIDWithBlock(&units[index].procID, units[index].aggregateID, nil) { _, input, _, _, _ in
                     let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
-                    guard list.count > 0, let data = list[0].mData, Int(list[0].mNumberChannels) == channels else { return }
-                    let frames = Int(list[0].mDataByteSize) / (MemoryLayout<Float>.size * channels)
-                    _ = ring._withUnsafeGuaranteedRef {
-                        $0.write(
-                            interleaved: data.assumingMemoryBound(to: Float.self), frames: frames, channelCount: channels,
-                            left: left, right: right)
+                    guard list.count > 0, let data = list[0].mData else { return }
+                    let bufferChannels = Int(list[0].mNumberChannels)
+                    let frames = Int(list[0].mDataByteSize) / (MemoryLayout<Float>.size * max(1, bufferChannels))
+                    ring._withUnsafeGuaranteedRef { ring in
+                        if bufferChannels == channels {
+                            ring.write(
+                                interleaved: data.assumingMemoryBound(to: Float.self), frames: frames,
+                                channelCount: channels, left: left, right: right)
+                        } else {
+                            ring.addDropped(frames)  // unexpected layout: silence instead
+                        }
                     }
                 }, "Creazione della callback di registrazione")
             guard let procID = units[index].procID else { throw EngineError("Creazione delle callback: ID mancante") }
@@ -703,10 +713,14 @@ private final class Capture {
     }
 
     /// Adds newly started processes of each app (e.g. a new browser helper).
-    /// A failed read of the process list changes nothing.
+    /// A failed read of the process list changes nothing, and a process the
+    /// tap already has stays while it is in the list, even if its bundle ID
+    /// can't be read this time.
     func refreshProcesses() {
         for index in units.indices {
-            guard let processes = AudioProcesses.processObjects(ofApp: units[index].target.bundleID),
+            guard
+                let processes = AudioProcesses.processObjects(
+                    ofApp: units[index].target.bundleID, keeping: units[index].processes),
                 Set(processes) != Set(units[index].processes)
             else { continue }
             var description = Self.description(
@@ -726,14 +740,33 @@ private final class Capture {
         }
     }
 
+    /// Stops and destroys every IOProc, aggregate and tap. If an IOProc may
+    /// still run (its stop or destroy failed), its ring is deliberately
+    /// leaked: the IOProc holds it unretained, and freeing it would let a
+    /// real-time thread write to freed memory (as the correction engine
+    /// does with its shared state, see EngineSession.teardown).
     func destroy() {
         for unit in units {
             if let procID = unit.procID {
-                if unit.started { AudioDeviceStop(unit.aggregateID, procID) }
-                AudioDeviceDestroyIOProcID(unit.aggregateID, procID)
+                var status = noErr
+                if unit.started { status = AudioDeviceStop(unit.aggregateID, procID) }
+                let destroyStatus = AudioDeviceDestroyIOProcID(unit.aggregateID, procID)
+                if status != noErr || destroyStatus != noErr {
+                    Log.engine.fault(
+                        "Recording IOProc of \(unit.target.bundleID, privacy: .public) not cleanly removed (stop \(describeOSStatus(status), privacy: .public), destroy \(describeOSStatus(destroyStatus), privacy: .public)): keeping its ring")
+                    if let ring = unit.ring { _ = Unmanaged.passRetained(ring) }  // deliberate leak
+                }
             }
-            if unit.aggregateID != kAudioObjectUnknown { AudioHardwareDestroyAggregateDevice(unit.aggregateID) }
-            AudioHardwareDestroyProcessTap(unit.tapID)
+            if unit.aggregateID != kAudioObjectUnknown {
+                let status = AudioHardwareDestroyAggregateDevice(unit.aggregateID)
+                if status != noErr {
+                    Log.engine.error("Recording aggregate \(unit.aggregateID) not destroyed: \(describeOSStatus(status), privacy: .public)")
+                }
+            }
+            let status = AudioHardwareDestroyProcessTap(unit.tapID)
+            if status != noErr {
+                Log.engine.error("Recording tap \(unit.tapID) not destroyed: \(describeOSStatus(status), privacy: .public)")
+            }
         }
         units = []
     }

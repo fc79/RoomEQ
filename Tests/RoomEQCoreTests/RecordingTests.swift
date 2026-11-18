@@ -46,6 +46,65 @@ struct RecordingTests {
         #expect(ring.takeDroppedFrames() == 0)
     }
 
+    /// Frames lost while the ring was full become silence right where they
+    /// were lost: after the frames stored before, and before what the
+    /// producer stores while the drain frees room.
+    @Test func drainPutsTheSilenceWhereTheFramesWereLost() {
+        let ring = RecordingRing(minimumFrames: 4)
+        var source: [Float] = []
+        for frame in 1...6 { source += [Float(frame), Float(frame)] }
+        // 1…4 stored, 5 and 6 dropped.
+        #expect(source.withUnsafeBufferPointer { ring.write(interleaved: $0.baseAddress!, frames: 6, channelCount: 2, left: 0, right: 1) } == 4)
+        let later: [Float] = [7, 7, 8, 8]
+        let scratch = UnsafeMutablePointer<Float>.allocate(capacity: 4)
+        defer { scratch.deallocate() }
+        var timeline: [Float] = []
+        var producedLater = false
+        let dropped = ring.drain(scratch: scratch, scratchFrames: 2) { chunk in
+            switch chunk {
+            case .audio(let samples):
+                timeline += samples.enumerated().filter { $0.offset % 2 == 0 }.map(\.element)
+            case .silence(let frames):
+                timeline += [Float](repeating: 0, count: frames)
+            }
+            if !producedLater {
+                // The producer runs while the drain reads (room freed).
+                producedLater = true
+                #expect(later.withUnsafeBufferPointer { ring.write(interleaved: $0.baseAddress!, frames: 2, channelCount: 2, left: 0, right: 1) } == 2)
+            }
+        }
+        #expect(dropped == 2)
+        #expect(timeline == [1, 2, 3, 4, 0, 0, 7, 8])
+        #expect(ring.available == 0)
+        #expect(ring.takeDroppedFrames() == 0)
+    }
+
+    @Test func drainWithoutLossesIsPlainAudio() {
+        let ring = RecordingRing(minimumFrames: 8)
+        let source = block(5, 0.25)
+        source.withUnsafeBufferPointer { _ = ring.write(interleaved: $0.baseAddress!, frames: 5, channelCount: 2, left: 0, right: 1) }
+        let scratch = UnsafeMutablePointer<Float>.allocate(capacity: 4)
+        defer { scratch.deallocate() }
+        var frames = 0
+        var silences = 0
+        let dropped = ring.drain(scratch: scratch, scratchFrames: 2) { chunk in
+            switch chunk {
+            case .audio(let samples): frames += samples.count / 2
+            case .silence: silences += 1
+            }
+        }
+        #expect(dropped == 0)
+        #expect(frames == 5)
+        #expect(silences == 0)
+    }
+
+    @Test func framesInAnUnexpectedLayoutCountAsDropped() {
+        let ring = RecordingRing(minimumFrames: 4)
+        ring.addDropped(3)
+        ring.addDropped(0)
+        #expect(ring.takeDroppedFrames() == 3)
+    }
+
     @Test func ringReportsThePeakOfTheRecordedPairOnly() {
         let ring = RecordingRing(minimumFrames: 8)
         let source: [Float] = [0.9, 0.2, -0.4, 0.1, 0.3, -0.05]  // 3 channels; record 1 and 2
@@ -218,5 +277,18 @@ struct RecordingTests {
         #expect(url.lastPathComponent == String(name.dropLast(4)) + " 3.wav")
         #expect(RecordingNames.fileName(app: "..Hidden", date: date, timeZone: utc).hasPrefix("Hidden "))
         #expect(RecordingNames.fileName(app: String(repeating: "x", count: 300), date: date, timeZone: utc).count < 110)
+    }
+
+    /// 80 characters of Japanese are 240 bytes: the name is cut by bytes too,
+    /// at a whole character, so the file can always be created.
+    @Test func longNamesFitTheFileNameLimitInBytes() {
+        let utc = TimeZone(identifier: "UTC")!
+        let date = Date(timeIntervalSince1970: 1_795_000_512)
+        let name = RecordingNames.fileName(app: String(repeating: "録", count: 100), date: date, timeZone: utc)
+        #expect(name.utf8.count <= 150 + " 2026-11-18 00.00.00 99.wav".utf8.count)
+        #expect(name.hasPrefix("録録録"))
+        #expect(!name.contains("\u{FFFD}"))
+        let emoji = RecordingNames.fileName(app: String(repeating: "👩‍👩‍👧", count: 40), date: date, timeZone: utc)
+        #expect(emoji.utf8.count <= 255)
     }
 }
