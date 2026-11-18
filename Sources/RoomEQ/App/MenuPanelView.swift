@@ -24,9 +24,18 @@ import AppKit
 import RoomEQCore
 import SwiftUI
 
+/// Height of the visible frame (under the menu bar, above the Dock) of the
+/// screen the panel opens on: the status item sets it before showing.
+@MainActor
+@Observable
+final class PanelScreen {
+    var visibleHeight: CGFloat = 900
+}
+
 struct MenuPanelView: View {
     let controller: AudioEngineController
     let recorder: RecordingController
+    let screen: PanelScreen
 
     /// The sections never grow beyond this height (then they scroll); header,
     /// preset row, levels, recording row and footer stay outside it, always
@@ -77,8 +86,7 @@ struct MenuPanelView: View {
     /// and at most what is left of the screen under the menu bar after the
     /// fixed parts (so the popover never runs off the top of the screen).
     private var scrollHeight: CGFloat {
-        let screen = NSScreen.main?.visibleFrame.height ?? 900
-        let available = screen - fixedHeight - 40  // popover arrow and margins
+        let available = screen.visibleHeight - fixedHeight - 40  // popover arrow and margins
         return max(80, min(max(scrollContentHeight, 1), Self.scrollMaxHeight, available))
     }
 

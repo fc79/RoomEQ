@@ -63,6 +63,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// True while a file chooser opened from the panel is up: the popover
     /// must stay open meanwhile.
     private var isChoosingFile = false
+    /// The screen the panel opens on (the icon's), for its maximum height.
+    private let panelScreen = PanelScreen()
 
     /// Why the popover is being closed (for the log).
     private enum CloseReason: String {
@@ -78,7 +80,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
-        let panel = MenuPanelView(controller: controller, recorder: recorder)
+        let panel = MenuPanelView(controller: controller, recorder: recorder, screen: panelScreen)
             .environment(\.fileChooser, FileChooser { [weak self] panel, completion in
                 self?.runFileChooser(panel, completion: completion)
             })
@@ -138,6 +140,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         let eventType = NSApp.currentEvent.map { String(describing: $0.type) } ?? "none"
         Log.panel.debug(
             "Icon clicked: popover shown before = \(shown, privacy: .public), event = \(eventType, privacy: .public)")
+        if isChoosingFile {
+            // The file chooser is open: its result goes to the panel, which
+            // must stay open; bring the chooser forward instead.
+            activateApp()
+            return
+        }
         if shown {
             closePopover(reason: .iconClick)
         } else {
@@ -148,6 +156,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func showPopover() {
         guard let button = statusItem.button else { return }
         refreshBeforeShowing()
+        // The icon's screen, not NSScreen.main (the screen of the key window):
+        // with two displays of different heights the panel must fit its own.
+        if let screen = button.window?.screen ?? NSScreen.main {
+            panelScreen.visibleHeight = screen.visibleFrame.height
+        }
         controller.setPanelVisible(true)
         activateApp()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)

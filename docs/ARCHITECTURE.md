@@ -934,16 +934,24 @@ Code: `Sources/RoomEQCore/AppSettings.swift`, `SettingsBackups.swift`,
     left the popover open. Pop-up menus are unaffected: their clicks belong
     to the menu's own tracking loop, which monitors do not see.
   - **File choosers:** they use `begin`, not `runModal`. While one is up,
-    the monitors leave the popover open.
+    the monitors leave the popover open, and a click on the icon brings the
+    chooser forward instead of closing the panel (its result goes there).
 - **Panel** (`MenuPanelView.swift`, 400 pt wide):
   - fixed at the top: the header (Correction switch, status line, errors),
     the preset row and the level meters;
-  - in a scroll view of at most 520 pt: collapsible sections (Filters &
+  - in a scroll view of at most 520 pt, and at most what the icon's screen
+    leaves under the menu bar (`PanelScreen`, set before showing; not
+    `NSScreen.main`, which with two displays may be the other one):
+    collapsible sections (Filters &
     Preamp, Output & Interface, Output Rules, Excluded Apps, Startup,
     Diagnostics), each a separate view file;
   - fixed at the bottom: the footer (Quit).
   - Meters and diagnostics are separate views, so only they redraw at
     25 Hz.
+  - The Output menu lists the devices RoomEQ can use; when the macOS output
+    is another one (aggregate, multi-output, mono) it is shown on top, not
+    selectable, as «<name> (non gestibile da RoomEQ)», so the menu agrees
+    with the section summary.
 - **Inline confirmations** (`PanelComponents.swift`: `InlineConfirmation`,
   `ConfirmationPresenter`). Confirmations are a card drawn inside the panel
   over the dimmed content. They never use `.alert`,

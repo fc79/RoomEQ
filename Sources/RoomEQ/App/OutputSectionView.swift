@@ -52,9 +52,21 @@ struct OutputSectionView: View {
             Picker(
                 "Uscita audio",
                 selection: Binding<String?>(
-                    get: { controller.outputDeviceOptions.first { $0.isDefault }?.uid },
-                    set: { if let uid = $0 { controller.setSystemOutputDevice(uid: uid) } })
+                    get: { controller.outputDeviceOptions.first { $0.isDefault }?.uid ?? unlistedSystemOutput?.uid },
+                    set: { uid in
+                        if let uid, controller.outputDeviceOptions.contains(where: { $0.uid == uid }) {
+                            controller.setSystemOutputDevice(uid: uid)
+                        }
+                    })
             ) {
+                // The macOS output RoomEQ can't use (aggregate, multi-output,
+                // mono): shown, as in the summary, but not selectable.
+                if let unlisted = unlistedSystemOutput {
+                    Text("\(unlisted.name) (non gestibile da RoomEQ)")
+                        .tag(Optional(unlisted.uid))
+                        .selectionDisabled()
+                    Divider()
+                }
                 ForEach(controller.outputDeviceOptions) { option in
                     Text(Self.title(of: option)).tag(Optional(option.uid))
                 }
@@ -62,6 +74,14 @@ struct OutputSectionView: View {
             .labelsHidden()
             .disabled(isBusy || controller.outputDeviceOptions.isEmpty)
         }
+    }
+
+    /// The macOS output when it is not one RoomEQ lists.
+    private var unlistedSystemOutput: OutputDeviceInfo? {
+        guard let system = controller.systemOutputDevice,
+            !controller.outputDeviceOptions.contains(where: { $0.uid == system.uid })
+        else { return nil }
+        return system
     }
 
     /// "Studio Interface (USB · 48 kHz)".
