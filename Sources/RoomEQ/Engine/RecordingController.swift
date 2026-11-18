@@ -98,7 +98,7 @@ final class RecordingController {
     // MARK: Choosing apps
 
     /// Running regular apps (not RoomEQ) plus chosen apps that are not
-    /// running; playing ones first, then by name. The audio flag is read off
+    /// running; chosen ones first, then playing ones, then by name. The audio flag is read off
     /// the main thread.
     func refreshApps() {
         let own = Bundle.main.bundleIdentifier ?? ""
@@ -120,10 +120,16 @@ final class RecordingController {
                             isPlaying: playing.contains { RecordingMatch.belongs(processBundleID: $0, toApp: id) },
                             isChosen: self.chosen.contains { ExclusionRules.same($0.bundleID, id) })
                     }
-                    .sorted { ($0.isPlaying ? 0 : 1, $0.name.lowercased()) < ($1.isPlaying ? 0 : 1, $1.name.lowercased()) }
+                    .sorted(by: Self.pickerOrder)
                 }
             }
         }
+    }
+
+    /// Chosen apps first (always in view), then those playing, then by name.
+    private static func pickerOrder(_ a: AppRow, _ b: AppRow) -> Bool {
+        (a.isChosen ? 0 : 1, a.isPlaying ? 0 : 1, a.name.lowercased())
+            < (b.isChosen ? 0 : 1, b.isPlaying ? 0 : 1, b.name.lowercased())
     }
 
     func setChosen(_ chosen: Bool, app: AppRow) {
@@ -135,6 +141,7 @@ final class RecordingController {
             $0.bundleID == app.bundleID
                 ? AppRow(bundleID: $0.bundleID, name: $0.name, isPlaying: $0.isPlaying, isChosen: chosen) : $0
         }
+        .sorted(by: Self.pickerOrder)
     }
 
     // MARK: Recording

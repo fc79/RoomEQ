@@ -65,6 +65,10 @@ struct MenuPanelView: View {
         }
         .frame(width: 400)
         .disabled(confirmations.current != nil)  // only the card answers
+        // Moving the pointer onto the menu bar makes another app active
+        // (macOS 26) while the panel stays open: keep the controls in their
+        // active look (blue switch) instead of the grey inactive one.
+        .environment(\.appearsActive, true)
         .overlay { confirmationOverlay }
         .environment(confirmations)
     }
