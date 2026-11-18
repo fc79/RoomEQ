@@ -107,7 +107,7 @@ final class AudioEngine: @unchecked Sendable {
     /// Blocks until everything is torn down, at most `timeout` seconds (if
     /// the engine queue is stuck, quitting must not hang; the HAL then cleans
     /// up the private tap and aggregate when the process exits). For app
-    /// termination and SIGINT/SIGTERM only.
+    /// termination and SIGINT/SIGTERM/SIGHUP only.
     func stopSynchronously(timeout: Double = 2) {
         let done = DispatchSemaphore(value: 0)
         queue.async { [self] in

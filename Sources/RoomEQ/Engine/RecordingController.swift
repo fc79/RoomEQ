@@ -175,7 +175,7 @@ final class RecordingController {
         }
     }
 
-    /// At quit (and SIGINT/SIGTERM): closes the files, waiting at most 2 s.
+    /// At quit (and SIGINT/SIGTERM/SIGHUP): closes the files, waiting at most 2 s.
     func stopForQuit() {
         guard let session else { return }
         stopListening()

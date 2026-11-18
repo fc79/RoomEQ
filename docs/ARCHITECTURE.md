@@ -276,7 +276,8 @@ need = (outputSampleTime + frames) − writtenUpTo
 This is how far ahead of the captured data the output would read with
 delay 0. Any constant offset between the timelines is included in `need`.
 Values go into a running sum and count (drift monitor) and into a
-2048-entry history (warm-up). Host times are recorded only for a
+history sized to hold a whole warm-up window at the session's rate and
+buffer (`SplitLinkConfiguration.needHistoryCapacity`, at least 2048). Host times are recorded only for a
 diagnostic log line (`logTimeline`). They are never used for reading.
 
 **Delay changes.** A delay change is applied across two cycles. The current
@@ -358,7 +359,9 @@ rewrite the same settings document and play the corrected audio twice.
 
 `EngineSession.teardown()` order:
 
-1. Fade out: preamp target 0 (15 ms linear fade), sleep 25 ms.
+1. Fade out: preamp target 0 (15 ms linear fade), then wait for the fade
+   plus two IO buffers (25–250 ms), so even large device buffers play the
+   faded block before the stop.
 2. Real-time listeners, then block listeners.
 3. Stop the output IOProc, then the capture IOProc.
 4. Destroy both IOProc IDs.
@@ -451,10 +454,12 @@ unit-tested; the Core Audio part is in `RoomEQ/Engine`.
   `-`), with " 2", " 3"… added if the name exists, in `~/Music/RoomEQ`.
 - **Output change.** The session follows the output, not only a new default
   device. A listener on `kAudioHardwarePropertyDefaultOutputDevice` calls
-  `switchDevice(to:)`, and listeners on the device's `NominalSampleRate` and
-  output `StreamConfiguration` and on each tap's `kAudioTapPropertyFormat`
-  (queue `...recording.device`) call `follow(device:force:)` again after a
-  debounce of 0.2 s. So a change of rate or layout of the SAME device (from
+  `follow()`, and listeners on the device's `NominalSampleRate`, output
+  `StreamConfiguration` and `DeviceIsAlive` and on each tap's
+  `kAudioTapPropertyFormat` (queue `...recording.device`) call it again
+  after a debounce of 0.2 s. `follow()` rebuilds only when the device
+  object, its rate, its stream layout or a tap's format no longer match
+  (`Capture.matches`). So a change of rate or layout of the SAME device (from
   RoomEQ's Sample rate menu or from another app) is followed too. The old
   taps and aggregates are destroyed, the rings are drained, and the new ones
   are built (`attemptCapture`). With the same sample rate (compared with a

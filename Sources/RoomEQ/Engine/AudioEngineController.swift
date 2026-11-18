@@ -167,7 +167,8 @@ final class AudioEngineController {
     private(set) var latency: LatencyBreakdown?
     /// e.g. "Stima 5,7 ms (RoomEQ 5,0 + uscita 0,7) a 44,1 kHz" ("—" when unknown).
     var latencySummary: String { latency?.summary ?? "—" }
-    /// Meters, refreshed ~25 times per second while running. Peaks are the
+    /// Meters, refreshed ~25 times per second while running and the panel is
+    /// open. Peaks are the
     /// maximum since the previous refresh; counters are cumulative per run.
     /// (For the CLIP badge use `clipStatus`, which can be reset.)
     private(set) var meters = MeterSnapshot.silent
@@ -506,7 +507,7 @@ final class AudioEngineController {
         }
     }
 
-    /// Synchronous shutdown for app termination and SIGINT/SIGTERM: returns
+    /// Synchronous shutdown for app termination and SIGINT/SIGTERM/SIGHUP: returns
     /// once the IOProcs, the aggregate and the tap are destroyed. The saved
     /// switch is left as it is (restored at the next launch).
     func shutdown() {
@@ -853,6 +854,7 @@ final class AudioEngineController {
     /// replaced separately).
     private func clearActiveSession() {
         stopMeters()
+        bufferSize = settings.bufferFrames  // the choice, until a session grants another
         renderState = nil
         link = nil
         activeSessionID = nil
@@ -1213,7 +1215,7 @@ final class AudioEngineController {
         if visible {
             if renderState != nil { startMeters() }
         } else {
-            stopMeters()
+            stopMeters(clearing: false)  // the values stay until the next poll
         }
     }
 
@@ -1229,10 +1231,11 @@ final class AudioEngineController {
         meterTimer = timer
     }
 
-    private func stopMeters() {
+    /// Stops polling; `clearing` also blanks the meters (session over).
+    private func stopMeters(clearing: Bool = true) {
         meterTimer?.invalidate()
         meterTimer = nil
-        meters = .silent
+        if clearing { meters = .silent }
     }
 
     /// UI refresh only. Health, underruns and drift are watched by the

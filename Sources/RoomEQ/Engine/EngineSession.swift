@@ -759,8 +759,12 @@ final class EngineSession {
     /// (an IOProc might still use it). Safe to call more than once.
     func teardown(fadeOut: Bool = true) {
         if fadeOut, outputStarted, let renderState {
-            renderState.setGain(linear: 0)  // 15 ms ramp
-            Thread.sleep(forTimeInterval: 0.025)
+            renderState.setGain(linear: 0)  // 15 ms linear fade
+            // The IOProc picks the target up at its next cycle and the faded
+            // block still has to play: fade + two buffers (at least 25 ms;
+            // at most 250 ms, for very large device buffers).
+            let buffer = sampleRate > 0 ? Double(bufferFrames) / sampleRate : 0
+            Thread.sleep(forTimeInterval: min(0.25, max(0.025, 0.015 + 2 * buffer)))
         }
         realtimeListeners.forEach { $0.remove() }
         realtimeListeners.removeAll()
