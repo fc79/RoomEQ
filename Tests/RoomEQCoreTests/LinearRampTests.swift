@@ -86,6 +86,20 @@ struct GainRampTests {
         #expect(ramp.value == 0.25)
     }
 
+    /// A fade to silence asked in the middle of a dB ramp (stop while a
+    /// preset changes) is linear from where the gain is, and ends at 0
+    /// within `fadeFrames`.
+    @Test func silenceDuringALevelRampFadesLinearly() {
+        var ramp = GainRamp(value: 0.25, fadeFrames: 4, levelFrames: 100)
+        ramp.setTarget(1)
+        for _ in 0..<50 { _ = ramp.next() }
+        let from = ramp.value
+        ramp.setTarget(0)
+        let values = (0..<4).map { _ in ramp.next() }
+        #expect(abs(values[0] - from * 0.75) < 1e-6)
+        #expect(values[3] == 0)
+    }
+
     /// Same target again: nothing restarts.
     @Test func sameTargetIsANoOp() {
         var ramp = GainRamp(value: 0.5, fadeFrames: 4, levelFrames: 10)

@@ -1,3 +1,4 @@
+import Foundation
 import CoreAudio
 import Testing
 @testable import RoomEQCore
@@ -306,4 +307,50 @@ struct RenderKernelTests {
         handle.recordOverload()
         #expect(handle.readMeters().overloads == 2)
     }
+
+    /// Switching from a preset with a +10 dB band and a −10 dB preamp to a
+    /// flat one at 0 dB: at the band's frequency the output level stays put
+    /// all the way through (the band's boost and the preamp's cut ramp
+    /// together), even with IO buffers of several processing chunks.
+    @Test func presetSwitchDoesNotOvershootAtTheBand() {
+        let rate = 48_000.0, frames = 4096
+        let handle = makeHandle(
+            output: BufferListLayout(streams: [StreamFormatInfo(channels: 2, isInterleaved: true)]),
+            gain: 1, sampleRate: rate)
+        let band = EQBand(frequency: 1000, gain: 10, q: 1.4)
+        handle.publishWorkingState(bands: [band], preampDecibels: -10)
+        let output = TestBufferList(channelCounts: [2], frames: frames)
+        var phase = 0
+        func cycle() -> [Float] {
+            let start = phase
+            let input = makeInput(
+                frames: frames, left: { 0.5 * Float(sin(2 * Double.pi * 1000 * Double(start + $0) / rate)) },
+                right: { _ in 0 })
+            phase += frames
+            RenderKernel.render(state: handle.pointer, input: UnsafePointer(input.pointer), output: output.pointer)
+            return (0..<frames).map { output.get(buffer: 0, channel: 0, frame: $0) }
+        }
+        for _ in 0..<12 { _ = cycle() }  // ~1 s: settled at 0 dB net
+        handle.publishWorkingState(bands: [], preampDecibels: 0)
+        let samples = cycle() + cycle()
+        // Peak of every 1 kHz period (48 samples).
+        var worst: Float = 0
+        for start in stride(from: 0, to: samples.count - 48, by: 48) {
+            worst = max(worst, samples[start..<(start + 48)].map(\.magnitude).max() ?? 0)
+        }
+        let overshoot = 20 * log10(Double(worst) / 0.5)
+        #expect(overshoot < 0.5, "overshoot \(overshoot) dB")
+    }
+
+    /// The preamp's ramp between audible gains lasts exactly as long as an
+    /// EQ band's ramp, at every rate.
+    @Test func preampRampMatchesTheBandRamp() {
+        for rate in [44_100.0, 48_000, 96_000, 192_000] {
+            let handle = makeHandle(output: interleaved10, sampleRate: rate)
+            let steps = handle.pointer.pointee.processor.rampSteps
+            let interval = handle.pointer.pointee.processor.updateInterval
+            #expect(handle.pointer.pointee.gainRamp.levelFrames == steps * interval)
+        }
+    }
+
 }

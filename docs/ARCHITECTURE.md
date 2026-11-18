@@ -812,7 +812,7 @@ Details that follow from these rules:
   signature (`NullableIOProc`), because the SDK imports the pointers as
   non-optional while nothing guarantees the HAL never passes NULL;
 - the only library calls are libm `exp`/`sin`/`cos`, used while a band
-  ramps.
+  ramps, and one `pow` per new preamp target (`GainRamp`).
 
 **Shared state.** `RenderState` and `SplitLink` are `~Copyable` structs in
 manually allocated memory with stable addresses. The IOProcs reach them

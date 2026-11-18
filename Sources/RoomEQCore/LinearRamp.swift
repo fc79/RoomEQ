@@ -68,7 +68,8 @@ public struct LinearRamp: Sendable, Equatable {
 public struct GainRamp: Sendable, Equatable {
     /// Below this the ramp is a fade (linear in amplitude): −40 dB, well
     /// under the lowest preamp (−24 dB).
-    public static let geometricFloor: Float = 0.01
+    /// (A computed literal: read on the audio thread, no lazy global.)
+    @inline(__always) public static var geometricFloor: Float { 0.01 }
 
     public private(set) var value: Float
     public private(set) var target: Float

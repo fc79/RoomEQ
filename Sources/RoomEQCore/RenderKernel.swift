@@ -151,7 +151,6 @@ public enum RenderKernel {
         // ramp continues seamlessly into the next IO cycle.
         var gainRamp = state.pointee.gainRamp
         var wetMix = state.pointee.wetMix
-        gainRamp.setTarget(state.pointee.targetGain.load(ordering: .relaxed))
         wetMix.setTarget(state.pointee.bypass.load(ordering: .relaxed) ? 0 : 1)
 
         var inPeakL: Float = 0, inPeakR: Float = 0, outPeakL: Float = 0, outPeakR: Float = 0
@@ -182,6 +181,11 @@ public enum RenderKernel {
             // A new filter set is taken as soon as it is published; the
             // bands ramp to it from wherever they are.
             acceptPublishedFilters(state)
+            // The preamp target is read right after the filters, in every
+            // chunk: `publishWorkingState` stores the gain BEFORE releasing
+            // the filter set, so a new set seen here comes with its gain and
+            // the bands' and preamp's ramps start on the same sample.
+            gainRamp.setTarget(state.pointee.targetGain.load(ordering: .relaxed))
             state.pointee.processor.process(
                 inputLeft: UnsafePointer(dryL), inputRight: UnsafePointer(dryR), outputLeft: wetL, outputRight: wetR,
                 frameCount: count)

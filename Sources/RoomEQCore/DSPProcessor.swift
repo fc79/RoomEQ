@@ -5,7 +5,8 @@
 // no allocation, no locks, no logging, no Swift arrays, no class references,
 // no static stored properties (constants are literals). All memory is
 // allocated in `init`. The only library calls are libm exp/sin/cos (to
-// recompute coefficients while a band is ramping).
+// recompute coefficients while a band is ramping); the kernel's preamp ramp
+// (`GainRamp.setTarget`) also calls `pow` once per new target.
 //
 // Filter structure: Transposed Direct Form II, coefficients AND state in
 // Double. Per sample, per channel:
