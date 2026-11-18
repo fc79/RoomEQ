@@ -285,6 +285,25 @@ struct SplitKernelTests {
         #expect(rig.output.get(buffer: 0, channel: 0, frame: 63) == 0)
     }
 
+    /// After the delay grows because of underruns, the hand-over block
+    /// (read at the old, too short delay) must not count as a new underrun,
+    /// or the maintenance tick would grow the delay a second time.
+    @Test func handOverBlockOfALargerDelayIsNotANewUnderrun() {
+        let rig = Rig()
+        for _ in 0..<3 { rig.step() }
+        rig.link.setDelay(150)  // 42 frames short every cycle
+        rig.step()
+        rig.step()
+        let before = rig.link.status().underrunCycles
+        #expect(before == 2)
+        rig.link.setDelay(Self.lead + 64)
+        rig.step()  // hand-over at the old delay: faded out, not counted
+        #expect(rig.link.status().underrunCycles == before)
+        #expect(rig.output.get(buffer: 0, channel: 0, frame: 63) == 0)
+        for _ in 0..<3 { rig.step() }
+        #expect(rig.link.status().underrunCycles == before)
+    }
+
     @Test func captureGapFadesBackIn() {
         let rig = Rig()
         for _ in 0..<3 { rig.step() }

@@ -492,8 +492,14 @@ public enum SplitOutputKernel {
             link.pointee.fadeInPending = false
         }
         if result.end < frames {  // underrun: data not captured yet
-            link.pointee.underrunCycles.wrappingAdd(1, ordering: .relaxed)
-            link.pointee.missingFrames.wrappingAdd(UInt64(frames - result.end), ordering: .relaxed)
+            // Not counted in the hand-over block of a delay change: it is
+            // read at the old delay, already known to be too short when the
+            // delay grows, and counting it would make the maintenance tick
+            // grow the delay a second time.
+            if !fadeOutBlock {
+                link.pointee.underrunCycles.wrappingAdd(1, ordering: .relaxed)
+                link.pointee.missingFrames.wrappingAdd(UInt64(frames - result.end), ordering: .relaxed)
+            }
             let count = min(link.pointee.fadeOutFrames, result.validFrames)
             fade(left, right, from: result.end - count, count: count, rising: false)
             link.pointee.fadeInPending = true

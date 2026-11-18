@@ -310,7 +310,9 @@ Every 100 ms on the engine queue (`AudioEngine.scheduleMaintenance`):
      overwritten + gap).
 2. **Underruns** (`DelayAdaptation`). New underruns grow the delay by one
    block, at most `maxDelayIncreases` (4) times and never above
-   `maximumDelay`. After that, fatal.
+   `maximumDelay`. After that, fatal. The hand-over block of a delay change
+   (read at the old delay and faded out) is not counted as an underrun, so
+   one shortfall grows the delay once, not twice.
 3. **Drift** (`DriftMonitor`, once per second). It tracks the mean `need`
    per second. Fatal if the mean moves more than one buffer from its
    baseline, or if a linear trend over a 30–120 s window exceeds 5 ppm.
