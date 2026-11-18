@@ -51,7 +51,9 @@ public struct RenderConfiguration: Sendable {
     /// Size of the internal processing chunk. IO buffers larger than this
     /// are processed in several chunks, so any IO size works.
     public var chunkFrames: Int
-    /// Duration of a preamp change (seconds), independent of buffer size.
+    /// Duration of a fade of the preamp gain to or from silence (seconds),
+    /// independent of buffer size. Changes between audible gains take
+    /// `eqRampSeconds`, see `GainRamp`.
     public var gainRampSeconds: Double
     /// Duration of the bypass (EQ on/off) crossfade (seconds).
     public var bypassCrossfadeSeconds: Double
@@ -163,7 +165,7 @@ public struct RenderState: ~Copyable {
     // MARK: RT-private
 
     /// Preamp gain, ramped over a fixed time.
-    var gainRamp: LinearRamp
+    var gainRamp: GainRamp
     /// Wet (processed) share of the output: 1 = DSP on, 0 = bypassed.
     var wetMix: LinearRamp
     /// Scratch buffers (one chunk per channel), preallocated:
@@ -237,8 +239,14 @@ public struct RenderState: ~Copyable {
         for (index, location) in outChannels.enumerated() { outputLocations[index] = location }
 
         let rate = configuration.sampleRate
-        gainRamp = LinearRamp(
-            value: gain, rampFrames: LinearRamp.frames(seconds: configuration.gainRampSeconds, sampleRate: rate))
+        // Preamp changes take exactly as long as an EQ band's ramp (same
+        // segment rounding as DSPProcessor); fades to silence take
+        // `gainRampSeconds`.
+        let eqUpdateInterval = DSPProcessor.defaultUpdateInterval
+        let eqRampSteps = max(1, Int((configuration.eqRampSeconds * rate / Double(eqUpdateInterval)).rounded()))
+        gainRamp = GainRamp(
+            value: gain, fadeFrames: LinearRamp.frames(seconds: configuration.gainRampSeconds, sampleRate: rate),
+            levelFrames: eqRampSteps * eqUpdateInterval)
         wetMix = LinearRamp(
             value: bypass ? 0 : 1,
             rampFrames: LinearRamp.frames(seconds: configuration.bypassCrossfadeSeconds, sampleRate: rate))
@@ -395,7 +403,7 @@ public final class RenderStateHandle: @unchecked Sendable {
 
     /// nil for NaN; otherwise limited to 0...1 (infinities included).
     /// Hands a whole working EQ state to the audio thread: the filters
-    /// (every band ramps, 30 ms) AND the preamp (15 ms gain ramp), both for
+    /// (every band ramps, 30 ms) AND the preamp (same 30 ms, in dB), both for
     /// this session's sample rate. The controller publishes every change of
     /// bands or preamp (edit, preset, automatic per-output switch, restored
     /// edits, import) through here, so the preamp can never be left behind.

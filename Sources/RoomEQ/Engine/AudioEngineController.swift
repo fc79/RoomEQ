@@ -197,7 +197,7 @@ final class AudioEngineController {
     /// The EQ bands in processing order (at most `EQBand.maximumCount`).
     var bands: [EQBand] { settings.bands }
     /// Output preamp in dB, `preampRange` (-24…0): attenuation only.
-    /// Applied with a 15 ms ramp.
+    /// Applied with a 30 ms ramp in dB, like the bands (`GainRamp`).
     var preampDecibels: Double { settings.preampDecibels }
     static let preampRange = Preamp.range
     /// Largest boost of the combined EQ curve between 10 Hz (the lowest
@@ -558,8 +558,8 @@ final class AudioEngineController {
 
     // MARK: EQ settings (all applied live and saved)
 
-    /// Preamp in dB, clamped to -24…0 (NaN ignored). Applied smoothly (15 ms
-    /// ramp). Also resets the clip indicators: what was measured at the old
+    /// Preamp in dB, clamped to -24…0 (NaN ignored). Applied smoothly (30 ms
+    /// ramp in dB). Also resets the clip indicators: what was measured at the old
     /// preamp (and `suggestedPreampForClipping`) no longer applies.
     func setPreamp(_ decibels: Double) {
         guard let value = Preamp.clamp(decibels), value != preampDecibels else { return }

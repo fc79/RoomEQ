@@ -119,6 +119,8 @@ public struct DSPProcessor: ~Copyable {
     public let maximumFrames: Int
     /// Samples between two coefficient computations during a ramp.
     public let updateInterval: Int
+    /// Samples between coefficient updates during a ramp.
+    public static let defaultUpdateInterval = 16
     /// Segments (of `updateInterval` samples) in a full ramp.
     public let rampSteps: Int
     private let inverseUpdateInterval: Double
@@ -138,7 +140,8 @@ public struct DSPProcessor: ~Copyable {
 
     /// `sections` is active immediately (no ramp; the stream starts from silence).
     public init(
-        sampleRate: Double, maximumFrames: Int, rampSeconds: Double = 0.030, updateInterval: Int = 16,
+        sampleRate: Double, maximumFrames: Int, rampSeconds: Double = 0.030,
+        updateInterval: Int = DSPProcessor.defaultUpdateInterval,
         sections: [FilterSection] = []
     ) {
         self.sampleRate = sampleRate

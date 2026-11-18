@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import RoomEQCore
 
@@ -39,5 +40,57 @@ struct LinearRampTests {
         #expect(LinearRamp.frames(seconds: 0.015, sampleRate: 44100) == 662)
         #expect(LinearRamp.frames(seconds: 0.010, sampleRate: 48000) == 480)
         #expect(LinearRamp.frames(seconds: 0, sampleRate: 48000) == 1)
+    }
+}
+
+@Suite("Preamp gain ramp")
+struct GainRampTests {
+    private static func decibels(_ gain: Float) -> Double { 20 * log10(Double(gain)) }
+
+    /// Between audible gains the ramp is linear in dB over `levelFrames`,
+    /// like a band's gain: a band going from +10 to 0 dB and the preamp from
+    /// −10 to 0 dB add up to 0 dB at every step (no overshoot).
+    @Test func audibleChangesAreLinearInDecibels() {
+        var ramp = GainRamp(value: Float(pow(10, -10.0 / 20)), fadeFrames: 15, levelFrames: 100)
+        ramp.setTarget(1)
+        for step in 1...100 {
+            let preamp = Self.decibels(ramp.next())
+            let band = 10 - 10 * Double(step) / 100
+            #expect(abs(preamp + band) < 0.001)
+        }
+        #expect(ramp.value == 1)
+        #expect(!ramp.isRamping)
+    }
+
+    /// The fade to silence at stop stays linear and as short as before
+    /// (teardown waits 25 ms for a 15 ms fade).
+    @Test func fadesToAndFromSilenceAreLinear() {
+        var ramp = GainRamp(value: 1, fadeFrames: 4, levelFrames: 100)
+        ramp.setTarget(0)
+        #expect([ramp.next(), ramp.next(), ramp.next(), ramp.next()] == [0.75, 0.5, 0.25, 0])
+        ramp.setTarget(0.5)
+        #expect([ramp.next(), ramp.next(), ramp.next(), ramp.next()] == [0.125, 0.25, 0.375, 0.5])
+    }
+
+    /// A new target during a ramp continues from the current value.
+    @Test func retargetingNeverJumps() {
+        var ramp = GainRamp(value: 0.5, fadeFrames: 4, levelFrames: 10)
+        ramp.setTarget(1)
+        for _ in 0..<5 { _ = ramp.next() }
+        let middle = ramp.value
+        ramp.setTarget(0.25)
+        let after = ramp.next()
+        #expect(after < middle)
+        #expect(abs(Self.decibels(after) - Self.decibels(middle)) < 1)
+        for _ in 0..<9 { _ = ramp.next() }
+        #expect(ramp.value == 0.25)
+    }
+
+    /// Same target again: nothing restarts.
+    @Test func sameTargetIsANoOp() {
+        var ramp = GainRamp(value: 0.5, fadeFrames: 4, levelFrames: 10)
+        ramp.setTarget(0.5)
+        #expect(!ramp.isRamping)
+        #expect(ramp.next() == 0.5)
     }
 }

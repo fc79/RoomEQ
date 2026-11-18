@@ -352,7 +352,7 @@ The callback only increments an atomic counter.
 
 `EngineSession.teardown()` order:
 
-1. Fade out: preamp target 0 (15 ms ramp), sleep 25 ms.
+1. Fade out: preamp target 0 (15 ms linear fade), sleep 25 ms.
 2. Real-time listeners, then block listeners.
 3. Stop the output IOProc, then the capture IOProc.
 4. Destroy both IOProc IDs.
@@ -508,7 +508,7 @@ Ramps (`LinearRamp`, fixed time regardless of IO size):
 
 | Parameter | Ramp length |
 |---|---|
-| Preamp | 15 ms. The preamp setting runs from −24 dB to 0 dB (`Preamp.range`), which is a linear gain of about 0.063…1: never a boost. A linear gain of 0 is used only for the fade-out at teardown. |
+| Preamp | `GainRamp`: between audible gains, 30 ms linear in dB, the same duration and shape as a band's gain ramp, so when a preset switch moves bands and preamp together a band's boost and the preamp's cut cancel all the way (no overshoot above either preset). To or from silence (the fade-out at teardown), 15 ms linear in amplitude. The preamp setting runs from −24 dB to 0 dB (`Preamp.range`), which is a linear gain of about 0.063…1: never a boost. A linear gain of 0 is used only for the fade-out at teardown. |
 | Bypass (dry/wet) | 10 ms. The app never uses bypass: `EngineSession` creates the state with `bypass: false`, and "Correction off" stops the engine instead. |
 | EQ parameters | 30 ms, see below. |
 
@@ -760,7 +760,7 @@ change (within 8 s) (`retryAfterSampleRateChange`).
 
 | Change | How it is applied |
 |---|---|
-| Bands, preamp, preset switch, REW import | Live (filter set + preamp published together, 30 ms / 15 ms ramps). |
+| Bands, preamp, preset switch, REW import | Live (filter set + preamp published together, both 30 ms ramps in dB). |
 | Output channel pair | Live (atomic). Latency is recomputed. |
 | Exclusions: add / remove | Live / restart (§3.3). |
 | Buffer size | Restart; the delay is re-measured. |
