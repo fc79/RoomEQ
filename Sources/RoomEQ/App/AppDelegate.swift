@@ -21,6 +21,8 @@ import RoomEQCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// nil in a second copy, which only says it is not needed and quits.
     let controller: AudioEngineController?
+    /// The pid of the copy that was running first (second copy only).
+    private let otherCopy: pid_t?
     let recorder = RecordingController()
     /// The menu bar icon and its panel (StatusItemController.swift).
     private var statusItemController: StatusItemController?
@@ -31,13 +33,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // first, because the controller already writes some on loading.
         TextLocale.current = .autoupdatingCurrent
         // Before the controller: it loads (and may tidy) the settings.
-        controller = Self.anotherCopyIsRunning() ? nil : AudioEngineController()
+        otherCopy = Self.olderCopyStillRunning()
+        controller = otherCopy == nil ? AudioEngineController() : nil
         super.init()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let controller else {
-            Log.app.notice("Another copy of RoomEQ is running (pid \(ProcessInfo.processInfo.processIdentifier)): quitting")
+            Log.app.notice(
+                "Another copy of RoomEQ is running (pid \(self.otherCopy ?? 0)); this one (pid \(ProcessInfo.processInfo.processIdentifier)) quits")
             showAlreadyRunning()
             NSApplication.shared.terminate(nil)
             return
@@ -56,21 +60,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.shutdown()
     }
 
-    /// Another running app with our bundle ID (any location: installed or
-    /// a fresh build). Not checked without a bundle ID (bare executable).
-    private static func anotherCopyIsRunning() -> Bool {
-        guard let bundleID = Bundle.main.bundleIdentifier else { return false }
-        let own = ProcessInfo.processInfo.processIdentifier
-        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-            .contains { $0.processIdentifier != own && !$0.isTerminated }
+    /// The pid of another copy (same bundle ID, any location: installed or a
+    /// fresh build) that started before this one and is still running, or
+    /// nil. A copy that is quitting gets up to 3 s to finish (quitting waits
+    /// for the recording and the engine); of two copies started together
+    /// only the later one gives way. Not checked without a bundle ID (bare
+    /// executable).
+    private static func olderCopyStillRunning() -> pid_t? {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return nil }
+        let own = NSRunningApplication.current
+        let ownStart = own.launchDate ?? Date()
+        let older = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).filter { other in
+            guard other.processIdentifier != own.processIdentifier else { return false }
+            let otherStart = other.launchDate ?? .distantPast
+            return otherStart < ownStart
+                || (otherStart == ownStart && other.processIdentifier < own.processIdentifier)
+        }
+        .map(\.processIdentifier)
+        guard !older.isEmpty else { return nil }
+        // kill(pid, 0) only asks whether the process still exists.
+        let deadline = Date().addingTimeInterval(3)
+        while true {
+            let alive = older.filter { kill($0, 0) == 0 }
+            if alive.isEmpty { return nil }
+            if Date() >= deadline { return alive[0] }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
     }
 
     private func showAlreadyRunning() {
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        activateApp()  // a menu bar app is not active by itself
         let alert = NSAlert()
         alert.messageText = String(localized: "RoomEQ è già aperto")
         alert.informativeText = String(
-            localized: "Un'altra copia di RoomEQ è in funzione: la trovi nella barra dei menu. Questa copia si chiude, così non tocca l'audio e le impostazioni dell'altra. Per usare questa, esci prima dall'altra (pannello › Esci).")
+            localized: "Un'altra copia di RoomEQ è in funzione: la trovi nella barra dei menu. Questa copia si chiude, così non tocca l'audio e le impostazioni dell'altra. Per usare questa, esci prima dall'altra (pannello › Esci) e riaprila.")
         alert.addButton(withTitle: String(localized: "Chiudi"))
         alert.runModal()
     }
