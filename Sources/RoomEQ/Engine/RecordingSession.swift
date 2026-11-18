@@ -63,6 +63,8 @@ final class RecordingSession: @unchecked Sendable {
         /// output not followed).
         var failure: String?
         var isRunning = false
+        /// The output can't be captured right now; retrying.
+        var isWaitingForOutput = false
     }
 
     let targets: [Target]
@@ -80,9 +82,10 @@ final class RecordingSession: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var ticks = 0
     private var finished = false
-    /// The output the recording should be on, and the rate of the files.
-    private var wantedDevice: AudioObjectID?
+    /// The sample rate of the files being written.
     private var fileRate: Double = 0
+    /// Set by stop/stopAndWait from any thread: a (re)build in progress gives up.
+    private let cancelling = Atomic<Bool>(false)
     /// While the output can't be captured: retry until this moment.
     private var retryDeadline: ContinuousClock.Instant?
     /// Invalidates scheduled retries and debounced rebuilds.
@@ -125,6 +128,7 @@ final class RecordingSession: @unchecked Sendable {
     /// Stops and closes every file; `completion` runs on the main queue with
     /// the final state.
     func stop(completion: @escaping @Sendable (Snapshot) -> Void) {
+        cancelling.store(true, ordering: .relaxed)  // cut a slow (re)build short
         queue.async { [self] in
             finish(failure: nil)
             let snapshot = takeSnapshot()
@@ -133,8 +137,10 @@ final class RecordingSession: @unchecked Sendable {
     }
 
     /// For quitting: stops and waits at most `timeout` for the files to be
-    /// closed.
+    /// closed. A (re)build in progress is cut short so this normally returns
+    /// well within the timeout.
     func stopAndWait(timeout: TimeInterval) {
+        cancelling.store(true, ordering: .relaxed)
         let done = DispatchSemaphore(value: 0)
         queue.async { [self] in
             finish(failure: nil)
@@ -146,8 +152,8 @@ final class RecordingSession: @unchecked Sendable {
     }
 
     /// The default output changed: follow it.
-    func switchDevice(to device: AudioObjectID) {
-        queue.async { [self] in follow(device: device, force: false) }
+    func outputChanged() {
+        queue.async { [self] in follow() }
     }
 
     /// Re-reads the running processes of each app (a browser may start a new
@@ -162,8 +168,8 @@ final class RecordingSession: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         guard !targets.isEmpty else { throw EngineError("Nessuna app da registrare.") }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let capture = try Capture.make(targets: targets, device: device)
-        tracks = targets.map { Track(target: $0, sampleRate: capture.sampleRate, skipSilence: skipSilence) }
+        let capture = try Capture.make(targets: targets, device: device, cancelling: cancelling)
+        tracks = targets.map { Track(target: $0, folder: folder, sampleRate: capture.sampleRate, skipSilence: skipSilence) }
         do {
             try capture.start(rings: tracks.map(\.ring))
         } catch {
@@ -172,9 +178,8 @@ final class RecordingSession: @unchecked Sendable {
             throw error
         }
         self.capture = capture
-        wantedDevice = device
         fileRate = capture.sampleRate
-        listen(to: capture)
+        listen(to: capture, owner: generation)
         state.withLock {
             $0 = Snapshot(
                 started: Date(),
@@ -188,33 +193,40 @@ final class RecordingSession: @unchecked Sendable {
         self.timer = timer
         Log.engine.info(
             "Recording started on \(capture.deviceName, privacy: .public) at \(capture.sampleRate) Hz: \(self.targets.map(\.bundleID), privacy: .public)")
+        // The output may have changed while starting.
+        follow()
     }
 
-    /// Rebuilds the taps on `device` unless they already run there at the
-    /// device's current rate (`force` rebuilds anyway).
-    private func follow(device: AudioObjectID, force: Bool) {
+    /// Makes the taps match the current default output: rebuilds them when
+    /// the device (object), its sample rate or its stream layout differ from
+    /// the running capture, or when there is none. Does nothing otherwise, so
+    /// repeated notifications cost nothing.
+    private func follow() {
         dispatchPrecondition(condition: .onQueue(queue))
         guard !finished, timer != nil else { return }
-        // A device that is already gone: wait for the next change.
-        guard let uid = AudioDevices.uid(of: device) else { return }
-        if !force, let capture, capture.deviceUID == uid,
-            let rate = try? AudioDevices.nominalSampleRate(of: device), SampleRates.same(rate, capture.sampleRate)
+        if let capture, retryDeadline == nil, let device = AudioDevices.defaultOutputDeviceID(),
+            capture.matches(device: device)
         {
             return
         }
         generation += 1
-        wantedDevice = device
-        retryDeadline = nil
+        // A retry window already running keeps its deadline.
         stopCapture()
         attemptCapture(generation: generation)
     }
 
+    /// Tries to capture the current default output; while it can't (no
+    /// output, not ready, unsupported layout) retries every second for 30
+    /// seconds, then stops the recording with a message.
     private func attemptCapture(generation attempt: Int) {
         dispatchPrecondition(condition: .onQueue(queue))
-        guard !finished, attempt == generation, let device = wantedDevice else { return }
+        guard !finished, attempt == generation else { return }
         var new: Capture?
         do {
-            let made = try Capture.make(targets: targets, device: device)
+            guard let device = AudioDevices.defaultOutputDeviceID() else {
+                throw EngineError("Uscita audio non disponibile per la registrazione.")
+            }
+            let made = try Capture.make(targets: targets, device: device, cancelling: cancelling)
             new = made
             if !SampleRates.same(made.sampleRate, fileRate) {
                 for track in tracks { track.restart(sampleRate: made.sampleRate) }
@@ -223,17 +235,20 @@ final class RecordingSession: @unchecked Sendable {
             try made.start(rings: tracks.map(\.ring))
             capture = made
             retryDeadline = nil
-            listen(to: made)
+            listen(to: made, owner: generation)
             state.withLock {
                 $0.sampleRate = made.sampleRate
                 $0.deviceName = made.deviceName
+                $0.isWaitingForOutput = false
             }
             Log.engine.info("Recording now on \(made.deviceName, privacy: .public) at \(made.sampleRate) Hz")
         } catch {
             new?.destroy()
+            if finished || cancelling.load(ordering: .relaxed) { return }
             let clock = ContinuousClock()
             let deadline = retryDeadline ?? clock.now + .seconds(30)
             retryDeadline = deadline
+            state.withLock { $0.isWaitingForOutput = true }
             if clock.now < deadline {
                 Log.engine.notice("Recording can't use the output yet, retrying: \(error.localizedDescription, privacy: .public)")
                 queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.attemptCapture(generation: attempt) }
@@ -253,22 +268,25 @@ final class RecordingSession: @unchecked Sendable {
         drain()
     }
 
-    /// A new rate or stream layout on the current device, or a tap format
-    /// change: rebuild (debounced, changes come in bursts).
-    private func listen(to capture: Capture) {
+    /// A new rate or stream layout on the current device, a tap format change,
+    /// or the device going away: check again (debounced, changes come in
+    /// bursts). Notifications of an older capture (`owner` no longer the
+    /// current generation) are ignored, even when they arrive late.
+    private func listen(to capture: Capture, owner: Int) {
         let changed: () -> Void = { [weak self] in
             guard let self else { return }
             self.queue.async {
-                let expected = self.generation
+                guard owner == self.generation else { return }
                 self.queue.asyncAfter(deadline: .now() + 0.2) {
-                    guard expected == self.generation, let device = self.wantedDevice else { return }
-                    self.follow(device: device, force: true)
+                    guard owner == self.generation else { return }
+                    self.follow()
                 }
             }
         }
         var addresses: [(AudioObjectID, AudioObjectPropertyAddress)] = [
             (capture.deviceID, AudioObject.address(kAudioDevicePropertyNominalSampleRate)),
             (capture.deviceID, AudioObject.address(kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeOutput)),
+            (capture.deviceID, AudioObject.address(kAudioDevicePropertyDeviceIsAlive)),
         ]
         for tap in capture.tapIDs { addresses.append((tap, AudioObject.address(kAudioTapPropertyFormat))) }
         for (object, address) in addresses {
@@ -348,8 +366,8 @@ final class RecordingSession: @unchecked Sendable {
         var url = folder
         url.removeAllCachedResourceValues()  // fresh value every time
         guard let free = (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
-            .volumeAvailableCapacityForImportantUsage
-        else { return }
+            .volumeAvailableCapacityForImportantUsage, free > 0
+        else { return }  // 0 or missing: unknown on some volumes
         let bytesPerSecond = fileRate * Double(WAVWriter.channels * WAVWriter.bytesPerSample) * Double(tracks.count)
         state.withLock { $0.secondsLeftOnDisk = Double(free) / max(bytesPerSecond, 1) }
         if free < 50_000_000 {
@@ -371,13 +389,14 @@ private final class Track {
     private let zeros: UnsafeMutablePointer<Float>
     private let scratchFrames = 4096
 
-    init(target: RecordingSession.Target, sampleRate: Double, skipSilence: Bool) {
+    init(target: RecordingSession.Target, folder: URL, sampleRate: Double, skipSilence: Bool) {
         self.target = target
         self.skipSilence = skipSilence
-        // Two seconds of headroom for the writer.
-        ring = RecordingRing(minimumFrames: Int(sampleRate * 2))
+        // At least two seconds of headroom for the writer, also if the output
+        // later moves to a higher rate (up to 192 kHz: 1 s).
+        ring = RecordingRing(minimumFrames: Int(max(sampleRate, 96_000) * 2))
         gate = SilenceGate(settings: .standard(sampleRate: sampleRate), enabled: skipSilence)
-        sink = FileSink(appName: target.name, folder: RecordingNames.defaultFolder(), sampleRate: Int(sampleRate.rounded()))
+        sink = FileSink(appName: target.name, folder: folder, sampleRate: Int(sampleRate.rounded()))
         scratch = .allocate(capacity: scratchFrames * 2)
         zeros = .allocate(capacity: scratchFrames * 2)
         zeros.initialize(repeating: 0, count: scratchFrames * 2)
@@ -525,6 +544,17 @@ private final class Capture {
 
     var tapIDs: [AudioObjectID] { units.map(\.tapID) }
 
+    /// The capture still fits `device`: same object (a device unplugged and
+    /// plugged back gets a new one), same rate, same stream layout.
+    func matches(device: AudioObjectID) -> Bool {
+        guard device == deviceID, AudioDevices.isAlive(device),
+            let rate = try? AudioDevices.nominalSampleRate(of: device), SampleRates.same(rate, sampleRate),
+            let streams = try? DeviceStreams.streams(of: device, scope: kAudioObjectPropertyScopeOutput),
+            source.stream < streams.count, Int(streams[source.stream].format.mChannelsPerFrame) == channelCount
+        else { return false }
+        return true
+    }
+
     private init(
         deviceID: AudioObjectID, deviceUID: String, deviceName: String, sampleRate: Double, source: TapSource,
         channelCount: Int
@@ -538,7 +568,7 @@ private final class Capture {
     }
 
     /// Builds the taps and aggregates (not started). Throws after cleaning up.
-    static func make(targets: [RecordingSession.Target], device: AudioObjectID) throws -> Capture {
+    static func make(targets: [RecordingSession.Target], device: AudioObjectID, cancelling: borrowing Atomic<Bool>) throws -> Capture {
         guard let uid = AudioDevices.uid(of: device) else {
             throw EngineError("Uscita audio non disponibile per la registrazione.")
         }
@@ -557,7 +587,7 @@ private final class Capture {
             deviceID: device, deviceUID: uid, deviceName: AudioDevices.name(of: device), sampleRate: rate,
             source: source, channelCount: counts[source.stream])
         do {
-            for target in targets { try capture.addUnit(for: target) }
+            for target in targets { try capture.addUnit(for: target, cancelling: cancelling) }
         } catch {
             capture.destroy()
             throw error
@@ -565,7 +595,8 @@ private final class Capture {
         return capture
     }
 
-    private func addUnit(for target: RecordingSession.Target) throws {
+    private func addUnit(for target: RecordingSession.Target, cancelling: borrowing Atomic<Bool>) throws {
+        if cancelling.load(ordering: .relaxed) { throw CancellationError() }
         let processes = AudioProcesses.processObjects(ofApp: target.bundleID) ?? []
         let uuid = UUID()
         let description = Self.description(target: target, uuid: uuid, deviceUID: deviceUID, stream: source.stream, processes: processes)
@@ -605,7 +636,7 @@ private final class Capture {
         var inputs: [StreamInfo] = []
         while clock.now < deadline {
             inputs = (try? DeviceStreams.streams(of: unit.aggregateID, scope: kAudioObjectPropertyScopeInput)) ?? []
-            if inputs.count == 1 { break }
+            if inputs.count == 1 || cancelling.load(ordering: .relaxed) { break }
             Thread.sleep(forTimeInterval: 0.05)
         }
         guard inputs.count == 1, inputs[0].format.isFloat32, Int(inputs[0].format.mChannelsPerFrame) == channelCount,

@@ -154,7 +154,7 @@ final class RecordingController {
             folder: RecordingNames.defaultFolder(), skipSilence: skipSilence)
         self.session = session
         isStarting = true
-        // Listen first, so an output change during the start is not missed.
+        // Listen first; the session also re-checks the output once started.
         startListening(session)
         session.start(device: device) { [weak self] error in
             MainActor.assumeIsolated { self?.started(session, error: error) }
@@ -227,9 +227,12 @@ final class RecordingController {
             return LiveApp(bundleID: app.bundleID, name: app.name, level: level, isPaused: app.isPaused)
         }
         var notices: [String] = []
+        if snapshot.isWaitingForOutput {
+            notices.append(String(localized: "In attesa che l'uscita audio sia pronta: la registrazione riprende da sola."))
+        }
         if snapshot.droppedFrames > 0, snapshot.sampleRate > 0 {
             let seconds = NumberText.string(Double(snapshot.droppedFrames) / snapshot.sampleRate, decimals: 2...2)
-            notices.append(String(localized: "Persa una piccola parte dell'audio (circa \(seconds) s, sostituita da silenzio). La registrazione continua."))
+            notices.append(String(localized: "Persa una parte dell'audio (circa \(seconds) s in tutto, sostituita da silenzio). La registrazione continua."))
         }
         if let left = snapshot.secondsLeftOnDisk, left < 600 {
             let minutes = Int(left / 60)
@@ -255,6 +258,8 @@ final class RecordingController {
         failure = snapshot.failure
         let duration = Format.duration(Date().timeIntervalSince(snapshot.started))
         switch snapshot.files.count {
+        case 0 where snapshot.failure != nil: savedSummary = nil  // the failure says it all
+        case 0 where snapshot.apps.count == 1: savedSummary = String(localized: "Nessun file salvato: l'app non ha suonato.")
         case 0: savedSummary = String(localized: "Nessun file salvato: le app non hanno suonato.")
         case 1: savedSummary = String(localized: "Salvato 1 file (\(duration)).")
         default: savedSummary = String(localized: "Salvati \(snapshot.files.count) file (\(duration)).")
@@ -270,10 +275,7 @@ final class RecordingController {
                 made.append(try PropertyListener(
                     object: system, address: AudioObject.address(kAudioHardwarePropertyDefaultOutputDevice),
                     queue: self?.listenerQueue ?? .global()
-                ) { [weak session] in
-                    guard let device = AudioDevices.defaultOutputDeviceID() else { return }
-                    session?.switchDevice(to: device)
-                })
+                ) { [weak session] in session?.outputChanged() })
                 made.append(try PropertyListener(
                     object: system, address: AudioObject.address(kAudioHardwarePropertyProcessObjectList),
                     queue: self?.listenerQueue ?? .global()

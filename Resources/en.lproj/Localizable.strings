@@ -388,10 +388,12 @@
 "in pausa · silenzio" = "paused · silence";
 "Nessuna uscita audio: impossibile registrare." = "No audio output: can't record.";
 "Registrazione non avviata: %@" = "Recording didn't start: %@";
-"Persa una piccola parte dell'audio (circa %@ s, sostituita da silenzio). La registrazione continua." = "A small part of the audio was lost (about %@ s, replaced with silence). Recording continues.";
+"Persa una parte dell'audio (circa %@ s in tutto, sostituita da silenzio). La registrazione continua." = "Some audio was lost (about %@ s in total, replaced with silence). Recording continues.";
 "Disco quasi pieno: restano circa %lld minuti di registrazione." = "Disk almost full: about %lld minutes of recording left.";
 "Nessun file salvato: le app non hanno suonato." = "No files saved: the apps didn't play.";
 "Salvato 1 file (%@)." = "Saved 1 file (%@).";
 "Salvati %lld file (%@)." = "Saved %lld files (%@).";
 "%@, %@ e un'altra" = "%1$@, %2$@ and 1 more";
 "Disco quasi pieno: resta meno di 2 minuti di registrazione." = "Disk almost full: less than 2 minutes of recording left.";
+"In attesa che l'uscita audio sia pronta: la registrazione riprende da sola." = "Waiting for the audio output to be ready: recording resumes by itself.";
+"Nessun file salvato: l'app non ha suonato." = "No file saved: the app didn't play.";
