@@ -727,7 +727,11 @@ the panel) and no further automatic attempt is made: the user presses
 A fatal event while running (§3.8) goes to `.failed` immediately, with no
 retry window.
 There is a separate single retry right after a user-initiated sample-rate
-change (within 8 s) (`retryAfterSampleRateChange`).
+change (within 8 s) (`retryAfterSampleRateChange`), and one after an
+automatic restart (`retryAfterAutomaticRestart`: another app changed the
+rate or format, or the IO stopped; the HAL may still be settling). Neither
+opens the 30 s window, so a failing device mutes the apps once more at
+most.
 
 ### 6.4 Restarts and stale sessions
 

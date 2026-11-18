@@ -289,6 +289,10 @@ final class AudioEngineController {
     @ObservationIgnored private var userSampleRateChangeDate: Date?
     /// One start retry is allowed right after a user sample-rate change.
     @ObservationIgnored private var rateChangeRetryAvailable = false
+    /// One start retry is allowed after an automatic restart (another app
+    /// changed the rate or format, IO stopped): the HAL may still be
+    /// settling when the first start runs.
+    @ObservationIgnored private var automaticRestartRetryAvailable = false
     /// "non è passato a…" message, cleared if the device reaches the rate later.
     @ObservationIgnored private var pendingRateMessage: (message: String, rate: Double, uid: String)?
     /// Retry window: until this time a failed start is retried instead of
@@ -486,6 +490,7 @@ final class AudioEngineController {
         guard state == .running || state == .starting || state == .failed || state == .paused else { return }
         startRetryDeadline = nil
         rateChangeRetryAvailable = false
+        automaticRestartRetryAvailable = false
         replacedSessionID = nil  // a late failure of it must not count now
         replacedSessionDate = nil
         automaticRestarts.removeAll()
@@ -760,6 +765,7 @@ final class AudioEngineController {
         Log.app.info("Pausing: no correction for \(device.uid, privacy: .public)")
         startRetryDeadline = nil  // the start request is satisfied (or no longer wanted)
         rateChangeRetryAvailable = false
+        automaticRestartRetryAvailable = false
         replacedSessionID = nil  // a late failure of it must not count now
         replacedSessionDate = nil
         audioCapturePermissionLikelyDenied = false
@@ -916,6 +922,7 @@ final class AudioEngineController {
             audioCapturePermissionLikelyDenied = false
             startRetryDeadline = nil
             rateChangeRetryAvailable = false
+            automaticRestartRetryAvailable = false
             state = .running
             Log.app.info("Running on \(info.outputDevice.uid, privacy: .public), \(info.sampleRate) Hz, buffer \(info.bufferFrames)")
             if isPanelVisible { startMeters() }
@@ -927,6 +934,7 @@ final class AudioEngineController {
         case .failure(let error):
             guard wanted else { return }  // the failed session is already torn down
             if retryAfterSampleRateChange(error) { return }
+            if retryAfterAutomaticRestart(error) { return }
             if error is AudioCapturePermissionError {
                 audioCapturePermissionLikelyDenied = true
                 startRetryDeadline = nil  // retrying won't help
@@ -957,6 +965,30 @@ final class AudioEngineController {
                     return
                 }
                 self.launch(on: device, statusText: CorrectionStatusText.starting)
+            }
+        }
+        return true
+    }
+
+    /// The first start after an automatic restart failed: retry once, a
+    /// moment later (not counted as an automatic restart). True if a retry
+    /// was scheduled.
+    private func retryAfterAutomaticRestart(_ error: Error) -> Bool {
+        guard automaticRestartRetryAvailable, !(error is AudioCapturePermissionError) else { return false }
+        automaticRestartRetryAvailable = false
+        Log.app.notice("Start failed after an automatic restart (\(error.localizedDescription, privacy: .public)); retrying once")
+        state = .starting
+        transitionStatus = CorrectionStatusText.restarting
+        let generation = invalidatePendingLaunches()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, self.state == .starting, self.launchGeneration == generation else { return }
+            self.refreshDevices { [weak self] in
+                guard let self, self.state == .starting, self.launchGeneration == generation else { return }
+                guard let device = self.systemOutputDevice else {
+                    self.fail(String(localized: "Nessun dispositivo di uscita di macOS disponibile"))
+                    return
+                }
+                self.launch(on: device, statusText: CorrectionStatusText.restarting)
             }
         }
         return true
@@ -1033,6 +1065,7 @@ final class AudioEngineController {
             fail(String(localized: "Troppi riavvii automatici (\(reason))"))
             return
         }
+        automaticRestartRetryAvailable = true
         restartIfActive(reason: reason)
     }
 
@@ -1054,6 +1087,7 @@ final class AudioEngineController {
     private func fail(_ message: String) {
         Log.app.error("Engine error: \(message, privacy: .public)")
         startRetryDeadline = nil
+        automaticRestartRetryAvailable = false
         invalidatePendingLaunches()
         clearActiveSession()
         engine.stop()
