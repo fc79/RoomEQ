@@ -400,3 +400,6 @@
 "Nessun file salvato: l'app non ha suonato." = "No file saved: the app didn't play.";
 "attiva" = "on";
 "spenta" = "off";
+"RoomEQ è già aperto" = "RoomEQ is already open";
+"Un'altra copia di RoomEQ è in funzione: la trovi nella barra dei menu. Questa copia si chiude, così non tocca l'audio e le impostazioni dell'altra. Per usare questa, esci prima dall'altra (pannello › Esci)." = "Another copy of RoomEQ is running: you'll find it in the menu bar. This copy closes, so it doesn't touch the other one's audio and settings. To use this one, quit the other first (panel › Quit).";
+"Chiudi" = "Close";

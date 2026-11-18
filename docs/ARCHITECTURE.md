@@ -350,6 +350,12 @@ The callback only increments an atomic counter.
 
 ### 3.10 Teardown and crash safety
 
+Only one copy of RoomEQ runs. At launch, before the controller loads the
+settings, `AppDelegate` looks for another running app with the same bundle
+ID (installed or a fresh build). If there is one, it shows «RoomEQ è già
+aperto» and quits without touching audio or settings: two copies would
+rewrite the same settings document and play the corrected audio twice.
+
 `EngineSession.teardown()` order:
 
 1. Fade out: preamp target 0 (15 ms linear fade), sleep 25 ms.
