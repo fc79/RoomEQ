@@ -1647,7 +1647,7 @@ extension AudioEngineController {
             return (id, app.localizedName ?? id, app.bundleURL)
         }
         deviceQueue.async { [weak self] in
-            let playing = Self.bundleIDsPlayingAudio()
+            let playing = AudioProcesses.bundleIDsPlayingAudio()
             let apps = running.map { id, name, url in
                 AppInfo(
                     bundleID: id, name: name, url: url, isRunning: true,
@@ -1713,17 +1713,6 @@ extension AudioEngineController {
         FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
     }
 
-    /// Bundle IDs of processes currently sending audio to an output.
-    nonisolated private static func bundleIDsPlayingAudio() -> [String] {
-        let processes = (try? AudioProcesses.processObjectIDs()) ?? []
-        return processes.compactMap { process in
-            let running: UInt32? = try? AudioObject.read(
-                process, AudioObject.address(kAudioProcessPropertyIsRunningOutput), initial: UInt32(0),
-                "Lettura stato di riproduzione del processo")
-            guard running == 1 else { return nil }
-            return AudioProcesses.bundleID(of: process)
-        }
-    }
 }
 
 // MARK: - System

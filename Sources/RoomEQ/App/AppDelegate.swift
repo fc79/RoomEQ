@@ -15,6 +15,7 @@ import RoomEQCore
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let controller: AudioEngineController
+    let recorder = RecordingController()
     /// The menu bar icon and its panel (StatusItemController.swift).
     private var statusItemController: StatusItemController?
     private var signalSources: [DispatchSourceSignal] = []
@@ -31,10 +32,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.app.info("RoomEQ launched (pid \(ProcessInfo.processInfo.processIdentifier))")
         installSignalHandlers()
         controller.prepare()
-        statusItemController = StatusItemController(controller: controller)
+        statusItemController = StatusItemController(controller: controller, recorder: recorder)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Close the recording files first (headers written).
+        recorder.stop()
         controller.shutdown()
     }
 
@@ -47,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             source.setEventHandler { [weak self] in
                 MainActor.assumeIsolated {
                     Log.app.notice("Signal \(signalNumber) received, shutting down")
+                    self?.recorder.stop()
                     self?.controller.shutdown()
                     exit(0)
                 }

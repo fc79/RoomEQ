@@ -43,6 +43,18 @@ enum AudioProcesses {
         ExclusionRules.matches(processBundleID: bundleID, excluded: excluded)
     }
 
+    /// Bundle IDs of processes currently sending audio to an output.
+    static func bundleIDsPlayingAudio() -> [String] {
+        let processes = (try? processObjectIDs()) ?? []
+        return processes.compactMap { process in
+            let running: UInt32? = try? AudioObject.read(
+                process, AudioObject.address(kAudioProcessPropertyIsRunningOutput), initial: UInt32(0),
+                "Lettura stato di riproduzione del processo")
+            guard running == 1 else { return nil }
+            return bundleID(of: process)
+        }
+    }
+
     /// Process objects of currently running processes whose bundle ID
     /// matches one of `bundleIDs`.
     static func processObjects(matching bundleIDs: [String]) -> [(object: AudioObjectID, bundleID: String)] {

@@ -51,6 +51,7 @@ import SwiftUI
 @MainActor
 final class StatusItemController: NSObject, NSPopoverDelegate {
     private let controller: AudioEngineController
+    private let recorder: RecordingController
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
     /// Global monitor for clicks in other apps; set only while the popover
@@ -71,12 +72,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         case escape = "Esc"
     }
 
-    init(controller: AudioEngineController) {
+    init(controller: AudioEngineController, recorder: RecordingController) {
         self.controller = controller
+        self.recorder = recorder
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
-        let panel = MenuPanelView(controller: controller)
+        let panel = MenuPanelView(controller: controller, recorder: recorder)
             .environment(\.fileChooser, FileChooser { [weak self] panel, completion in
                 self?.runFileChooser(panel, completion: completion)
             })
@@ -123,8 +125,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func updateIcon() {
         guard let button = statusItem.button else { return }
         let state = controller.menuBarState
-        button.image = MenuBarIcons.image(for: state)
-        button.setAccessibilityLabel(MenuBarIcons.accessibilityLabel(for: state))
+        let recording = recorder.isRecording
+        button.image = MenuBarIcons.image(for: state, recording: recording)
+        let label = MenuBarIcons.accessibilityLabel(for: state)
+        button.setAccessibilityLabel(recording ? String(localized: "\(label), registrazione in corso") : label)
     }
 
     // MARK: Popover
@@ -186,6 +190,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func refreshBeforeShowing() {
         controller.refreshLaunchAtLoginStatus()
         controller.refreshCandidateApps()
+        recorder.refreshApps()
     }
 
     func popoverDidClose(_ notification: Notification) {

@@ -266,6 +266,8 @@ struct LevelMeterRow: View {
     let channel: String
     /// Linear peak amplitude (1.0 = 0 dBFS).
     let peak: Float
+    /// 12 for "L"/"R"; wider for app names (recording).
+    var labelWidth: CGFloat = 12
 
     private static let floorDecibels: Float = -60
 
@@ -284,7 +286,9 @@ struct LevelMeterRow: View {
         HStack(spacing: 8) {
             Text(channel)
                 .font(.callout.weight(.medium))
-                .frame(width: 12, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: labelWidth, alignment: .leading)
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.quaternary)
@@ -324,6 +328,15 @@ struct ClipBadge: View {
 // sign of the UI is the real one (U+2212); units are not translated.
 
 enum Format {
+    /// "03:27", "1:02:05" (hours only when needed). Negative or not finite: "00:00".
+    static func duration(_ seconds: TimeInterval) -> String {
+        let total = seconds.isFinite ? max(0, Int(seconds)) : 0
+        let h = total / 3600, m = total / 60 % 60, s = total % 60
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%02d:%02d", m, s)
+    }
+
     /// "−12,3 dB" (real minus sign), or "—" for silence (zero, −∞ or below
     /// -90 dB: such values would only show a meaningless long number).
     static func decibels(_ value: Float) -> String {

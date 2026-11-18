@@ -3,12 +3,14 @@
 // follows it when sections open or close; what must be refreshed at each
 // opening is refreshed there too.
 //
-// Pure view over `AudioEngineController`: it only reads the observable
-// properties and calls the controller's methods. Layout (top to bottom):
+// Pure view over `AudioEngineController` and `RecordingController`: it only
+// reads the observable properties and calls their methods. Layout (top to
+// bottom):
 //   fixed:      header (RoomEQ + the one "Correzione" switch, status line,
 //                       errors and notices)
 //               Preset row (menu, "Salva" when needed)
 //               Livelli (meters, CLIP)
+//               Registra (RecordingRowView: apps, skip silence, levels)
 //   scrollable: collapsible sections, all closed by default (their state is
 //               remembered), each with a short summary: Filtri e preamp,
 //               Uscita e scheda, Regole per uscita, App escluse, Avvio,
@@ -24,6 +26,7 @@ import SwiftUI
 
 struct MenuPanelView: View {
     let controller: AudioEngineController
+    let recorder: RecordingController
 
     /// The sections never grow beyond this height (then they scroll); header,
     /// preset row, levels and footer stay outside it, always visible.
@@ -41,6 +44,8 @@ struct MenuPanelView: View {
             header
             PresetRowView(controller: controller)
             LevelsView(controller: controller)
+            Divider()
+            RecordingRowView(recorder: recorder)
             Divider()
             ScrollView {
                 sections

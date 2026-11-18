@@ -37,6 +37,19 @@ enum MenuBarIcons {
         return images[look] ?? makeImage(for: look)
     }
 
+    private static let recordingImages: [Look: NSImage] = Dictionary(
+        uniqueKeysWithValues: Look.allCases.map { ($0, makeRecordingImage(for: $0)) })
+
+    /// The same looks with a red dot (top right) while recording. Not a
+    /// template (the dot keeps its color): the glyph is drawn in the label
+    /// color resolved at drawing time, so it follows the menu bar's light or
+    /// dark appearance.
+    static func image(for state: MenuBarState, recording: Bool) -> NSImage {
+        guard recording else { return image(for: state) }
+        let look = Look(state)
+        return recordingImages[look] ?? makeRecordingImage(for: look)
+    }
+
     /// Spoken label of the icon: unlike the looks, it tells every state
     /// apart (off and paused share one drawing).
     static func accessibilityLabel(for state: MenuBarState) -> String {
@@ -46,6 +59,25 @@ enum MenuBarIcons {
         case .active: String(localized: "Correzione attiva")
         case .failed: String(localized: "RoomEQ: errore")
         case .paused: String(localized: "Correzione in pausa per questa uscita")
+        }
+    }
+
+    private static func makeRecordingImage(for look: Look) -> NSImage {
+        NSImage(size: size, flipped: true) { rect in
+            guard let context = NSGraphicsContext.current else { return false }
+            draw(look)
+            // Tint the glyph (drawn in black with alpha) with the label color.
+            context.compositingOperation = .sourceIn
+            NSColor.labelColor.setFill()
+            rect.fill()
+            // Red dot with a transparent margin, over the top right corner.
+            let center = NSPoint(x: 21, y: 3.5)
+            context.compositingOperation = .destinationOut
+            dot(center: center, radius: 3.6)
+            context.compositingOperation = .sourceOver
+            NSColor.systemRed.setFill()
+            NSBezierPath(ovalIn: NSRect(x: center.x - 2.5, y: center.y - 2.5, width: 5, height: 5)).fill()
+            return true
         }
     }
 
