@@ -107,7 +107,7 @@ RoomEQ can record the sound of the apps you choose. This is separate from the co
 The **Record** row is always visible, under the level meters. Next to the **Record** button is a button that opens the **Apps to record** list ("one file per app"), with a checkbox for each app:
 
 - The apps that are open are listed, with the ones that are **playing** at the top. Tick the ones to record. Your choice is remembered between launches.
-- If no app is open the list says "No apps open." If you click **Record** with nothing ticked, RoomEQ says "Choose at least one app to record."
+- If no app is open the list says "No apps open." While nothing is ticked, **Record** is disabled and the panel shows "Choose at least one app to record."
 - **Skip silence** is a checkbox at the bottom of the same list, on by default (see below).
 
 The closed button summarizes the choice, for example "Brave, Spotify · skip silence"; with many apps, "Brave, Spotify and 2 more"; with none, "No apps".
@@ -117,11 +117,13 @@ The closed button summarizes the choice, for example "Brave, Spotify · skip sil
 - **One file per app**: a stereo WAV file with 24-bit samples, at the sample rate of the output device. There is no sample-rate conversion and no mixing between apps.
 - **The app's original sound, before the correction.** Not the corrected sound, and not what the other apps play.
 - **The two channels are the pair on which the Mac's audio plays**: the stereo pair preferred by the output device. On an interface with many outputs, that is the pair macOS uses for the system sound.
-- Browsers and similar apps use several helper processes. RoomEQ finds them, including helpers that start while you are recording.
+- Browsers and similar apps use several helper processes. RoomEQ records the app and its helper processes whose bundle ID continues with ".helper…" (for example Brave, Chrome, Edge), including helpers that start while you are recording. Another app with a longer bundle ID is not recorded: choosing Chrome does not record Chrome Canary ("com.google.Chrome.canary").
+- **Safari**: the sound of web pages may go through shared WebKit processes that RoomEQ does not attribute to Safari. Recording it is not guaranteed (known limitation).
+- Each app has its own capture, all running on the output device's clock: the files stay aligned within a few milliseconds (not sample-accurate).
 
 ### Starting, watching and stopping
 
-1. Tick the apps and click **Record**.
+1. Tick the apps and click **Record**. While the recording is starting, the button shows "Starting…".
 2. While recording, the row shows a red dot with the elapsed time, a **Stop** button and **Show in Finder**, and below it a level for each app. The menu bar icon gets a **red dot**. If an app is in "paused · silence" it is waiting for sound (see **Skip silence**).
 3. Click **Stop**. RoomEQ says "Saved 1 file (*time*)" or "Saved *n* files (*time*)", and **Show in Finder** opens the folder with the files. If the apps never played, it says "No files saved: the apps didn't play."
 
@@ -137,18 +139,19 @@ In your **Music** folder, in **RoomEQ** (`~/Music/RoomEQ`), named *app name, dat
 
 ### When the output changes
 
-Recording does not stop if you switch the macOS output.
+Recording does not stop if you switch the macOS output, or if the **same device** changes its sample rate or configuration (for example from RoomEQ's Sample rate menu or from another app).
 
 - **Same sample rate**: the files continue (at most a brief moment of sound may be missing at the switch).
 - **Different sample rate**: the current files are closed and **new files** start at the new rate. RoomEQ never converts the audio.
+- **Output not ready yet**: RoomEQ retries every second for 30 seconds; recording stops only if it does not succeed.
 
 ### Limits and safety
 
-- The files are valid even if the Mac crashes or loses power: the WAV header is updated every second, so you lose at most the last second.
+- The files stay valid after a failure: the WAV header is updated every second, so if RoomEQ crashes you lose at most the last second. The data is physically written to the disk every 10 seconds: if the power fails you can lose up to about 10 seconds.
 - A WAV file cannot be larger than about 4 GB (a little over 4 hours at 48 kHz in 24-bit stereo); beyond that, recording continues in a new file.
 - When fewer than 10 minutes of space are left, RoomEQ warns you ("Disk almost full"). With less than 50 MB free, or on a write error, **it stops by itself**; the files saved are complete.
 - If the disk is too slow to keep up, a short piece of audio may be lost: it is replaced with silence, so the file keeps its length and stays aligned with the others, and RoomEQ shows a warning.
-- If the output cannot be followed after a change, recording stops with a message; saved files are complete.
+- If the output cannot be followed after a change (even after 30 seconds of retries), recording stops with a message; saved files are complete.
 - Only the apps you tick are recorded; the sound of other apps is not.
 - The **Screen & System Audio Recording** permission covers recording too.
 

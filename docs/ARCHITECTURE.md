@@ -371,7 +371,7 @@ playing directly to the device.
 ### 3.11 Recording (`RecordingSession.swift`, `RecordingController.swift`)
 
 Per-app recording is independent of the correction: it has its own taps and
-its own aggregate, so it works with the correction on, off or paused and adds
+its own aggregates, so it works with the correction on, off or paused and adds
 nothing to the correction's audio path. Pure parts live in `RoomEQCore`
 (`RecordingRing`, `SilenceGate`, `WAVWriter`, `RecordingNames`) and are
 unit-tested; the Core Audio part is in `RoomEQ/Engine`.
@@ -382,10 +382,17 @@ unit-tested; the Core Audio part is in `RoomEQ/Engine`.
   on the **same output stream** the correction uses (found with
   `TapSourceSelection.locate` from the device's preferred stereo pair). The
   processes are those whose bundle ID equals the app's or starts with
-  `"<bundle ID>."`.
-- **One aggregate.** All the taps are sub-taps of **one** private aggregate
-  (no sub-devices, drift compensation off), so every file shares one clock
-  and the files stay aligned. The aggregate has one input stream per tap.
+  `"<bundle ID>."` followed by a component starting with `helper`
+  (`RecordingMatch.belongs`, case-insensitive): `com.brave.Browser.helper`
+  and `com.google.Chrome.helper.renderer` belong to their apps, while
+  `com.google.Chrome.canary` is not a helper of Chrome. Safari's page audio
+  may come from shared WebKit processes that this rule cannot attribute to
+  it: not guaranteed (known limitation).
+- **One aggregate per app.** Each tap is the only sub-tap of its own private
+  aggregate (no sub-devices, drift compensation off), with its own IOProc, so
+  there is no assumption about the order of streams. All aggregates run on
+  the output device's clock, so the files stay aligned within a few
+  milliseconds (not sample-accurate). Each aggregate has one input stream.
   Before starting, the code checks that each tap and stream is Float32,
   interleaved, with the device's channel count and sample rate; otherwise it
   cancels the recording instead of converting.
@@ -398,13 +405,13 @@ unit-tested; the Core Audio part is in `RoomEQ/Engine`.
   and `isProcessRestoreEnabled`, but the same test showed that `bundleIDs`
   does not cover helper processes whose bundle ID differs from the app's
   (browser helpers, for example `com.brave.Browser.helper`). So the process
-  list is read with the prefix rule above. A listener on
+  list is read with the helper rule above. A listener on
   `kAudioHardwarePropertyProcessObjectList` calls `refreshProcesses()`,
   which rewrites `kAudioTapPropertyDescription` of a tap whose process set
   changed (same UUID), so helpers that start during a recording are added.
-- **Real-time side.** One IOProc on the aggregate (created with a block,
+- **Real-time side.** One IOProc per aggregate (created with a block,
   unlike the correction's C-function IOProcs) only copies the chosen L/R
-  pair of each tap's buffer into that app's `RecordingRing`: a
+  pair of the tap's buffer into that app's `RecordingRing`: a
   single-producer/single-consumer ring of stereo frames with atomic
   counters, no locks and no allocation. If the ring is full, the producer
   drops the new frames and counts them.
@@ -414,7 +421,8 @@ unit-tested; the Core Audio part is in `RoomEQ/Engine`.
   writes one frame of silence, so each file keeps its length and the files
   stay aligned; the lost audio is reported as a notice. About once a second
   (every 20th tick) it updates the WAV headers, looks for write errors and
-  checks the free disk space.
+  checks the free disk space; every 10 s (every 200th tick) it also forces
+  the data to the disk.
 - **Silence gate** (`SilenceGate`). A pure state machine, enabled by "Skip
   silence". Threshold −60 dBFS, hold 2 s, pre-roll 0.5 s, tail 0.5 s. While
   closed it keeps the last 0.5 s; a sample above the threshold opens a file
@@ -426,18 +434,28 @@ unit-tested; the Core Audio part is in `RoomEQ/Engine`.
 - **WAV files** (`WAVWriter`). 24-bit stereo PCM. The file is created with
   `O_EXCL` (never overwrites) and a header with zero sizes, which is
   rewritten by `updateHeader()` every second and on close, so a file cut
-  short by a crash or power loss is valid up to the last update. A RIFF file
+  short is valid up to the last update: a crash of the app loses at most the
+  last second. The data itself is flushed to the disk every 10 s, so a power
+  failure can lose up to about 10 s. A RIFF file
   cannot exceed 4 GiB: when `canAppend(frames:)` says no, the writer
   continues in a new file. Names come from `RecordingNames`: `<app>
   yyyy-MM-dd HH.mm.ss.wav` (time of the file's start; `/` and `:` become
   `-`), with " 2", " 3"… added if the name exists, in `~/Music/RoomEQ`.
-- **Output change.** A listener on `kAudioHardwarePropertyDefaultOutputDevice`
-  calls `switchDevice(to:)`. If the new device has another UID, the old taps
-  and aggregate are destroyed, the rings are drained, and the new ones are
-  built. With the same sample rate the files continue (a moment of sound may
-  be missing); with another rate each app's current file is closed and a new
-  one starts at the new rate (`restart(sampleRate:)`). If the new output
-  cannot be followed, the session stops with a message and closes the files.
+- **Output change.** The session follows the output, not only a new default
+  device. A listener on `kAudioHardwarePropertyDefaultOutputDevice` calls
+  `switchDevice(to:)`, and listeners on the device's `NominalSampleRate` and
+  output `StreamConfiguration` and on each tap's `kAudioTapPropertyFormat`
+  (queue `...recording.device`) call `follow(device:force:)` again after a
+  debounce of 0.2 s. So a change of rate or layout of the SAME device (from
+  RoomEQ's Sample rate menu or from another app) is followed too. The old
+  taps and aggregates are destroyed, the rings are drained, and the new ones
+  are built (`attemptCapture`). With the same sample rate (compared with a
+  tolerance, `SampleRates.same`) the files continue (a moment of sound may be
+  missing); with another rate each app's current file is closed and a new one
+  starts at the new rate (`restart(sampleRate:)`). If the new output is not
+  ready, `attemptCapture` retries every second for 30 s (`retryDeadline`);
+  only if it still fails the session stops with a message and closes the
+  files. No taps are left orphaned on failure.
 - **Stopping.** Only the user stops it, except for a write error, free space
   below 50 MB, or a failed output change (all closing the files properly).
   The remaining time is estimated from the free space and the data rate, and
@@ -447,7 +465,9 @@ unit-tested; the Core Audio part is in `RoomEQ/Engine`.
 - **Threads.** IOProc (real time) → rings → recording queue → files. Property
   listeners run on their own serial queue (`...recording.listeners`) and only
   forward to the recording queue. `RecordingController` (main actor) owns the
-  UI state, the app picker (open apps, those playing first, the choice and
+  UI state (including `isStarting`, which makes the button show "Avvio…"
+  while the start runs off the main thread; `canStart` is false with no app
+  chosen, and the panel then shows "Scegli almeno un'app da registrare."), the app picker (open apps, those playing first, the choice and
   "Skip silence" saved in `UserDefaults` under `recording.apps` and
   `recording.skipSilence`) and the menu bar red dot.
 

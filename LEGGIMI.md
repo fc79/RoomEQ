@@ -176,7 +176,7 @@ RoomEQ può registrare il suono delle app che scegli. È una funzione separata d
 La riga **Registra** è sempre visibile, sotto i livelli. Accanto al pulsante **Registra** c'è un pulsante che apre l'elenco **App da registrare** («un file per app»), con una casella per ogni app:
 
 - Sono elencate le app aperte, con quelle che **stanno suonando** in cima. Spunta quelle da registrare. La scelta viene ricordata da un avvio all'altro.
-- Se non c'è nessuna app aperta l'elenco dice «Nessuna app aperta.» Se premi **Registra** senza averne spuntata nessuna, RoomEQ dice «Scegli almeno un'app da registrare.»
+- Se non c'è nessuna app aperta l'elenco dice «Nessuna app aperta.» Finché non hai spuntato nessuna app, **Registra** è disattivato e nel pannello compare «Scegli almeno un'app da registrare.»
 - **Salta il silenzio** è una casella in fondo allo stesso elenco, attiva di default (vedi sotto).
 
 Il pulsante chiuso riassume la scelta, per esempio «Brave, Spotify · salta silenzio»; con molte app «Brave, Spotify e altre 2»; con nessuna «Nessuna app».
@@ -186,12 +186,14 @@ Il pulsante chiuso riassume la scelta, per esempio «Brave, Spotify · salta sil
 - **Un file per app**: un file WAV stereo a 24 bit, alla frequenza di campionamento dell'uscita. Nessuna conversione della frequenza e nessun mix tra le app.
 - **Il suono originale dell'app, prima della correzione.** Non il suono corretto, e non quello delle altre app.
 - **I due canali sono quelli su cui suona l'audio del Mac**: la coppia stereo preferita dalla scheda audio. Su una scheda con tante uscite è la coppia che macOS usa per il suono di sistema.
-- I browser e le app simili usano diversi processi di supporto. RoomEQ li trova, compresi quelli che partono mentre registri.
+- I browser e le app simili usano diversi processi di supporto. RoomEQ registra l'app e i suoi processi di supporto il cui identificativo (bundle ID) continua con «.helper…» (per esempio Brave, Chrome, Edge), compresi quelli che partono mentre registri. Un'altra app con un identificativo più lungo non viene registrata: scegliendo Chrome non si registra Chrome Canary («com.google.Chrome.canary»).
+- **Safari**: il suono delle pagine può passare da processi WebKit condivisi, che RoomEQ non attribuisce a Safari. Non è garantito che venga registrato (limite noto).
+- Ogni app ha una cattura propria, tutte sull'orologio della scheda d'uscita: i file restano allineati entro pochi millisecondi (non al campione).
 
 ### Avviare, controllare e fermare
 
 1. Spunta le app e premi **Registra**.
-2. Durante la registrazione la riga mostra un pallino rosso con il tempo trascorso, un pulsante **Ferma** e **Mostra nel Finder**, e sotto il livello di ogni app. L'icona nella barra dei menu ha un **pallino rosso**. Se un'app è «in pausa · silenzio» sta aspettando il suono (vedi **Salta il silenzio**).
+2. Mentre la registrazione parte il pulsante mostra «Avvio…». Durante la registrazione la riga mostra un pallino rosso con il tempo trascorso, un pulsante **Ferma** e **Mostra nel Finder**, e sotto il livello di ogni app. L'icona nella barra dei menu ha un **pallino rosso**. Se un'app è «in pausa · silenzio» sta aspettando il suono (vedi **Salta il silenzio**).
 3. Premi **Ferma**. RoomEQ dice «Salvato 1 file (*durata*).» oppure «Salvati *n* file (*durata*).», e **Mostra nel Finder** apre la cartella con i file. Se le app non hanno suonato dice «Nessun file salvato: le app non hanno suonato.»
 
 Se esci da RoomEQ mentre registri, o gli viene chiesto di fermarsi (per esempio allo spegnimento del Mac), i file vengono prima chiusi correttamente.
@@ -206,18 +208,19 @@ Nella cartella **Musica**, in **RoomEQ** (`~/Music/RoomEQ`), con nome *nome dell
 
 ### Quando cambia l'uscita
 
-La registrazione non si ferma se cambi l'uscita di macOS.
+La registrazione non si ferma se cambi l'uscita di macOS, né se la **stessa scheda** cambia frequenza o configurazione (per esempio dal menu Frequenza di campionamento di RoomEQ o da un'altra app).
 
 - **Stessa frequenza di campionamento**: i file continuano (al massimo può mancare un attimo di suono nel passaggio).
 - **Frequenza diversa**: i file attuali vengono chiusi e ne iniziano **di nuovi** alla nuova frequenza. RoomEQ non converte mai l'audio.
+- **Uscita non ancora pronta**: RoomEQ riprova ogni secondo per 30 secondi; la registrazione si ferma solo se non ci riesce.
 
 ### Limiti e sicurezza
 
-- I file restano validi anche se il Mac va in crash o salta la corrente: l'intestazione del WAV viene aggiornata ogni secondo, quindi si perde al massimo l'ultimo secondo.
+- I file restano validi anche dopo un blocco: l'intestazione del WAV viene aggiornata ogni secondo, quindi se RoomEQ va in crash si perde al massimo l'ultimo secondo. I dati vengono scritti fisicamente sul disco ogni 10 secondi: se salta la corrente si possono perdere fino a circa 10 secondi.
 - Un file WAV non può superare circa 4 GB (poco più di 4 ore a 48 kHz in stereo a 24 bit); oltre, la registrazione continua in un file nuovo.
 - Quando restano meno di 10 minuti di spazio, RoomEQ avvisa («Disco quasi pieno»). Con meno di 50 MB liberi, o per un errore di scrittura, **si ferma da sola**; i file salvati sono completi.
 - Se il disco è troppo lento, una breve parte di audio può andare persa: viene sostituita da silenzio, così il file mantiene la sua durata e resta allineato agli altri, e RoomEQ mostra un avviso.
-- Se dopo un cambio non riesce a seguire la nuova uscita, la registrazione si ferma con un messaggio; i file salvati sono completi.
+- Se dopo un cambio non riesce a seguire la nuova uscita (nemmeno dopo 30 secondi di tentativi), la registrazione si ferma con un messaggio; i file salvati sono completi.
 - Si registrano solo le app che spunti; il suono delle altre app no.
 - Il permesso **Registrazione schermo e audio di sistema** vale anche per la registrazione.
 
