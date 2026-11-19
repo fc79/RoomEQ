@@ -268,21 +268,23 @@ struct SplitKernelTests {
     }
 
     /// The first audible audio after the warm-up rises over the whole start
-    /// fade (here 4 blocks), not just the short 64-frame fade.
+    /// fade, not just the short 64-frame fade. The fade ends in the middle
+    /// of a block, as it does on real devices (662 or 720 frames); the first
+    /// block also carries the short fade (the two multiply).
     @Test func startFadeRisesAcrossSeveralCycles() throws {
-        let fade = 4 * Self.period
+        let fade = 3 * Self.period + 20
         let rig = Rig(startFadeFrames: fade)
         for _ in 0..<5 { rig.step() }
         let delay = try DelayPolicy.initialDelay(maxNeed: Self.lead, block: Self.period, maximum: rig.link.maximumDelay).get()
         rig.link.setDelay(delay)
-        rig.step()  // block 0 of the fade (also under the short fade)
 
-        for block in 1...5 {
+        for block in 0...5 {
             let outputStart = rig.step()
-            for frame in [0, 32, 63] {
+            for frame in 0..<Self.period {
                 let source = Rig.value(outputStart - delay + Int64(frame))
                 let played = block * Self.period + frame
-                let gain = min(1, Float(played) / Float(fade))
+                var gain = min(1, Float(played) / Float(fade))
+                if block == 0 { gain *= Float(frame) / Float(Self.period) }
                 let expected = source * gain
                 #expect(abs(rig.output.get(buffer: 0, channel: 0, frame: frame) - expected) < 1e-6)
                 #expect(abs(rig.output.get(buffer: 0, channel: 1, frame: frame) + expected) < 1e-6)
