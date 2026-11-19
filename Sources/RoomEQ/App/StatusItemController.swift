@@ -63,6 +63,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// True while a file chooser opened from the panel is up: the popover
     /// must stay open meanwhile.
     private var isChoosingFile = false
+    /// The file chooser on screen, if any (kept above the popover).
+    private weak var fileChooser: NSOpenPanel?
     /// The screen the panel opens on (the icon's), for its maximum height.
     private let panelScreen = PanelScreen()
 
@@ -144,6 +146,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             // The file chooser is open: its result goes to the panel, which
             // must stay open; bring the chooser forward instead.
             activateApp()
+            if let fileChooser {
+                raiseAbovePopover(fileChooser)
+                fileChooser.makeKeyAndOrderFront(nil)
+            }
             return
         }
         if shown {
@@ -323,13 +329,16 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// keyboard back if still open.
     private func runFileChooser(_ panel: NSOpenPanel, completion: @escaping @MainActor (URL?) -> Void) {
         isChoosingFile = true
+        fileChooser = panel
         // A menu-bar-only app is not active by itself: without this the
         // chooser could open behind other apps' windows.
         activateApp()
+        raiseAbovePopover(panel)
         panel.begin { [weak self] response in
             MainActor.assumeIsolated {
                 if let self {
                     self.isChoosingFile = false
+                    self.fileChooser = nil
                     if self.popover.isShown {
                         self.popoverWindow?.makeKey()
                     }
@@ -337,6 +346,16 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 completion(response == .OK ? panel.url : nil)
             }
         }
+        // Again once it is on screen, in case showing it reset the level.
+        raiseAbovePopover(panel)
+        panel.orderFrontRegardless()
+    }
+
+    /// The popover's window sits above normal windows, so a chooser at its
+    /// usual level would open behind the panel: put it one level above.
+    private func raiseAbovePopover(_ panel: NSOpenPanel) {
+        let base = max(popoverWindow?.level.rawValue ?? 0, NSWindow.Level.modalPanel.rawValue)
+        if panel.level.rawValue <= base { panel.level = NSWindow.Level(rawValue: base + 1) }
     }
 }
 

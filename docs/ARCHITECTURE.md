@@ -962,6 +962,8 @@ Code: `Sources/RoomEQCore/AppSettings.swift`, `SettingsBackups.swift`,
   - **File choosers:** they use `begin`, not `runModal`. While one is up,
     the monitors leave the popover open, and a click on the icon brings the
     chooser forward instead of closing the panel (its result goes there).
+    The popover's window sits above normal windows, so the chooser is put
+    one level above it (`raiseAbovePopover`), from the moment it opens.
 - **Panel** (`MenuPanelView.swift`, 400 pt wide):
   - fixed at the top: the header (Correction switch, status line, errors),
     the preset row and the level meters;
