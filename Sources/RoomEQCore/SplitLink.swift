@@ -72,12 +72,18 @@ public struct SplitLinkConfiguration: Sendable {
     /// Fade lengths around missing data and delay changes.
     public var fadeInFrames: Int
     public var fadeOutFrames: Int
+    /// Fade-in of the first audible audio after the warm-up, across as
+    /// many cycles as needed (0 = only the short `fadeInFrames` fade). The
+    /// short fade suits a quick recovery after missing data; at a start,
+    /// after half a second of silence, a longer one avoids a click.
+    public var startFadeFrames: Int
     /// Per-cycle `need` values kept for the warm-up statistics.
     public var needHistoryCapacity: Int
 
     public init(
         captureLayout: BufferListLayout, captureLeft: ChannelLocation, captureRight: ChannelLocation,
-        sizing: SplitLinkSizing, fadeInFrames: Int = 64, fadeOutFrames: Int = 32, needHistoryCapacity: Int = 2048
+        sizing: SplitLinkSizing, fadeInFrames: Int = 64, fadeOutFrames: Int = 32, startFadeFrames: Int = 0,
+        needHistoryCapacity: Int = 2048
     ) {
         self.captureLayout = captureLayout
         self.captureLeft = captureLeft
@@ -85,6 +91,7 @@ public struct SplitLinkConfiguration: Sendable {
         self.sizing = sizing
         self.fadeInFrames = fadeInFrames
         self.fadeOutFrames = fadeOutFrames
+        self.startFadeFrames = startFadeFrames
         self.needHistoryCapacity = needHistoryCapacity
     }
 
@@ -126,6 +133,7 @@ public struct SplitLink: ~Copyable {
     public let maximumDelay: Int
     let fadeInFrames: Int
     let fadeOutFrames: Int
+    let startFadeFrames: Int
     let needHistory: UnsafeMutablePointer<Int64>
     let needHistoryCapacity: Int
 
@@ -167,6 +175,8 @@ public struct SplitLink: ~Copyable {
     public let outputFirstReady: Atomic<Bool>
     var activeDelay: Int64 = 0
     var fadeInPending = true
+    /// Frames of the start fade already played (= `startFadeFrames`: done).
+    var startFadeDone = 0
 
     // MARK: Written by the engine
     let padEngine: CacheLinePad
@@ -198,6 +208,7 @@ public struct SplitLink: ~Copyable {
         maximumDelay = min(sizing.maximumDelay, size - sourceCapacity - 64)
         fadeInFrames = max(1, configuration.fadeInFrames)
         fadeOutFrames = max(1, configuration.fadeOutFrames)
+        startFadeFrames = max(0, configuration.startFadeFrames)
         needHistoryCapacity = max(16, configuration.needHistoryCapacity)
         needHistory = .allocate(capacity: needHistoryCapacity)
         needHistory.initialize(repeating: 0, count: needHistoryCapacity)
@@ -468,6 +479,7 @@ public enum SplitOutputKernel {
         if link.pointee.activeDelay == 0 {
             link.pointee.activeDelay = delay
             link.pointee.fadeInPending = true
+            link.pointee.startFadeDone = 0
         } else if link.pointee.activeDelay != delay {
             readDelay = link.pointee.activeDelay
             fadeOutBlock = true
@@ -510,10 +522,31 @@ public enum SplitOutputKernel {
             link.pointee.activeDelay = delay
             link.pointee.fadeInPending = true
         }
+        startFade(link, left, right, from: result.first, valid: result.validFrames)
 
         RenderKernel.renderFromSource(
             state: state, sourceLeft: UnsafePointer(left), sourceRight: UnsafePointer(right), frames: frames,
             output: output)
+    }
+
+    /// The start fade: a linear rise over `startFadeFrames` audible frames,
+    /// continued across cycles; on top of the other fades (it multiplies).
+    @inline(__always)
+    static func startFade(
+        _ link: UnsafeMutablePointer<SplitLink>, _ left: UnsafeMutablePointer<Float>,
+        _ right: UnsafeMutablePointer<Float>, from: Int, valid: Int
+    ) {
+        let total = link.pointee.startFadeFrames
+        let done = link.pointee.startFadeDone
+        guard done < total, valid > 0, from >= 0 else { return }
+        let count = min(total - done, valid)
+        let step = 1 / Float(total)
+        for index in 0..<count {
+            let gain = Float(done + index) * step
+            left[from + index] *= gain
+            right[from + index] *= gain
+        }
+        link.pointee.startFadeDone = done + count
     }
 
     /// Linear fade over [from, from + count): rising 0 -> 1 or falling 1 -> 0.

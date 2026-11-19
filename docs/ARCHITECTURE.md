@@ -284,6 +284,15 @@ diagnostic log line (`logTimeline`). They are never used for reading.
 block is read at the old delay and faded out; the next block fades in at
 the new delay.
 
+**Start fade.** The first audible audio after the warm-up rises linearly
+over `startFadeFrames` (15 ms, `EngineSession.startFadeSeconds`), continued
+across as many cycles as needed and multiplied with the other fades. The
+64-frame fade is meant for a quick recovery after missing data; at a start,
+after about half a second of silence, it was short enough to click on
+loud bass. The cut of the tapped apps' own sound when the tap starts, and
+its return when the tap is destroyed, are done by macOS without a fade
+and can still click; RoomEQ can fade only its own output.
+
 ### 3.7 Warm-up and delay (`EngineSession.warmUpAndFixDelay`)
 
 The code comments say the tapped apps are muted from the first capture

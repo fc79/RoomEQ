@@ -192,13 +192,14 @@ struct SplitKernelTests {
         var captureSampleOverride: Double?
         var outputSampleOverride: Double?
 
-        init() {
+        init(startFadeFrames: Int = 0) {
             let captureLayout = BufferListLayout(streams: [StreamFormatInfo(channels: 10, isInterleaved: true)])
             let taps = captureLayout.locations(ofStream: 0)
             let sizing = SplitLinkSizing.make(maxCallbackFrames: period, safetyOffsets: 0, delayIncreases: 4)
             link = SplitLinkHandle(
                 configuration: SplitLinkConfiguration(
-                    captureLayout: captureLayout, captureLeft: taps[2], captureRight: taps[3], sizing: sizing))
+                    captureLayout: captureLayout, captureLeft: taps[2], captureRight: taps[3], sizing: sizing,
+                    startFadeFrames: startFadeFrames))
             let outputLayout = BufferListLayout(streams: [StreamFormatInfo(channels: 10, isInterleaved: true)])
             state = RenderStateHandle(
                 configuration: RenderConfiguration(
@@ -262,6 +263,30 @@ struct SplitKernelTests {
             #expect(rig.output.get(buffer: 0, channel: 0, frame: frame) == Rig.value(source))
             #expect(rig.output.get(buffer: 0, channel: 1, frame: frame) == -Rig.value(source))
             for channel in 2..<10 { #expect(rig.output.get(buffer: 0, channel: channel, frame: frame) == 0) }
+        }
+        #expect(rig.link.status().underrunCycles == 0)
+    }
+
+    /// The first audible audio after the warm-up rises over the whole start
+    /// fade (here 4 blocks), not just the short 64-frame fade.
+    @Test func startFadeRisesAcrossSeveralCycles() throws {
+        let fade = 4 * Self.period
+        let rig = Rig(startFadeFrames: fade)
+        for _ in 0..<5 { rig.step() }
+        let delay = try DelayPolicy.initialDelay(maxNeed: Self.lead, block: Self.period, maximum: rig.link.maximumDelay).get()
+        rig.link.setDelay(delay)
+        rig.step()  // block 0 of the fade (also under the short fade)
+
+        for block in 1...5 {
+            let outputStart = rig.step()
+            for frame in [0, 32, 63] {
+                let source = Rig.value(outputStart - delay + Int64(frame))
+                let played = block * Self.period + frame
+                let gain = min(1, Float(played) / Float(fade))
+                let expected = source * gain
+                #expect(abs(rig.output.get(buffer: 0, channel: 0, frame: frame) - expected) < 1e-6)
+                #expect(abs(rig.output.get(buffer: 0, channel: 1, frame: frame) + expected) < 1e-6)
+            }
         }
         #expect(rig.link.status().underrunCycles == 0)
     }

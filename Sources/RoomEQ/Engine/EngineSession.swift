@@ -179,6 +179,9 @@ final class EngineSession {
     static let warmupSettle = 0.15
     static let warmupWindow = 0.4
     static let warmupDeadline = 1.0
+    /// Fade-in of the corrected audio when it starts after the warm-up (the
+    /// same length as the fade-out at the end).
+    static let startFadeSeconds = 0.015
     /// Drift is checked once per second (maintenance runs every 100 ms).
     static let ticksPerDriftCheck = 10
 
@@ -333,6 +336,7 @@ final class EngineSession {
         let link = SplitLinkHandle(
             configuration: SplitLinkConfiguration(
                 captureLayout: captureLayout, captureLeft: sourceLeft, captureRight: sourceRight, sizing: sizing,
+                startFadeFrames: LinearRamp.frames(seconds: Self.startFadeSeconds, sampleRate: sampleRate),
                 needHistoryCapacity: SplitLinkConfiguration.needHistoryCapacity(
                     window: Self.warmupWindow, sampleRate: sampleRate, bufferFrames: min(bufferFrames, captureBuffer))))
         self.link = link
